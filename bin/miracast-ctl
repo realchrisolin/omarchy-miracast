@@ -366,7 +366,12 @@ for m in ms:
     break
 ' "$name" 2>/dev/null || true)"
   fi
-  [[ -n "$scale" ]] && extend_scale_set "$mac" "$scale"
+  # Do not let a missing scale make this function return 1 under `set -e`
+  # (that aborted cmd_stop → cmd_start and blocked reconnect).
+  if [[ -n "$scale" ]]; then
+    extend_scale_set "$mac" "$scale" || true
+  fi
+  return 0
 }
 
 # Compute placement for the Extend virtual output.

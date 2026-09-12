@@ -267,9 +267,35 @@ print(f"{hw}x{hh}@{refresh}|{x}x{y}|{vs:g}")
 PY
 }
 
+# True when the tracked Miracast output is already at desired pos+scale
+# (logical adjacency). Avoids re-hyprctl that kills live wf-recorder.
+miracast_layout_matches() {
+  local want_pos="$1" want_scale="$2"
+  [[ -n "$tracked" ]] || return 1
+  hyprctl -j monitors 2>/dev/null | python3 -c '
+import json, sys
+name, want_pos, want_scale = sys.argv[1], sys.argv[2], float(sys.argv[3] or 1)
+try:
+    ms = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+m = next((x for x in ms if str(x.get("name") or "") == name), None)
+if not m:
+    raise SystemExit(1)
+scale = float(m.get("scale") or 1) or 1.0
+if abs(scale - want_scale) > 0.05:
+    raise SystemExit(1)
+wx, wy = want_pos.split("x", 1)
+if int(m.get("x") or 0) != int(float(wx)) or int(m.get("y") or 0) != int(float(wy)):
+    raise SystemExit(1)
+raise SystemExit(0)
+' "$tracked" "$want_pos" "$want_scale" 2>/dev/null
+}
+
 # Geometry only — must stay fast and synchronous. After eDP scale changes,
 # Hyprland can auto-shove the headless to the wrong side; this glues it back
 # to extendPosition before capture ensure (and before this script can be killed).
+# Skips hyprctl when already correct so we do not kill a live capture pipeline.
 apply_miracast_layout() {
   local override_scale="${1:-}" parts mode rest pos scale
   [[ -n "$tracked" ]] || return 0
@@ -287,6 +313,10 @@ apply_miracast_layout() {
   pos="${rest%%|*}"
   scale="${rest#*|}"
   [[ "$scale" == "$rest" || -z "$scale" ]] && scale="1"
+  if miracast_layout_matches "$pos" "$scale"; then
+    scale_log "apply_miracast_layout: already at pos=$pos scale=$scale — skip"
+    return 0
+  fi
   scale_log "apply_miracast_layout mode=$mode pos=$pos scale=$scale"
   focus_primary_monitor || true
   hypr_set_geometry "$tracked" "$mode" "$pos" "$scale" || true
@@ -413,30 +443,25 @@ apply_monitor_with_remap "$name" "${width}x${height}@${refresh}" "${x}x${y}" "$n
 # RIGHT of eDP — undoing any prior left/above/below glue.
 scale_log "persist monitors.lua"
 persist_monitors_lua "$new_scale" "$new_gdk_scale" || true
-# Glue Miracast immediately — no sleep first. Quickshell's actionProc often
-# kills this script during sleeps after persist, which previously skipped
-# reseat entirely and left the headless on the auto-right edge.
+# Glue Miracast once after persist. Detached confirms only re-apply if the
+# headless drifted (lua reload shove); never hammer hyprctl on a live capture.
 if [[ -n "$tracked" ]]; then
   scale_log "reseat_miracast layout (after persist)"
   apply_miracast_layout || true
-  # Detached confirms survive Process kill from the Display panel.
   (
-    for _delay in 0.4 1.0 2.5; do
-      sleep "${OMARCHY_TEST_DEFER_SLEEP:-$_delay}"
-      scale_log "reseat_miracast layout (detached confirm t=$_delay)"
-      apply_miracast_layout || true
-    done
+    sleep "${OMARCHY_TEST_DEFER_SLEEP:-0.6}"
+    scale_log "reseat_miracast layout (detached confirm if drifted)"
+    apply_miracast_layout || true
   ) >>"$SCALE_LOG" 2>&1 &
   disown || true
 fi
 if [[ "$needs_rebind" -eq 1 && -x "$CTL" ]]; then
   sleep "${OMARCHY_TEST_ENSURE_SLEEP:-0.5}"
   scale_log "eDP/primary ensure-capture after scale"
+  # Do not re-hyprctl Miracast here — capture is (or will be) live again.
   "$CTL" ensure-capture 4 >>"$SCALE_LOG" 2>&1 || true
-  apply_miracast_layout || true
-  sleep "${OMARCHY_TEST_ENSURE_SLEEP:-1.5}"
+  sleep "${OMARCHY_TEST_ENSURE_SLEEP:-1.0}"
   "$CTL" ensure-capture 3 >>"$SCALE_LOG" 2>&1 || true
-  apply_miracast_layout || true
 fi
 scale_log "done name=$name scale=$new_scale cast_live=$cast_live tracked=${tracked:-none} needs_rebind=$needs_rebind"
 
