@@ -11,6 +11,8 @@ Item {
   property string monitorName: "eDP-1"
   property string lastPeerMac: ""
   property string lastPeerName: ""
+  // Hyprland output name for the live/last Extend headless (from status.monitor).
+  property string castMonitor: ""
   property string mode: "mirror"   // mirror | extend
   property string extendPosition: "right"  // right | left | above | below
   property string streamMode: "1280x720p30"  // e.g. 1920x1080p30
@@ -345,6 +347,59 @@ Item {
     }
   }
 
+  // Watchdog: while streaming (and not session-locked), heal dead/zombie
+  // capture that leave RTSP up but the TV frozen (e.g. after position moves).
+  Timer {
+    interval: 4000
+    running: root.streaming && !root._sessionLocked && !root._pausedForLock
+    repeat: true
+    onTriggered: {
+      if (captureHealthProcess.running || ensureWatchdogProcess.running) return
+      if (pauseLockProcess.running || ensureLockProcess.running) return
+      captureHealthProcess.command = [ctl, "capture-health"]
+      captureHealthProcess.running = true
+    }
+  }
+
+  Process {
+    id: captureHealthProcess
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        try {
+          var data = JSON.parse(String(text || "{}"))
+          if (data.paused === true) return
+          if (data.healthy === true) return
+          if (ensureWatchdogProcess.running) return
+          root.actionStatus = "Recovering capture…"
+          ensureWatchdogProcess.command = [ctl, "ensure-capture", "2", "force"]
+          ensureWatchdogProcess.running = true
+        } catch (e) {
+        }
+      }
+    }
+  }
+
+  Process {
+    id: ensureWatchdogProcess
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        try {
+          var data = JSON.parse(String(text || "{}"))
+          if (data.ok === false)
+            root.actionStatus = "Capture recovery failed"
+          else if (data.captureRestarted)
+            root.actionStatus = "Capture recovered"
+          else
+            root.actionStatus = ""
+        } catch (e) {
+        }
+        root.refresh()
+      }
+    }
+  }
+
   // After a live position move we reconnect; if streaming never returns, revert.
   Timer {
     id: positionRecoverTimer
@@ -447,6 +502,7 @@ Item {
             root.streamModes = data.streamModes
           if (data.peer) root.persistPeer(data.peer, data.peerName || root.lastPeerName)
           else if (data.peerName) root.lastPeerName = String(data.peerName)
+          if (data.monitor) root.castMonitor = String(data.monitor)
           // Drop stale doctor "Ready to cast" once a session is up.
           if (root.active && String(root.actionStatus).indexOf("Ready") === 0)
             root.actionStatus = ""

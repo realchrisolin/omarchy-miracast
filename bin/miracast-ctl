@@ -16,6 +16,9 @@ MODE_STATE_FILE="$STATE_DIR/sink-modes.json"  # sink-advertised CEA/VESA modes f
 # can leave wf-recorder/ffmpeg alive while feeding black/stale frames; comparing
 # this to live hyprctl geometry forces a SIGUSR1 rebind even when PIDs look fine.
 CAPTURE_GEOM_FILE="$STATE_DIR/capture.geometry"
+# Touched while capture is intentionally paused (lock / position move). FluxCast
+# must not auto-rebind over this; ensure-capture clears it.
+CAPTURE_PAUSED_FILE="$STATE_DIR/capture.paused"
 # Per-device Extend scales live in settings.json → sinkScales: { "MAC": 2 }
 
 # Headless capture cannot include the hardware cursor plane — force software
@@ -554,6 +557,7 @@ PY
 # to a monitor mid-resize (that path freezes the session / freezes the sink).
 pause_extend_capture() {
   local tracked=""
+  mark_capture_paused
   [[ -f "$HEADLESS_FILE" ]] && tracked="$(cat "$HEADLESS_FILE" 2>/dev/null || true)"
   python3 - "$tracked" <<'PY'
 import os, signal, sys, time
@@ -603,6 +607,7 @@ PY
 }
 
 # True when wf-recorder/ffmpeg sender processes for this cast are alive.
+# Zombies (defunct) count as dead — they fooled ensure after position moves.
 capture_senders_alive() {
   local tracked=""
   [[ -f "$HEADLESS_FILE" ]] && tracked="$(cat "$HEADLESS_FILE" 2>/dev/null || true)"
@@ -614,10 +619,16 @@ for pid in os.listdir("/proc"):
     if not pid.isdigit():
         continue
     try:
+        with open(f"/proc/{pid}/stat") as fh:
+            # pid (comm) state ...
+            parts = fh.read().split()
+            state = parts[2] if len(parts) > 2 else ""
+        if state == "Z":
+            continue
         cmd = open(f"/proc/{pid}/cmdline", "rb").read().replace(b"\0", b" ").decode(errors="ignore")
     except OSError:
         continue
-    if "src/main.py" in cmd:
+    if not cmd or "src/main.py" in cmd:
         continue
     base = os.path.basename(cmd.split(" ", 1)[0]) if cmd else ""
     wf_match = "wf-recorder" in cmd and (
@@ -640,6 +651,19 @@ for pid in os.listdir("/proc"):
             alive += 1
 print("true" if alive >= 1 else "false")
 PY
+}
+
+mark_capture_paused() {
+  mkdir -p "$STATE_DIR"
+  printf '%s\n' "$(date -Iseconds 2>/dev/null || date)" >"$CAPTURE_PAUSED_FILE"
+}
+
+clear_capture_paused() {
+  rm -f "$CAPTURE_PAUSED_FILE"
+}
+
+capture_is_paused() {
+  [[ -f "$CAPTURE_PAUSED_FILE" ]] && echo "true" || echo "false"
 }
 
 # Live fingerprint of the tracked Extend output: name|w|h|refresh|scale|x|y
@@ -813,9 +837,11 @@ PY
 # After scale/layout settle: verify capture is alive/healthy; rebuild if not.
 # Also rebuild when Hyprland output geometry drifted since the last bind
 # (hyprctl reload can leave senders running while the TV shows black).
+# Pass "force" as $2 to always pause+SIGUSR1 (position moves / watchdog).
 # Prints: healthy=(true|false) attempts=N restarted=(true|false) pid=...
 ensure_extend_capture_healthy() {
   local attempts="${1:-2}"
+  local force="${2:-}"
   local i info restarted=false healthy=false flux_pid="" alive drifted
   flux_pid="$(fluxcast_pid || true)"
   [[ -n "$flux_pid" ]] || {
@@ -825,27 +851,34 @@ ensure_extend_capture_healthy() {
   for ((i = 1; i <= attempts; i++)); do
     alive="$(capture_senders_alive 2>/dev/null || echo false)"
     drifted="$(capture_geometry_drifted 2>/dev/null || echo false)"
-    if [[ "$alive" == "true" && "$drifted" != "true" ]]; then
+    if [[ "$force" != "force" && "$alive" == "true" && "$drifted" != "true" ]]; then
       # Confirm it stays up through a short settle (post-scale frame-copy death).
       sleep 1.0
       alive="$(capture_senders_alive 2>/dev/null || echo false)"
       drifted="$(capture_geometry_drifted 2>/dev/null || echo false)"
       if [[ "$alive" == "true" && "$drifted" != "true" ]]; then
+        clear_capture_paused
         record_capture_geometry
         echo "healthy=true attempts=${i} restarted=${restarted} pid=${flux_pid}"
         return 0
       fi
     fi
     pause_extend_capture >/dev/null || true
+    wait_capture_senders_gone 30 || true
     sleep 0.3
+    # Allow FluxCast auto-rebind / this restart to proceed.
+    clear_capture_paused
+    rm -f "$CAPTURE_GEOM_FILE"
     info="$(restart_extend_capture)"
     restarted=true
+    force="" # only force the first iteration
     flux_pid="$(echo "$info" | sed -n 's/.*pid=\([0-9]*\).*/\1/p')"
     [[ "$info" == *"healthy=true"* ]] && healthy=true || healthy=false
     if [[ "$healthy" == "true" ]]; then
       sleep 1.0
       alive="$(capture_senders_alive 2>/dev/null || echo false)"
       if [[ "$alive" == "true" ]]; then
+        clear_capture_paused
         record_capture_geometry
         echo "healthy=true attempts=${i} restarted=true pid=${flux_pid}"
         return 0
@@ -889,28 +922,29 @@ apply_extend_position() {
   pos="${rest%%|*}"
   scale="${rest#*|}"
   [[ "$scale" == "$rest" || -z "$scale" ]] && scale="1"
-  # Prefer the live refresh rate from Hyprland when available.
-  local refresh
-  refresh="$(hyprctl -j monitors 2>/dev/null | python3 -c 'import json,sys; name=sys.argv[1]; ms=json.load(sys.stdin); m=next((x for x in ms if x.get("name")==name),None); print(m.get("refreshRate") if m else "60")' "$headless" 2>/dev/null || echo 60)"
-  mode="${mode%%@*}@${refresh}"
+  # Keep refresh from extend_geometry_parts (stream rate, usually 30). Do NOT
+  # copy the live Hyprland refresh — once the headless is wrongly at 60Hz,
+  # that clobber locks it there and doubles compositor CPU vs a 30fps capture.
 
   # Same safe order as monitor-scale: leave the cast output, detach capture,
-  # move geometry, then rebuild capture once the compositor has settled.
+  # move geometry, then *force* rebuild (zombies looked "alive" and skipped rebind).
   primary="$(primary_monitor_name)"
   if [[ -n "$primary" ]]; then
     hyprctl dispatch focusmonitor "$primary" >/dev/null 2>&1 || true
   fi
   pause_extend_capture >/dev/null || true
-  sleep 0.2
+  wait_capture_senders_gone 40 || true
+  rm -f "$CAPTURE_GEOM_FILE"
+  sleep 0.25
   if ! hypr_set_monitor_geometry "$headless" "$mode" "$pos" "$scale"; then
-    ensure_extend_capture_healthy 2 >/dev/null || true
+    ensure_extend_capture_healthy 2 force >/dev/null || true
     emit "{\"ok\":false,\"error\":\"hyprctl eval failed\",\"position\":\"$position\",\"monitor\":\"$headless\"}"
     return 1
   fi
-  sleep 0.45
+  sleep 0.5
 
   local ensure_info capture_restarted=false capture_healthy=false flux_pid=""
-  ensure_info="$(ensure_extend_capture_healthy 2)"
+  ensure_info="$(ensure_extend_capture_healthy 2 force)"
   [[ "$ensure_info" == *"restarted=true"* ]] && capture_restarted=true
   [[ "$ensure_info" == *"healthy=true"* ]] && capture_healthy=true
   flux_pid="$(echo "$ensure_info" | sed -n 's/.*pid=\([0-9]*\).*/\1/p')"
@@ -1171,61 +1205,83 @@ wait_capture_senders_gone() {
   [[ "$(capture_senders_alive 2>/dev/null || echo false)" == "false" ]]
 }
 
+disconnect_log() {
+  mkdir -p "$LOG_DIR"
+  printf '%s %s\n' "$(date -Iseconds 2>/dev/null || date)" "$*" >>"$LOG_DIR/disconnect.log"
+}
+
 cleanup_extend_monitor() {
-  # Serialize stop-path vs cast-exit-path cleanups. Concurrent hyprctl
-  # output remove + monitor reshuffles are what freeze eDP for minutes.
+  # Stop must NOT block on `hyprctl output remove` — that call can freeze the
+  # Hyprland event loop for ~30–90s even after the client times out (seen in
+  # disconnect.log: remove at T+5s, eDP dead for a minute+). Sync path only
+  # detaches capture + migrates windows; removal is deferred.
   local lock="$STATE_DIR/cleanup.lock"
+  local name="" primary=""
   mkdir -p "$STATE_DIR"
   (
-    # Bound wait — a stuck prior cleanup must not block forever.
     flock -w 5 9 || true
-    local name="" primary=""
     if [[ -f "$HEADLESS_FILE" ]]; then
       name="$(cat "$HEADLESS_FILE" 2>/dev/null || true)"
     fi
     primary="$(primary_monitor_name)"
+    disconnect_log "cleanup begin name=${name:-none} primary=${primary:-none}"
 
     # 0) Detach screencopy BEFORE any hypr geometry on the cast output.
     pause_extend_capture >/dev/null || true
-    wait_capture_senders_gone 40 || true
-    sleep 0.4
+    wait_capture_senders_gone 50 || true
+    sleep 0.8
+    wait_capture_senders_gone 20 || true
 
     if [[ -n "$name" ]]; then
-      # 1) Focus laptop first so the seat is not on the dying output.
       if [[ -n "$primary" ]]; then
         hypr_try dispatch "hl.dsp.focus({ monitor = \"${primary}\" })"
-      fi
-
-      # 2) Move only occupied workspaces off the cast output (timeouts inside).
-      if [[ -n "$primary" ]]; then
         migrate_workspaces_from_monitor "$name" "$primary"
         hypr_try dispatch "hl.dsp.focus({ monitor = \"${primary}\" })"
       fi
-
-      # 3) Cursor restore before remove.
       restore_software_cursors
-
-      # 4) Prefer a direct remove. Parking/scale-collapse under residual
-      #    screencopy has wedged eDP; only park if remove fails once.
-      hypr_try output remove "$name"
-      if timeout 1 hyprctl -j monitors 2>/dev/null | grep -q "\"name\": \"$name\""; then
-        sleep 0.4
-        wait_capture_senders_gone 10 || true
-        hypr_try eval "hl.monitor({ output = \"${name}\", mode = \"1280x720@60\", position = \"8192x0\", scale = 1 })"
-        sleep 0.4
-        hypr_try output remove "$name"
-      fi
+      # Drop tracking immediately so a reconnect can create a fresh headless
+      # even if deferred remove is still pending.
       rm -f "$HEADLESS_FILE" "$CAPTURE_GEOM_FILE"
-
-      if [[ -n "$primary" ]]; then
-        hypr_try dispatch "hl.dsp.focus({ monitor = \"${primary}\" })"
-        reassert_primary_monitor || true
-      fi
+      disconnect_log "cleanup sync done; deferring output remove name=$name"
+      printf '%s\n' "$name" >"$STATE_DIR/pending-remove.name"
+      printf '%s\n' "${primary:-}" >"$STATE_DIR/pending-remove.primary"
     else
       restore_software_cursors
       rm -f "$CAPTURE_GEOM_FILE"
+      disconnect_log "cleanup done (no tracked headless)"
     fi
   ) 9>"$lock"
+
+  # Deferred remove — do not hold Stop/UI on a wedging compositor call.
+  if [[ -f "$STATE_DIR/pending-remove.name" ]]; then
+    (
+      local rm_name rm_primary
+      rm_name="$(tr -d '\n' <"$STATE_DIR/pending-remove.name" 2>/dev/null || true)"
+      rm_primary="$(tr -d '\n' <"$STATE_DIR/pending-remove.primary" 2>/dev/null || true)"
+      rm -f "$STATE_DIR/pending-remove.name" "$STATE_DIR/pending-remove.primary"
+      [[ -n "$rm_name" ]] || exit 0
+      disconnect_log "deferred remove sleep name=$rm_name"
+      sleep 3
+      wait_capture_senders_gone 30 || true
+      sleep 0.5
+      disconnect_log "deferred output remove name=$rm_name"
+      # Fresh timeout each attempt; ignore failure — orphan headless is better
+      # than a minute of frozen eDP.
+      timeout 2 hyprctl output remove "$rm_name" >/dev/null 2>&1 || true
+      sleep 1
+      if timeout 1 hyprctl -j monitors 2>/dev/null | grep -q "\"name\": \"$rm_name\""; then
+        disconnect_log "deferred remove retry name=$rm_name"
+        sleep 2
+        wait_capture_senders_gone 10 || true
+        timeout 2 hyprctl output remove "$rm_name" >/dev/null 2>&1 || true
+      fi
+      if [[ -n "$rm_primary" ]]; then
+        timeout 2 hyprctl dispatch "hl.dsp.focus({ monitor = \"${rm_primary}\" })" >/dev/null 2>&1 || true
+      fi
+      disconnect_log "deferred remove finished name=$rm_name"
+    ) >>"$LOG_DIR/disconnect.log" 2>&1 &
+    disown || true
+  fi
 }
 
 json_escape() {
@@ -1730,10 +1786,12 @@ PY
 }
 
 cmd_stop() {
+  disconnect_log "cmd_stop begin"
   # Detach screencopy first — killing FluxCast while hypr removes the output
   # mid-capture is the eDP hard-freeze path.
   pause_extend_capture >/dev/null || true
-  wait_capture_senders_gone 20 || true
+  wait_capture_senders_gone 40 || true
+  sleep 0.5
 
   if [[ -f "$PID_FILE" ]]; then
     local pid
@@ -1818,6 +1876,7 @@ PY
   # Longer settle: DRM/screencopy release after a long cast can take >200ms.
   sleep 1.0
   cleanup_extend_monitor || true
+  clear_capture_paused
   local settings peer_name mode
   settings="$(read_settings)"
   peer_name="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("lastPeerName",""))' "$settings")"
@@ -1932,6 +1991,10 @@ if m:
     # damage tracking can wake the CPU more than continuous -D and raised
     # battery draw. Opt in with FLUXCAST_WFD_WF_RECORDER_DAMAGE=1 if desired.
     export FLUXCAST_WFD_MODE_STATE="$MODE_STATE_FILE"
+    # When set (file exists), FluxCast must not auto-rebind over an intentional
+    # pause (screen lock / Extend position move).
+    export FLUXCAST_CAPTURE_PAUSE_FILE="$CAPTURE_PAUSED_FILE"
+    clear_capture_paused
     python3 -u src/main.py \
       --protocol wfd \
       --wfd-peer "$peer" \
@@ -2073,14 +2136,31 @@ cmd_restart_capture() {
 }
 
 cmd_ensure_capture() {
-  local attempts="${1:-2}" info restarted=false healthy=false pid=""
+  local attempts="${1:-2}" force="${2:-}" info restarted=false healthy=false pid=""
   [[ "$attempts" =~ ^[0-9]+$ ]] || attempts=2
   (( attempts >= 1 )) || attempts=2
-  info="$(ensure_extend_capture_healthy "$attempts")"
+  [[ "$force" == "force" || "$attempts" == "force" ]] && force="force"
+  [[ "$attempts" == "force" ]] && attempts=2
+  info="$(ensure_extend_capture_healthy "$attempts" "$force")"
   [[ "$info" == *"restarted=true"* ]] && restarted=true
   [[ "$info" == *"healthy=true"* ]] && healthy=true
   pid="$(echo "$info" | sed -n 's/.*pid=\([0-9]*\).*/\1/p')"
   emit "{\"ok\":$healthy,\"captureRestarted\":$restarted,\"captureHealthy\":$healthy,\"fluxPid\":\"$pid\",\"detail\":\"$info\"}"
+  [[ "$healthy" == "true" ]]
+}
+
+cmd_capture_health() {
+  local alive drifted paused healthy=false
+  alive="$(capture_senders_alive 2>/dev/null || echo false)"
+  drifted="$(capture_geometry_drifted 2>/dev/null || echo false)"
+  paused="$(capture_is_paused 2>/dev/null || echo false)"
+  if [[ "$paused" == "true" ]]; then
+    # Intentional pause (lock / mid-move) is not a fault.
+    healthy=true
+  elif [[ "$alive" == "true" && "$drifted" != "true" ]]; then
+    healthy=true
+  fi
+  emit "{\"ok\":true,\"alive\":$alive,\"drifted\":$drifted,\"paused\":$paused,\"healthy\":$healthy}"
   [[ "$healthy" == "true" ]]
 }
 
@@ -2143,6 +2223,7 @@ main() {
     set-extend-position|set_extend_position) cmd_set_extend_position "$@" ;;
     restart-capture|restart_capture) cmd_restart_capture "$@" ;;
     ensure-capture|ensure_capture) cmd_ensure_capture "$@" ;;
+    capture-health|capture_health) cmd_capture_health "$@" ;;
     pause-capture|pause_capture) cmd_pause_capture "$@" ;;
     remember-extend-scale|remember_extend_scale|remember-peer-display|remember_peer_display) cmd_remember_extend_scale "$@" ;;
     -h|--help|help|"") usage; exit 0 ;;
