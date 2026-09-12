@@ -2003,6 +2003,9 @@ if m:
       auto|vaapi|qsv) export FLUXCAST_WFD_CAPTURE_ENCODE="${FLUXCAST_WFD_CAPTURE_ENCODE:-auto}" ;;
       *) export FLUXCAST_WFD_CAPTURE_ENCODE="${FLUXCAST_WFD_CAPTURE_ENCODE:-pipe}" ;;
     esac
+    # Scaled outputs use DMA-BUF by default (proven at integer scale 2 with
+    # tv-range CQP). Deny with FLUXCAST_WFD_DMABUF_ALLOW_SCALED=0 if needed.
+    export FLUXCAST_WFD_DMABUF_ALLOW_SCALED="${FLUXCAST_WFD_DMABUF_ALLOW_SCALED:-}"
     # Do not force damage-aware capture (omit -D). On virtual Extend outputs,
     # damage tracking can wake the CPU more than continuous -D and raised
     # battery draw. Opt in with FLUXCAST_WFD_WF_RECORDER_DAMAGE=1 if desired.

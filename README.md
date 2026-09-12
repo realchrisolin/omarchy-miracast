@@ -85,9 +85,11 @@ Override in `~/.config/omarchy-miracast/settings.json` (merged with
 | `outputRes` | `1280x720` | Encoded size (fallback) |
 | `extendResolution` | `1280x720` | Extend virtual output size (fallback) |
 | `extendRefresh` | `30` | Preferred virtual output Hz (keep aligned with stream) |
-| `bitrate` | `4M` | Trimmed further on battery / power-saver |
+| `bitrate` | `8M` | Pipe-path / fallback bitrate; DMA path uses CQP (not this ceiling) |
 | `videoEncoder` | `auto` | `auto` → VAAPI, else QSV, else `libx264` |
-| *(env)* `FLUXCAST_WFD_CAPTURE_ENCODE` | `auto` (Omarchy) / `pipe` (upstream) | `auto`/`vaapi` = wf-recorder DMA-BUF encode; `pipe` = raw→ffmpeg hwupload |
+| *(env)* `FLUXCAST_WFD_CAPTURE_ENCODE` | `auto` (Omarchy) / `pipe` (upstream) | `auto`/`vaapi` = wf-recorder DMA-BUF encode (incl. scaled outputs); `pipe` = raw→ffmpeg hwupload |
+| *(env)* `FLUXCAST_WFD_DMABUF_ALLOW_SCALED` | allow (default) | `0`/`false` = force pipe when Hyprland scale ≠ 1 |
+| *(env)* `FLUXCAST_WFD_VAAPI_QP` | `18` | DMA CQP quantizer (lower = sharper / more bitrate) |
 | `sinkScales` | `{}` | Per-sink Extend scale, keyed by MAC |
 | `onlyExpandFocusedDisplay` | `false` | Display panel: `false` expands all outputs; `true` = accordion (focused only) |
 

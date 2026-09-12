@@ -7,11 +7,11 @@ variables set by `miracast-ctl`; damage-aware capture remains opt-in.
 
 | File | Purpose |
 |------|---------|
-| `src/wfd/hw_encode.py` | Optional VAAPI/QSV encode; battery / power-saver bias when GPU is opted in |
+| `src/wfd/hw_encode.py` | Optional VAAPI/QSV encode; capture-encode mode (DMA-BUF vs pipe); battery bias |
 | `src/wfd/mode_state.py` | Persist sink-advertised stream modes for the UI (`FLUXCAST_WFD_MODE_STATE`) |
 | `src/wfd/config.py` | `peer_address` for mode-state JSON |
 | `src/wfd/session.py` | SIGUSR1 capture rebind loop; peer MAC on media config |
-| `src/wfd/media/wlroots.py` | Wire HW encode plan; damage-aware `wf-recorder` when `FLUXCAST_WFD_WF_RECORDER_DAMAGE=1` |
+| `src/wfd/media/wlroots.py` | DMA-BUF `h264_vaapi`+CQP path; NV12 pipe fallback; damage-aware opt-in |
 | `src/wfd/media/pipeline.py` | Desktop `restart_video()` + `restarting` flag |
 | `src/wfd/rtsp/handler.py` | Mode state after negotiation; bare-Session M16; probe grace |
 | `src/wfd/rtsp/rtsp_server.py` | `restart_active_media()` for SIGUSR1 rebind |
@@ -58,7 +58,23 @@ export FLUXCAST_ROOT="${FLUXCAST_ROOT:-$HOME/code/other/fluxcast}"
 `miracast-ctl` exports (when casting):
 
 - `FLUXCAST_WFD_ENCODER` from settings `videoEncoder` (default `auto` → VAAPI/QSV when available)
+- `FLUXCAST_WFD_CAPTURE_ENCODE=auto` when the encoder is `auto`/`vaapi`/`qsv` (DMA-BUF preferred)
 - `FLUXCAST_WFD_MODE_STATE` for stream-mode pills in the Display panel
+
+### Capture encode path (DMA-BUF + CQP)
+
+When `FLUXCAST_WFD_CAPTURE_ENCODE` is `auto`/`vaapi`, FluxCast prefers:
+
+`wf-recorder -c h264_vaapi` (DMA-BUF) → `scale_vaapi=format=nv12:out_range=tv`
+→ CQP (`qp=18` by default, override with `FLUXCAST_WFD_VAAPI_QP`) → ffmpeg `-c:v copy`
+
+Scaled Hyprland outputs are included (logical region in logs is normal; the
+DMA buffer is still physical mode size). Deny scaled DMA with
+`FLUXCAST_WFD_DMABUF_ALLOW_SCALED=0`. Force the old pipe with
+`FLUXCAST_WFD_CAPTURE_ENCODE=pipe`.
+
+Do **not** pass `wf-recorder -r` on the DMA path (it appends `fps=` after
+`scale_vaapi` and glitches). Keep `bf=0` + constrained baseline.
 
 Optional (not set by default — continuous `wf-recorder -D` is preferred on
 virtual Extend outputs for fewer wakeups / lower battery draw):
@@ -66,6 +82,6 @@ virtual Extend outputs for fewer wakeups / lower battery draw):
 - `FLUXCAST_WFD_WF_RECORDER_DAMAGE=1` (omit `wf-recorder -D` for damage-aware capture)
 
 Without these patches the panel still works against stock FluxCast, but you
-lose GPU encode opt-in wiring, optional damage-aware capture, live **STREAM MODE**
-capability discovery, and safe eDP scale capture rebind (`ensure-capture` /
-SIGUSR1).
+lose GPU encode opt-in wiring, DMA-BUF/CQP desktop quality, optional
+damage-aware capture, live **STREAM MODE** capability discovery, and safe
+eDP scale capture rebind (`ensure-capture` / SIGUSR1).
