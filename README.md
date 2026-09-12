@@ -54,17 +54,21 @@ omarchy restart shell
 omarchy pkg add dnsmasq wf-recorder xorg-xrandr ffmpeg
 ```
 
-Plus a [FluxCast](https://github.com/IlyaP358/fluxcast) source tree:
+Plus a [FluxCast](https://github.com/IlyaP358/fluxcast) source tree (or a fork
+such as `realchrisolin/fluxcast` with the WFD encode / SIGUSR1 work):
 
 ```bash
+# Preferred: point Miracast at your git checkout (settings.json fluxcastRoot)
+# or:
 export FLUXCAST_ROOT=/path/to/fluxcast
 ```
 
-Apply the included performance / stream-mode patches (recommended):
+If you previously used an AppImage extract under
+`vendor/squashfs-root/usr/src/fluxcast`, replace that directory with a
+**symlink** to the git checkout so scripts and settings cannot drift.
 
-```bash
-# See patches/fluxcast/APPLY.md
-```
+Apply the included performance / stream-mode / capture-rebind patches only if
+you are not already running that checkout (see `patches/fluxcast/APPLY.md`).
 
 ## Settings
 

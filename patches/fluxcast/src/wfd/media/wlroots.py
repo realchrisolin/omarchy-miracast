@@ -1,3 +1,4 @@
+import os
 import shutil
 import subprocess
 import time
@@ -54,15 +55,23 @@ class WlrootsMixin:
             bitrate=effective_bitrate,
             bufsize=_vbv_bufsize(effective_bitrate, self.config),
             vf_scale=vf_scale,
+            output_height=parsed_out[1],
         )
 
-        # Omit -D/--no-damage so wf-recorder only wakes the compositor when the
-        # Extend output actually updates. Continuous capture (-D) was costing
-        # measurable Hyprland CPU even on a mostly-static desktop. ffmpeg still
-        # enforces CFR with -r below.
+        # Keep historical wf-recorder -D (continuous / no-damage) by default so
+        # existing FluxCast sessions do not change cadence. Opt into damage-
+        # aware capture with FLUXCAST_WFD_WF_RECORDER_DAMAGE=1 (omit -D; ffmpeg
+        # still enforces CFR with -r below).
+        damage_aware = os.environ.get("FLUXCAST_WFD_WF_RECORDER_DAMAGE", "").strip().lower() in (
+            "1", "true", "yes", "on",
+        )
         wf_cmd = [
             wf_recorder,
             "-y",
+        ]
+        if not damage_aware:
+            wf_cmd.append("-D")
+        wf_cmd += [
             "-r", str(self.config.fps),
             "-o", monitor.name,
             "-c", "rawvideo",

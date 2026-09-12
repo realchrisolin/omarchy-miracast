@@ -381,6 +381,46 @@ print(f"paused={len(targets)}")
 PY
 }
 
+# True when wf-recorder/ffmpeg sender processes for this cast are alive.
+capture_senders_alive() {
+  local tracked=""
+  [[ -f "$HEADLESS_FILE" ]] && tracked="$(cat "$HEADLESS_FILE" 2>/dev/null || true)"
+  python3 - "$tracked" <<'PY'
+import os, sys
+tracked = sys.argv[1]
+alive = 0
+for pid in os.listdir("/proc"):
+    if not pid.isdigit():
+        continue
+    try:
+        cmd = open(f"/proc/{pid}/cmdline", "rb").read().replace(b"\0", b" ").decode(errors="ignore")
+    except OSError:
+        continue
+    if "src/main.py" in cmd:
+        continue
+    base = os.path.basename(cmd.split(" ", 1)[0]) if cmd else ""
+    wf_match = "wf-recorder" in cmd and (
+        "HEADLESS" in cmd or (tracked and tracked in cmd)
+    )
+    ffmpeg_match = (
+        (base in ("ffmpeg", "ffmpeg-") and "rtp_mpegts" in cmd)
+        or (base == "ffmpeg" and "h264_vaapi" in cmd)
+        or (base == "ffmpeg" and "libx264" in cmd and "pipe:0" in cmd)
+    )
+    if wf_match or ffmpeg_match:
+        alive += 1
+        continue
+    if base == "ffmpeg":
+        try:
+            cwd = os.readlink(f"/proc/{pid}/cwd")
+        except OSError:
+            cwd = ""
+        if "fluxcast" in cwd:
+            alive += 1
+print("true" if alive >= 1 else "false")
+PY
+}
+
 # SIGUSR1 FluxCast to rebuild wf-recorder/ffmpeg without dropping RTSP/P2P.
 # Prints: restarted=(true|false) healthy=(true|false) pid=...
 # Pass "quick" as $1 to signal without waiting for TX health (used by scale).
@@ -414,10 +454,17 @@ try:
 except OSError:
     start_size = 0
 before = iface_tx()
-deadline = time.time() + 5.0
+deadline = time.time() + 6.0
 saw_restart = False
+restart_at = None
 pat_restart = re.compile(r"Desktop capture pipeline restarted|Capture restart finished")
-pat_fail = re.compile(r"Capture restart failed")
+# Only count post-restart failures — pre-restart "not healthy" spam must not
+# abort the wait before SIGUSR1 rebuild lands.
+pat_hard_fail = re.compile(r"Capture restart failed")
+pat_post_fail = re.compile(
+    r"Failed to copy frame too many times|"
+    r"RTP sender is not healthy \(pid=.*exited"
+)
 while time.time() < deadline:
     try:
         with open(log, "r", errors="ignore") as fh:
@@ -425,27 +472,103 @@ while time.time() < deadline:
             chunk = fh.read()
     except OSError:
         chunk = ""
-    if pat_fail.search(chunk):
+    if pat_hard_fail.search(chunk):
         print("false")
         raise SystemExit
-    if pat_restart.search(chunk):
+    if not saw_restart:
+        m = pat_restart.search(chunk)
+        if not m:
+            time.sleep(0.25)
+            continue
         saw_restart = True
-        time.sleep(1.0)
-        after = iface_tx()
-        if before is None or after is None or after > before + 32 * 1024:
-            print("true")
-            raise SystemExit
-        time.sleep(1.2)
-        after2 = iface_tx()
-        print("true" if (after2 is not None and before is not None and after2 > before + 32 * 1024) else "false")
+        restart_at = m.end()
+    post = chunk[restart_at:] if restart_at is not None else chunk
+    if pat_post_fail.search(post):
+        print("false")
         raise SystemExit
-    time.sleep(0.25)
+    time.sleep(1.0)
+    after = iface_tx()
+    if before is None or after is None or after > before + 32 * 1024:
+        time.sleep(1.0)
+        try:
+            with open(log, "r", errors="ignore") as fh:
+                fh.seek(start_size)
+                chunk2 = fh.read()
+        except OSError:
+            chunk2 = ""
+        post2 = chunk2[restart_at:] if restart_at is not None else chunk2
+        print("false" if pat_post_fail.search(post2) else "true")
+        raise SystemExit
+    time.sleep(1.2)
+    after2 = iface_tx()
+    ok = after2 is not None and before is not None and after2 > before + 32 * 1024
+    if ok:
+        time.sleep(1.0)
+        try:
+            with open(log, "r", errors="ignore") as fh:
+                fh.seek(start_size)
+                chunk2 = fh.read()
+        except OSError:
+            chunk2 = ""
+        post2 = chunk2[restart_at:] if restart_at is not None else chunk2
+        if pat_post_fail.search(post2):
+            print("false")
+            raise SystemExit
+    print("true" if ok else "false")
+    raise SystemExit
 print("true" if saw_restart else "false")
 PY
 )"
     [[ "$capture_healthy" == "true" ]] || capture_healthy=false
+    # Process liveness is authoritative even if TX counters are noisy.
+    if [[ "$capture_healthy" == "true" ]]; then
+      local alive
+      alive="$(capture_senders_alive 2>/dev/null || echo false)"
+      [[ "$alive" == "true" ]] || capture_healthy=false
+    fi
   fi
   echo "restarted=${capture_restarted} healthy=${capture_healthy} pid=${flux_pid}"
+}
+
+# After scale/layout settle: verify capture is alive/healthy; rebuild if not.
+# Prints: healthy=(true|false) attempts=N restarted=(true|false) pid=...
+ensure_extend_capture_healthy() {
+  local attempts="${1:-2}"
+  local i info restarted=false healthy=false flux_pid="" alive
+  flux_pid="$(fluxcast_pid || true)"
+  [[ -n "$flux_pid" ]] || {
+    echo "healthy=false attempts=0 restarted=false pid="
+    return 1
+  }
+  for ((i = 1; i <= attempts; i++)); do
+    alive="$(capture_senders_alive 2>/dev/null || echo false)"
+    if [[ "$alive" == "true" ]]; then
+      # Confirm it stays up through a short settle (post-scale frame-copy death).
+      sleep 1.0
+      alive="$(capture_senders_alive 2>/dev/null || echo false)"
+      if [[ "$alive" == "true" ]]; then
+        echo "healthy=true attempts=${i} restarted=${restarted} pid=${flux_pid}"
+        return 0
+      fi
+    fi
+    pause_extend_capture >/dev/null || true
+    sleep 0.3
+    info="$(restart_extend_capture)"
+    restarted=true
+    flux_pid="$(echo "$info" | sed -n 's/.*pid=\([0-9]*\).*/\1/p')"
+    [[ "$info" == *"healthy=true"* ]] && healthy=true || healthy=false
+    if [[ "$healthy" == "true" ]]; then
+      sleep 1.0
+      alive="$(capture_senders_alive 2>/dev/null || echo false)"
+      if [[ "$alive" == "true" ]]; then
+        echo "healthy=true attempts=${i} restarted=true pid=${flux_pid}"
+        return 0
+      fi
+      healthy=false
+    fi
+  done
+  echo "healthy=false attempts=${attempts} restarted=${restarted} pid=${flux_pid}"
+  return 1
 }
 
 apply_extend_position() {
@@ -494,17 +617,17 @@ apply_extend_position() {
   pause_extend_capture >/dev/null || true
   sleep 0.2
   if ! hypr_set_monitor_geometry "$headless" "$mode" "$pos" "$scale"; then
-    restart_extend_capture >/dev/null || true
+    ensure_extend_capture_healthy 2 >/dev/null || true
     emit "{\"ok\":false,\"error\":\"hyprctl eval failed\",\"position\":\"$position\",\"monitor\":\"$headless\"}"
     return 1
   fi
   sleep 0.45
 
-  local restart_info capture_restarted=false capture_healthy=false flux_pid=""
-  restart_info="$(restart_extend_capture)"
-  [[ "$restart_info" == *"restarted=true"* ]] && capture_restarted=true
-  [[ "$restart_info" == *"healthy=true"* ]] && capture_healthy=true
-  flux_pid="$(echo "$restart_info" | sed -n 's/.*pid=\([0-9]*\).*/\1/p')"
+  local ensure_info capture_restarted=false capture_healthy=false flux_pid=""
+  ensure_info="$(ensure_extend_capture_healthy 2)"
+  [[ "$ensure_info" == *"restarted=true"* ]] && capture_restarted=true
+  [[ "$ensure_info" == *"healthy=true"* ]] && capture_healthy=true
+  flux_pid="$(echo "$ensure_info" | sed -n 's/.*pid=\([0-9]*\).*/\1/p')"
 
   emit "{\"ok\":true,\"position\":\"$position\",\"applied\":true,\"captureRestarted\":$capture_restarted,\"captureHealthy\":$capture_healthy,\"monitor\":\"$headless\",\"mode\":\"$mode\",\"pos\":\"$pos\",\"fluxPid\":\"$flux_pid\"}"
 }
@@ -1391,6 +1514,8 @@ if m:
     export PYTHONUNBUFFERED=1
     export PATH="/usr/bin:/bin:$PATH"
     export FLUXCAST_WFD_ENCODER="$video_encoder"
+    # Prefer damage-aware wf-recorder (omit -D) for quieter Hyprland capture.
+    export FLUXCAST_WFD_WF_RECORDER_DAMAGE=1
     export FLUXCAST_WFD_MODE_STATE="$MODE_STATE_FILE"
     python3 -u src/main.py \
       --protocol wfd \
@@ -1507,6 +1632,7 @@ Commands:
   get-extend-position
   set-extend-position right|left|above|below
   restart-capture [quick]
+  ensure-capture [attempts]   # verify/rebuild capture after scale settle
   pause-capture
 EOF
 }
@@ -1528,6 +1654,18 @@ cmd_restart_capture() {
   [[ "$info" == *"healthy=true"* ]] && healthy=true
   pid="$(echo "$info" | sed -n 's/.*pid=\([0-9]*\).*/\1/p')"
   emit "{\"ok\":true,\"captureRestarted\":$restarted,\"captureHealthy\":$healthy,\"fluxPid\":\"$pid\"}"
+}
+
+cmd_ensure_capture() {
+  local attempts="${1:-2}" info restarted=false healthy=false pid=""
+  [[ "$attempts" =~ ^[0-9]+$ ]] || attempts=2
+  (( attempts >= 1 )) || attempts=2
+  info="$(ensure_extend_capture_healthy "$attempts")"
+  [[ "$info" == *"restarted=true"* ]] && restarted=true
+  [[ "$info" == *"healthy=true"* ]] && healthy=true
+  pid="$(echo "$info" | sed -n 's/.*pid=\([0-9]*\).*/\1/p')"
+  emit "{\"ok\":$healthy,\"captureRestarted\":$restarted,\"captureHealthy\":$healthy,\"fluxPid\":\"$pid\",\"detail\":\"$info\"}"
+  [[ "$healthy" == "true" ]]
 }
 
 cmd_pause_capture() {
@@ -1555,6 +1693,7 @@ main() {
     get-extend-position|get_extend_position) cmd_get_extend_position "$@" ;;
     set-extend-position|set_extend_position) cmd_set_extend_position "$@" ;;
     restart-capture|restart_capture) cmd_restart_capture "$@" ;;
+    ensure-capture|ensure_capture) cmd_ensure_capture "$@" ;;
     pause-capture|pause_capture) cmd_pause_capture "$@" ;;
     -h|--help|help|"") usage; exit 0 ;;
     *) echo "{\"ok\":false,\"error\":\"unknown command\"}" >&2; exit 1 ;;

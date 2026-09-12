@@ -149,7 +149,7 @@ print(m["name"] if m else "")
 # 2) detach wf-recorder/ffmpeg while RTSP stays up
 # 3) apply layout
 # 4) wait for compositor settle
-# 5) SIGUSR1 rebuild and wait for health (not "quick")
+# 5) rebuild capture and verify health (retry if pipeline dies)
 rebind_miracast_geometry() {
   local mode="$1" pos="$2" scale="$3"
   [[ -n "$tracked" ]] || return 0
@@ -161,7 +161,11 @@ rebind_miracast_geometry() {
   apply_monitor_with_remap "$tracked" "$mode" "$pos" "$scale"
   sleep 0.45
   if [[ -x "$CTL" ]]; then
-    "$CTL" restart-capture >/dev/null || true
+    "$CTL" ensure-capture 2 >/dev/null || true
+    # Second pass after layer remap / damage settles — catches near-term
+    # "Failed to copy frame" deaths that pass the first health window.
+    sleep 1.5
+    "$CTL" ensure-capture 2 >/dev/null || true
   fi
 }
 
@@ -199,7 +203,10 @@ if not primary or not virtual:
 pw, ph = int(primary["width"]), int(primary["height"])
 ps = float(primary.get("scale") or 1) or 1.0
 hw, hh = ew, eh
-vs = float(virtual.get("scale") or 1) or 1.0
+# Extend capture is physical pixels (extendResolution). Never inherit the
+# laptop's scale onto the cast output — that shrinks the logical region and
+# destabilizes wf-recorder across primary scale changes.
+vs = 1.0
 plw, plh = int(round(pw / ps)), int(round(ph / ps))
 hlw, hlh = int(round(hw / vs)), int(round(hh / vs))
 if pos == "left":
@@ -301,9 +308,23 @@ fi
 # Keep current position so an active Miracast output isn't shuffled by "auto".
 # Nudge+restore so Omarchy background/bar layer surfaces remount at the new
 # logical size (scale-only leaves X/Y unchanged and skips ScreenMoveRemap).
+#
+# When Miracast Extend is live, detach capture BEFORE remapping the primary:
+# eDP nudge/scale under an active wf-recorder on the adjacent output causes
+# "Failed to copy frame" and leaves FluxCast wedged with a hollow RTSP session.
+if [[ -n "$tracked" && -x "$CTL" ]]; then
+  focus_primary_monitor
+  "$CTL" pause-capture >/dev/null || true
+  sleep 0.2
+fi
 apply_monitor_with_remap "$name" "${width}x${height}@${refresh}" "${x}x${y}" "$new_scale"
 persist_monitors_lua "$new_scale" "$new_gdk_scale"
-# Primary logical size may have changed — keep Miracast glued to the edge.
+# Primary logical size may have changed — keep Miracast glued to the edge
+# (rebind pauses again, applies cast geometry, ensure-capture with retries).
 reseat_miracast
+if [[ -n "$tracked" && -x "$CTL" ]]; then
+  sleep 1.0
+  "$CTL" ensure-capture 3 >/dev/null || true
+fi
 
 printf '%s\n' "$new_scale"
