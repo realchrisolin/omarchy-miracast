@@ -208,6 +208,90 @@ print(m["name"] if m else "")
   hyprctl dispatch focusmonitor "$primary" >/dev/null 2>&1 || true
 }
 
+# Compute Extend mode|pos|scale from current primary + virtual scales and
+# settings extendPosition. Optional override_scale replaces virtual's current scale.
+compute_extend_parts() {
+  local extend_pos override_scale
+  extend_pos="$(read_extend_pos)"
+  override_scale="${1:-}"
+  python3 - "$extend_pos" "$tracked" "$SETTINGS_FILE" "$override_scale" <<'PY'
+import json, re, subprocess, sys
+pos, tracked, settings_path, override = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+ms = json.loads(subprocess.check_output(["hyprctl", "-j", "monitors"], text=True))
+try:
+    settings = json.load(open(settings_path))
+except Exception:
+    settings = {}
+res = str(settings.get("extendResolution") or "1280x720")
+if not re.fullmatch(r"\d+x\d+", res):
+    res = "1280x720"
+ew, eh = [int(x) for x in res.split("x", 1)]
+
+def is_virtual(n):
+    n = str(n or "")
+    return n.startswith("HEADLESS") or n == tracked
+
+primary = next((m for m in ms if m.get("focused") and not is_virtual(m.get("name", ""))), None)
+if primary is None:
+    primary = next((m for m in ms if not is_virtual(m.get("name", ""))), ms[0] if ms else None)
+virtual = next((m for m in ms if str(m.get("name", "")) == tracked), None)
+if not primary or not virtual:
+    print("")
+    raise SystemExit
+pw, ph = int(primary["width"]), int(primary["height"])
+ps = float(primary.get("scale") or 1) or 1.0
+hw, hh = ew, eh
+if override.strip():
+    vs = float(override) or 1.0
+else:
+    vs = float(virtual.get("scale") or 1) or 1.0
+plw, plh = int(round(pw / ps)), int(round(ph / ps))
+hlw, hlh = int(round(hw / vs)), int(round(hh / vs))
+if pos == "left":
+    x, y = -hlw, max(0, (plh - hlh) // 2)
+elif pos == "above":
+    x, y = max(0, (plw - hlw) // 2), -hlh
+elif pos == "below":
+    x, y = max(0, (plw - hlw) // 2), plh
+else:
+    x, y = plw, max(0, (plh - hlh) // 2)
+try:
+    refresh = int(float(settings.get("extendRefresh") or settings.get("fps") or 30))
+except Exception:
+    refresh = 30
+if refresh < 60:
+    refresh = 30
+else:
+    refresh = 60
+print(f"{hw}x{hh}@{refresh}|{x}x{y}|{vs:g}")
+PY
+}
+
+# Geometry only — must stay fast and synchronous. After eDP scale changes,
+# Hyprland can auto-shove the headless to the wrong side; this glues it back
+# to extendPosition before capture ensure (and before this script can be killed).
+apply_miracast_layout() {
+  local override_scale="${1:-}" parts mode rest pos scale
+  [[ -n "$tracked" ]] || return 0
+  hyprctl -j monitors | jq -e --arg n "$tracked" 'any(.[]; .name == $n)' >/dev/null 2>&1 || {
+    scale_log "apply_miracast_layout: tracked output missing"
+    return 0
+  }
+  parts="$(compute_extend_parts "$override_scale")"
+  [[ -n "$parts" && "$parts" == *"|"* ]] || {
+    scale_log "apply_miracast_layout: empty geometry parts"
+    return 0
+  }
+  mode="${parts%%|*}"
+  rest="${parts#*|}"
+  pos="${rest%%|*}"
+  scale="${rest#*|}"
+  [[ "$scale" == "$rest" || -z "$scale" ]] && scale="1"
+  scale_log "apply_miracast_layout mode=$mode pos=$pos scale=$scale"
+  focus_primary_monitor || true
+  hypr_set_geometry "$tracked" "$mode" "$pos" "$scale" || true
+}
+
 # Safe geometry change on the live Miracast capture output:
 # 1) focus laptop (scaling a focused headless under screencopy freezes Hyprland)
 # 2) detach wf-recorder/ffmpeg while RTSP stays up
@@ -232,152 +316,62 @@ rebind_miracast_geometry() {
     "$CTL" pause-capture >>"$SCALE_LOG" 2>&1 || true
   fi
   sleep 0.2
-  apply_monitor_with_remap "$tracked" "$mode" "$pos" "$scale" || true
+  # Prefer the explicit mode/pos/scale from the caller (already computed).
+  scale_log "rebind apply mode=$mode pos=$pos scale=$scale"
+  hypr_set_geometry "$tracked" "$mode" "$pos" "$scale" || true
   sleep 0.45
   if [[ -x "$CTL" ]]; then
     scale_log "rebind ensure-capture"
     "$CTL" ensure-capture 3 >>"$SCALE_LOG" 2>&1 || true
-    # Second pass after layer remap / damage settles — catches near-term
-    # "Failed to copy frame" deaths that pass the first health window.
     sleep 1.5
     "$CTL" ensure-capture 3 >>"$SCALE_LOG" 2>&1 || true
   fi
 }
 
 reseat_miracast() {
-  local extend_pos parts mode rest pos scale
-  [[ -n "$tracked" ]] || return 0
-  hyprctl -j monitors | jq -e --arg n "$tracked" 'any(.[]; .name == $n)' >/dev/null 2>&1 || return 0
-
-  extend_pos="$(read_extend_pos)"
-
-  parts="$(python3 - "$extend_pos" "$tracked" "$SETTINGS_FILE" <<'PY'
-import json, re, subprocess, sys
-pos, tracked, settings_path = sys.argv[1], sys.argv[2], sys.argv[3]
-ms = json.loads(subprocess.check_output(["hyprctl", "-j", "monitors"], text=True))
-try:
-    settings = json.load(open(settings_path))
-except Exception:
-    settings = {}
-res = str(settings.get("extendResolution") or "1280x720")
-if not re.fullmatch(r"\d+x\d+", res):
-    res = "1280x720"
-ew, eh = [int(x) for x in res.split("x", 1)]
-
-def is_virtual(n):
-    n = str(n or "")
-    return n.startswith("HEADLESS") or n == tracked
-
-primary = next((m for m in ms if m.get("focused") and not is_virtual(m.get("name", ""))), None)
-if primary is None:
-    primary = next((m for m in ms if not is_virtual(m.get("name", ""))), ms[0] if ms else None)
-virtual = next((m for m in ms if str(m.get("name", "")) == tracked), None)
-if not primary or not virtual:
-    print("")
-    raise SystemExit
-pw, ph = int(primary["width"]), int(primary["height"])
-ps = float(primary.get("scale") or 1) or 1.0
-hw, hh = ew, eh
-# Extend capture is physical pixels (extendResolution). Never inherit the
-# laptop's scale onto the cast output — that shrinks the logical region and
-# destabilizes wf-recorder across primary scale changes.
-vs = 1.0
-plw, plh = int(round(pw / ps)), int(round(ph / ps))
-hlw, hlh = int(round(hw / vs)), int(round(hh / vs))
-if pos == "left":
-    x, y = -hlw, max(0, (plh - hlh) // 2)
-elif pos == "above":
-    x, y = max(0, (plw - hlw) // 2), -hlh
-elif pos == "below":
-    x, y = max(0, (plw - hlw) // 2), plh
-else:
-    x, y = plw, max(0, (plh - hlh) // 2)
-# Prefer 30Hz Extend refresh (matches typical CEA 720p30); avoid 60Hz headless.
-try:
-    refresh = int(float(settings.get("extendRefresh") or settings.get("fps") or 30))
-except Exception:
-    refresh = 30
-if refresh < 60:
-    refresh = 30
-else:
-    refresh = 60
-print(f"{hw}x{hh}@{refresh}|{x}x{y}|{vs:g}")
-PY
-)"
-  [[ -n "$parts" && "$parts" == *"|"* ]] || return 0
-  mode="${parts%%|*}"
-  rest="${parts#*|}"
-  pos="${rest%%|*}"
-  scale="${rest#*|}"
-  [[ "$scale" == "$rest" || -z "$scale" ]] && scale="1"
-  rebind_miracast_geometry "$mode" "$pos" "$scale"
+  # Geometry-only reseat used after primary scale changes.
+  apply_miracast_layout
 }
 
 if [[ -n "$tracked" && "$name" == "$tracked" ]]; then
-  # ---- Miracast virtual output: custom adjacency + capture rebind ----
-  extend_pos="$(read_extend_pos)"
-
-  parts="$(python3 - "$extend_pos" "$name" "$new_scale" "$SETTINGS_FILE" <<'PY'
-import json, re, subprocess, sys
-pos, tracked, new_scale, settings_path = sys.argv[1], sys.argv[2], float(sys.argv[3]), sys.argv[4]
-ms = json.loads(subprocess.check_output(["hyprctl", "-j", "monitors"], text=True))
+  # ---- Miracast virtual output: apply requested scale + reseat ----
+  current_vs="$(hyprctl -j monitors 2>/dev/null | python3 -c '
+import json,sys
+name=sys.argv[1]
 try:
-    settings = json.load(open(settings_path))
+  ms=json.load(sys.stdin)
 except Exception:
-    settings = {}
-res = str(settings.get("extendResolution") or "1280x720")
-if not re.fullmatch(r"\d+x\d+", res):
-    res = "1280x720"
-ew, eh = [int(x) for x in res.split("x", 1)]
+  raise SystemExit
+for m in ms:
+  if str(m.get("name", "")) == name:
+    print(m.get("scale") or "")
+    break
+' "$name" 2>/dev/null || true)"
+  # Skip pause/rebind when the pill already matches — avoids dropping the sink.
+  if [[ -n "$current_vs" ]] && awk -v cur="$current_vs" -v req="$new_scale" '
+    BEGIN { cur+=0; req+=0; d=cur-req; if (d<0) d=-d; exit !(d < 0.05) }
+  '; then
+    scale_log "virtual scale unchanged ($current_vs); no-op (requested=$new_scale)"
+    printf '%s\n' "$new_scale"
+    exit 0
+  fi
 
-def is_virtual(n):
-    n = str(n or "")
-    return n.startswith("HEADLESS") or n == tracked
-
-primary = next((m for m in ms if m.get("focused") and not is_virtual(m.get("name", ""))), None)
-if primary is None:
-    primary = next((m for m in ms if not is_virtual(m.get("name", ""))), ms[0] if ms else None)
-virtual = next((m for m in ms if str(m.get("name", "")) == tracked), None)
-if not primary or not virtual:
-    print("")
-    raise SystemExit
-pw, ph = int(primary["width"]), int(primary["height"])
-ps = float(primary.get("scale") or 1) or 1.0
-hw, hh = ew, eh
-vs = float(new_scale) or 1.0
-plw, plh = int(round(pw / ps)), int(round(ph / ps))
-hlw, hlh = int(round(hw / vs)), int(round(hh / vs))
-if pos == "left":
-    x, y = -hlw, max(0, (plh - hlh) // 2)
-elif pos == "above":
-    x, y = max(0, (plw - hlw) // 2), -hlh
-elif pos == "below":
-    x, y = max(0, (plw - hlw) // 2), plh
-else:
-    x, y = plw, max(0, (plh - hlh) // 2)
-try:
-    refresh = int(float(settings.get("extendRefresh") or settings.get("fps") or 30))
-except Exception:
-    refresh = 30
-if refresh < 60:
-    refresh = 30
-else:
-    refresh = 60
-print(f"{hw}x{hh}@{refresh}|{x}x{y}|{vs:g}")
-PY
-)"
-
+  parts="$(compute_extend_parts "$new_scale")"
   if [[ -n "$parts" && "$parts" == *"|"* ]]; then
     mode="${parts%%|*}"
     rest="${parts#*|}"
     pos="${rest%%|*}"
     scale="${rest#*|}"
     [[ "$scale" == "$rest" || -z "$scale" ]] && scale="$new_scale"
+    scale_log "virtual apply scale=$scale pos=$pos mode=$mode"
     rebind_miracast_geometry "$mode" "$pos" "$scale" || true
-    scale_log "done virtual name=$name scale=$new_scale"
-    printf '%s\n' "$new_scale"
+    scale_log "done virtual name=$name scale=$scale"
+    printf '%s\n' "$scale"
     exit 0
   fi
+  scale_log "virtual apply failed: empty geometry parts"
+  printf '%s\n' "$new_scale"
+  exit 0
 fi
 
 # ---- Real display: live apply + persist to monitors.lua (Omarchy path) ----
@@ -410,17 +404,35 @@ if [[ "$needs_rebind" -eq 1 && -x "$CTL" ]]; then
 fi
 scale_log "apply primary geometry"
 apply_monitor_with_remap "$name" "${width}x${height}@${refresh}" "${x}x${y}" "$new_scale" || true
+# Persist BEFORE Miracast reseat. Editing monitors.lua reloads Hyprland's
+# monitor config (require hypr.monitors) and auto-places the headless to the
+# RIGHT of eDP — undoing any prior left/above/below glue.
 scale_log "persist monitors.lua"
 persist_monitors_lua "$new_scale" "$new_gdk_scale" || true
-# Primary logical size may have changed — keep Miracast glued to the edge.
-scale_log "reseat_miracast"
-reseat_miracast || true
+# Glue Miracast immediately — no sleep first. Quickshell's actionProc often
+# kills this script during sleeps after persist, which previously skipped
+# reseat entirely and left the headless on the auto-right edge.
+if [[ -n "$tracked" ]]; then
+  scale_log "reseat_miracast layout (after persist)"
+  apply_miracast_layout || true
+  # Detached confirms survive Process kill from the Display panel.
+  (
+    for _delay in 0.4 1.0 2.5; do
+      sleep "${OMARCHY_TEST_DEFER_SLEEP:-$_delay}"
+      scale_log "reseat_miracast layout (detached confirm t=$_delay)"
+      apply_miracast_layout || true
+    done
+  ) >>"$SCALE_LOG" 2>&1 &
+  disown || true
+fi
 if [[ "$needs_rebind" -eq 1 && -x "$CTL" ]]; then
   sleep "${OMARCHY_TEST_ENSURE_SLEEP:-0.5}"
   scale_log "eDP/primary ensure-capture after scale"
   "$CTL" ensure-capture 4 >>"$SCALE_LOG" 2>&1 || true
+  apply_miracast_layout || true
   sleep "${OMARCHY_TEST_ENSURE_SLEEP:-1.5}"
   "$CTL" ensure-capture 3 >>"$SCALE_LOG" 2>&1 || true
+  apply_miracast_layout || true
 fi
 scale_log "done name=$name scale=$new_scale cast_live=$cast_live tracked=${tracked:-none} needs_rebind=$needs_rebind"
 

@@ -128,6 +128,17 @@ Item {
     return "Right"
   }
 
+  // Keep the position pills honest: settings.json can say "left" while a
+  // monitors.lua reload has parked the headless on the right.
+  function syncExtendPositionFromDisplays(displays) {
+    if (mode !== "extend") return
+    if (positionProcess.running) return
+    var inferred = Model.inferExtendPosition(displays)
+    if (!inferred) return
+    if (inferred === extendPosition) return
+    extendPosition = inferred
+  }
+
   function setExtendPosition(nextPos) {
     var value = String(nextPos || "right")
     if (value !== "right" && value !== "left" && value !== "above" && value !== "below") value = "right"
@@ -337,7 +348,14 @@ Item {
           root.running = data.running === true
           root.statusText = Model.miracastPhaseHint(root.phase, data.message || "")
           if (data.mode) root.mode = String(data.mode)
-          if (data.extendPosition) root.extendPosition = String(data.extendPosition)
+          // Do NOT apply data.extendPosition from settings while Extend is live —
+          // monitors.lua reloads can park the headless on another edge while
+          // settings still say "left". Position pills follow live geometry via
+          // syncExtendPositionFromDisplays() instead.
+          if (data.extendPosition && root.mode === "extend" && !root.active)
+            root.extendPosition = String(data.extendPosition)
+          else if (data.extendPosition && root.mode !== "extend")
+            root.extendPosition = String(data.extendPosition)
           if (data.streamMode) root.streamMode = String(data.streamMode)
           if (data.streamModes && data.streamModes.length)
             root.streamModes = data.streamModes

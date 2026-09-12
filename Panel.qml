@@ -706,6 +706,23 @@ Panel {
     if (!root.syncExpandToFocusPending)
       ensureExpandedMonitor(false)
     clampCursor()
+    // Position pills follow live geometry, not a stale settings.json value.
+    if (miracast)
+      miracast.syncExtendPositionFromDisplays(root.displays)
+  }
+
+  // Status polls rewrite settings-backed fields; re-sync position from layout
+  // whenever Miracast status refreshes while Extend is up.
+  Connections {
+    target: miracast
+    function onPhaseChanged() {
+      if (miracast && miracast.mode === "extend" && miracast.active)
+        miracast.syncExtendPositionFromDisplays(root.displays)
+    }
+    function onStreamingChanged() {
+      if (miracast && miracast.streaming)
+        miracast.syncExtendPositionFromDisplays(root.displays)
+    }
   }
   onFocusedMonitorChanged: {
     // While the panel is open, keep the accordion on the focused output
@@ -725,6 +742,17 @@ Panel {
     running: root.opened
     repeat: true
     onTriggered: root.refresh()
+  }
+
+  // Keep Extend position pills aligned with Hyprland after eDP scale / lua reload.
+  Timer {
+    interval: 1500
+    running: root.opened && !!(miracast && miracast.active && miracast.mode === "extend")
+    repeat: true
+    onTriggered: {
+      if (miracast)
+        miracast.syncExtendPositionFromDisplays(root.displays)
+    }
   }
 
   Process {

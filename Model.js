@@ -111,6 +111,52 @@ function parseDisplays(raw) {
   }
 }
 
+// Infer Extend side from live Hyprland geometry (logical boxes). Used so the
+// position pills track reality when eDP scale / monitors.lua reload shoves the
+// headless to a different edge than settings.json claims.
+function inferExtendPosition(displays) {
+  if (!Array.isArray(displays)) return ""
+  var primary = null
+  var virt = null
+  var i
+  for (i = 0; i < displays.length; i++) {
+    var d = displays[i]
+    if (!d || d.enabled === false) continue
+    if (d.miracast) {
+      if (!virt) virt = d
+      continue
+    }
+    if (d.focused) primary = d
+  }
+  if (!primary) {
+    for (i = 0; i < displays.length; i++) {
+      if (displays[i] && displays[i].enabled !== false && !displays[i].miracast) {
+        primary = displays[i]
+        break
+      }
+    }
+  }
+  if (!primary || !virt) return ""
+
+  var ps = Number(primary.scale) || 1
+  var vs = Number(virt.scale) || 1
+  if (!(ps > 0)) ps = 1
+  if (!(vs > 0)) vs = 1
+  var plw = Math.round(Number(primary.width) / ps)
+  var plh = Math.round(Number(primary.height) / ps)
+  var vlw = Math.round(Number(virt.width) / vs)
+  var vlh = Math.round(Number(virt.height) / vs)
+  var px = Number(primary.x) || 0
+  var py = Number(primary.y) || 0
+  var vx = Number(virt.x) || 0
+  var vy = Number(virt.y) || 0
+  var dx = (vx + vlw / 2) - (px + plw / 2)
+  var dy = (vy + vlh / 2) - (py + plh / 2)
+  if (Math.abs(dx) >= Math.abs(dy))
+    return dx < 0 ? "left" : "right"
+  return dy < 0 ? "above" : "below"
+}
+
 function miracastPhaseLabel(phase) {
   var value = String(phase || "idle")
   if (value === "idle") return "Idle"
@@ -199,6 +245,7 @@ if (typeof module !== "undefined") {
     availableScales: availableScales,
     brightnessName: brightnessName,
     parseDisplays: parseDisplays,
+    inferExtendPosition: inferExtendPosition,
     miracastPhaseLabel: miracastPhaseLabel,
     miracastPhaseHint: miracastPhaseHint,
     miracastIsActive: miracastIsActive,

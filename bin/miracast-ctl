@@ -93,6 +93,16 @@ print(name)
 PY
 }
 LOG_FILE="$LOG_DIR/cast.log"
+
+# Prefix each cast.log line with a local timestamp. Prefer moreutils `ts` when
+# present; otherwise awk. Used as:  python … 2>&1 | stamp_cast_log >>"$LOG_FILE"
+stamp_cast_log() {
+  if command -v ts >/dev/null 2>&1; then
+    ts '%Y-%m-%dT%H:%M:%S%z'
+  else
+    awk '{ print strftime("%Y-%m-%dT%H:%M:%S%z"), $0; fflush() }'
+  fi
+}
 LAT_FILE="$LOG_DIR/latency.jsonl"
 
 PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

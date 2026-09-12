@@ -1,7 +1,13 @@
 import QtQuick
 import qs.Commons
 
-// Display glyph + Miracast wifi mark centered in the monitor screen.
+// Display glyph + Miracast wifi overlay.
+//
+// NativeRendering + font hinting make painted ink non-linear with pixelSize, so
+// iconSize fractions only look right at one size (often ~2× / display). Use
+// QtRendering + PreferNoHinting so both glyphs scale linearly, then center
+// wifi on the parent with a single optical nudge (monitor chin) expressed as
+// a fraction of renderedSize — stable across bar/hero and global text size.
 Item {
   id: root
 
@@ -10,10 +16,22 @@ Item {
   property string phase: "idle"
   property bool multiDisplay: false
   property string fontFamily: Style.font.family
+  property bool debugBounds: false
 
   readonly property bool connecting: phase === "connecting" || phase === "dhcp" || phase === "rtsp" || phase === "scanning"
   readonly property bool streaming: phase === "streaming"
   readonly property bool showSignal: connecting || streaming
+
+  readonly property int renderedSize: Math.max(1, Math.round(iconSize))
+
+  // Optical center of 󰍹's screen glass relative to the glyph em-box center.
+  // Chin/stand sits below the glass; larger wifi arcs are bottom-heavy so lift
+  // a bit more. +0.025 unit right/up from the previous center.
+  readonly property real glassOffsetX: renderedSize * 0.025
+  readonly property real glassOffsetY: -(renderedSize * 0.115)
+
+  // Wifi fills most of the glass; keep a little margin for the bezel.
+  readonly property int wifiSize: Math.max(1, Math.round(renderedSize * 0.54))
 
   width: iconSize
   height: iconSize
@@ -23,33 +41,29 @@ Item {
   Text {
     id: displayGlyph
     anchors.centerIn: parent
-    // Always the single-display glyph. Miracast Extend adds a virtual
-    // output (peer-named or HEADLESS-*) that would otherwise flip this
-    // to the dual-monitor icon.
+    textFormat: Text.PlainText
     text: "󰍹"
     color: root.color
     font.family: root.fontFamily
-    font.pixelSize: root.iconSize
-    renderType: Text.NativeRendering
+    font.pixelSize: root.renderedSize
+    font.hintingPreference: Font.PreferNoHinting
+    // Distance-field path — scales linearly (unlike NativeRendering hinting).
+    renderType: Text.QtRendering
   }
 
-  // Nested in the monitor glyph's screen; keep smaller than the display mark
-  // and bias left so it reads inside the panel rather than on the bezel.
   Text {
     id: wifiMark
     visible: root.showSignal
+    anchors.centerIn: parent
+    anchors.horizontalCenterOffset: root.glassOffsetX
+    anchors.verticalCenterOffset: root.glassOffsetY
+    textFormat: Text.PlainText
     text: "󰖩"
     color: root.color
     font.family: root.fontFamily
-    // Bar icons are ~13px. Original ~8px was large; 4px was too small — land
-    // near 6px so it reads as a mark inside the display glyph.
-    font.pixelSize: Math.max(6, Math.round(root.iconSize * 0.42))
-    renderType: Text.NativeRendering
-    anchors.horizontalCenter: displayGlyph.horizontalCenter
-    anchors.verticalCenter: displayGlyph.verticalCenter
-    // ~0.7px right of center; ~1.5px up (2px up, then 0.5px back down).
-    anchors.horizontalCenterOffset: root.iconSize * 0.056
-    anchors.verticalCenterOffset: -(Math.max(1, Math.round(root.iconSize * 0.08)) + 1) + 0.5
+    font.pixelSize: root.wifiSize
+    font.hintingPreference: Font.PreferNoHinting
+    renderType: Text.QtRendering
     opacity: root.connecting ? pulse.opacity : 1.0
     z: 2
 
@@ -75,5 +89,23 @@ Item {
         easing.type: Easing.InOutQuad
       }
     }
+  }
+
+  Rectangle {
+    visible: root.debugBounds
+    anchors.fill: parent
+    color: "transparent"
+    border.width: 1
+    border.color: "#4488ff"
+  }
+
+  Rectangle {
+    visible: root.debugBounds
+    width: 4
+    height: 4
+    radius: 2
+    color: "#ff4488"
+    x: root.width / 2 + root.glassOffsetX - width / 2
+    y: root.height / 2 + root.glassOffsetY - height / 2
   }
 }
