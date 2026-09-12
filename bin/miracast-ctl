@@ -12,7 +12,6 @@ PEERS_FILE="$STATE_DIR/peers.json"
 HEADLESS_FILE="$STATE_DIR/headless.name"  # tracked Extend output name (may be peer-named)
 CURSOR_PREV_FILE="$STATE_DIR/cursor-no-hw.prev"
 MODE_STATE_FILE="$STATE_DIR/sink-modes.json"  # sink-advertised CEA/VESA modes from RTSP
-WORKSPACE_PIN_FILE="$STATE_DIR/workspace.pin"  # primary name while 1-10 are pinned to eDP
 # Per-device Extend scales live in settings.json → sinkScales: { "MAC": 2 }
 
 # Headless capture cannot include the hardware cursor plane — force software
@@ -23,7 +22,7 @@ enable_software_cursors() {
 try: print(json.load(sys.stdin).get("int", 2))
 except Exception: print(2)' 2>/dev/null || echo 2)"
   printf '%s\n' "$prev" > "$CURSOR_PREV_FILE"
-  hyprctl eval 'hl.config({ cursor = { no_hardware_cursors = true } })' >/dev/null 2>&1 || true
+  timeout 2 hyprctl eval 'hl.config({ cursor = { no_hardware_cursors = true } })' >/dev/null 2>&1 || true
 }
 
 restore_software_cursors() {
@@ -35,7 +34,7 @@ restore_software_cursors() {
   # Restore the exact prior value (0/1/2). Forcing `false` when the session
   # default was auto (2) can leave the laptop cursor/compositor in a bad state.
   if [[ "$prev" =~ ^[0-9]+$ ]]; then
-    hyprctl eval "hl.config({ cursor = { no_hardware_cursors = ${prev} } })" >/dev/null 2>&1 || true
+    timeout 2 hyprctl eval "hl.config({ cursor = { no_hardware_cursors = ${prev} } })" >/dev/null 2>&1 || true
   fi
 }
 
@@ -921,8 +920,9 @@ else:
   scale="${rest#*|}"
   [[ "$scale" == "$rest" || -z "$scale" ]] && scale="${saved_scale:-1}"
   hypr_set_monitor_geometry "$headless" "$mode" "$pos" "$scale" >/dev/null 2>&1 || true
-  # Pin 1-10 to eDP and seed special:miracast (one-shot; may move focus briefly).
-  tame_extend_workspaces "$headless" 1
+  # Independent desktops: numeric 1-10 stay on the laptop; Extend uses named
+  # ext-1..ext-10 (see omarchy-hyprland-workspace-focus).
+  seed_extend_workspaces "$headless" || true
   echo "$headless"
 }
 
@@ -963,32 +963,30 @@ if not primary:
 mode = f"{int(primary['width'])}x{int(primary['height'])}@{primary.get('refreshRate') or 60}"
 scale = float(primary.get("scale") or 1) or 1.0
 subprocess.run(
-    ["hyprctl", "eval",
+    ["timeout", "2", "hyprctl", "eval",
      f'hl.monitor({{ output = "{want}", mode = "{mode}", position = "0x0", scale = {scale:g} }})'],
-    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, timeout=3,
 )
 # Keep input focused on the laptop so removing the cast output cannot leave
 # the cursor/seat attached to a dying monitor.
 subprocess.run(
-    ["hyprctl", "dispatch", "focusmonitor", want],
-    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+    ["timeout", "2", "hyprctl", "dispatch", f'hl.dsp.focus({{ monitor = "{want}" }})'],
+    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, timeout=3,
 )
 PY
 }
 
-# Move every workspace off the Miracast virtual output onto the laptop before
-# removing it. Hyprland can stall for tens of seconds if a scaled headless
-# disappears while workspaces/focus still reference it.
-# Move workspaces from one monitor to another.
-# Pass keep_special=1 to leave special:miracast on the cast output (live tame);
-# omit it on disconnect so nothing still references the dying headless.
-migrate_workspaces_from_monitor() {
-  local from="$1" to="$2" keep_special="${3:-0}"
-  [[ -n "$from" && -n "$to" && "$from" != "$to" ]] || return 0
-  # Hyprland 0.56+ uses Lua dispatchers (legacy moveworkspacetomonitor fails).
-  python3 - "$from" "$to" "$keep_special" <<'PY' 2>/dev/null || true
+# Park named ext-1 on the cast output and move numeric workspaces back to eDP
+# so SUPER+N never shares identity across displays.
+seed_extend_workspaces() {
+  local cast="${1:-}" primary prev_ws="1"
+  [[ -n "$cast" ]] || return 0
+  primary="$(primary_monitor_name)"
+  [[ -n "$primary" && "$cast" != "$primary" ]] || return 0
+
+  python3 - "$cast" "$primary" <<'PY' 2>/dev/null || true
 import json, subprocess, sys
-src, dst, keep = sys.argv[1], sys.argv[2], sys.argv[3]
+src, dst = sys.argv[1], sys.argv[2]
 try:
     spaces = json.loads(subprocess.check_output(["hyprctl", "-j", "workspaces"], text=True))
 except Exception:
@@ -997,7 +995,7 @@ for ws in spaces:
     if str(ws.get("monitor") or "") != src:
         continue
     name = str(ws.get("name") or "")
-    if keep == "1" and (name == "special:miracast" or name.endswith(":miracast")):
+    if name.startswith("ext-") or name.startswith("name:ext-"):
         continue
     target = name if name else str(ws.get("id") or "")
     if not target:
@@ -1008,40 +1006,8 @@ for ws in spaces:
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
     )
 PY
-}
 
-# Make the Miracast headless a "dumb" output for the Omarchy workspace bar:
-# pin numbered workspaces 1-10 to the laptop so SUPER-N / bar clicks stay on
-# eDP. Do NOT steal focus or yank workspaces back while the user is on the
-# cast display — that interrupted workflow (cursor jumped home every ~1s).
-#
-# Call on create / after scale reseat / on disconnect only — never in a hot loop.
-tame_extend_workspaces() {
-  local cast="${1:-}"
-  local primary
-  local steal_focus="${2:-0}"
-  [[ -n "$cast" ]] || { [[ -f "$HEADLESS_FILE" ]] && cast="$(cat "$HEADLESS_FILE" 2>/dev/null || true)"; }
-  [[ -n "$cast" ]] || return 0
-  primary="$(primary_monitor_name)"
-  [[ -n "$primary" && "$cast" != "$primary" ]] || return 0
-
-  # Pin once per cast (Hyprland 0.56: hl.workspace_rule via eval).
-  if [[ ! -f "$WORKSPACE_PIN_FILE" ]]; then
-    local i
-    for i in 1 2 3 4 5 6 7 8 9 10; do
-      hyprctl eval "hl.workspace_rule({ workspace = \"${i}\", monitor = \"${primary}\" })" >/dev/null 2>&1 || true
-    done
-    hyprctl eval "hl.workspace_rule({ workspace = \"special:miracast\", monitor = \"${cast}\", default = true })" >/dev/null 2>&1 || true
-    printf '%s\n' "$primary" >"$WORKSPACE_PIN_FILE"
-  fi
-
-  # Optional one-shot setup (create path): seed special:miracast on the cast
-  # output, move any numbered workspaces home, then restore the laptop's
-  # previous workspace so the Omarchy bar indicator does not silently drift.
-  # Never do this from the streaming health loop.
-  if [[ "$steal_focus" == "1" ]]; then
-    local prev_ws="1"
-    prev_ws="$(hyprctl -j monitors 2>/dev/null | python3 -c '
+  prev_ws="$(hyprctl -j monitors 2>/dev/null | python3 -c '
 import json, sys
 primary = sys.argv[1]
 try:
@@ -1053,44 +1019,79 @@ for m in ms:
         continue
     aw = m.get("activeWorkspace") or {}
     name = str(aw.get("name") or aw.get("id") or "1")
-    # Never restore onto a special workspace — bar shows numbered ids.
-    if name.startswith("special:"):
+    if name.startswith("special:") or name.startswith("ext-") or name.startswith("name:"):
         name = "1"
     print(name)
     raise SystemExit
 print("1")
 ' "$primary" 2>/dev/null || echo 1)"
 
-    # Seed special:miracast on the cast output (may briefly focus the cast).
-    hyprctl dispatch "hl.dsp.focus({ monitor = \"${cast}\" })" >/dev/null 2>&1 || true
-    hyprctl dispatch "hl.dsp.focus({ workspace = \"special:miracast\" })" >/dev/null 2>&1 || true
-    hyprctl dispatch "hl.dsp.workspace.move({ workspace = \"special:miracast\", monitor = \"${cast}\" })" >/dev/null 2>&1 || true
-    migrate_workspaces_from_monitor "$cast" "$primary" 1
-
-    # Restore exact prior eDP workspace — focusmonitor alone leaves Hyprland on
-    # whatever workspace was last active after special:miracast juggling, and
-    # Quickshell's bar indicator can stay stale if we don't re-focus by name.
-    hyprctl dispatch "hl.dsp.focus({ monitor = \"${primary}\" })" >/dev/null 2>&1 || true
-    hyprctl dispatch "hl.dsp.focus({ workspace = \"${prev_ws}\" })" >/dev/null 2>&1 || true
-  fi
+  hyprctl dispatch "hl.dsp.focus({ monitor = \"${cast}\" })" >/dev/null 2>&1 || true
+  hyprctl dispatch "hl.dsp.focus({ workspace = \"name:ext-1\", on_current_monitor = true })" >/dev/null 2>&1 || true
+  hyprctl dispatch "hl.dsp.focus({ monitor = \"${primary}\" })" >/dev/null 2>&1 || true
+  hyprctl dispatch "hl.dsp.focus({ workspace = \"${prev_ws}\" })" >/dev/null 2>&1 || true
+  return 0
 }
 
-# Clear the cast pin marker. Do NOT hyprctl reload — that re-runs monitors.lua
-# while the Miracast headless may still exist and freezes eDP for seconds.
-# Leftover workspace_rule pins (1-10 → eDP) are harmless on a single display.
-unpin_extend_workspaces() {
-  rm -f "$WORKSPACE_PIN_FILE"
+# hyprctl can block the compositor for minutes on bad headless teardown.
+# Never wait forever — prefer a failed remove over a wedged eDP.
+hypr_try() {
+  timeout 2 hyprctl "$@" >/dev/null 2>&1 || true
+}
+
+# Move occupied workspaces off one monitor onto another (disconnect safety).
+# Empty ext-* workspaces are left alone — they die with the output. Migrating
+# every empty named workspace through hyprctl has hung Hyprland for minutes.
+migrate_workspaces_from_monitor() {
+  local from="$1" to="$2"
+  [[ -n "$from" && -n "$to" && "$from" != "$to" ]] || return 0
+  python3 - "$from" "$to" <<'PY' 2>/dev/null || true
+import json, subprocess, sys
+src, dst = sys.argv[1], sys.argv[2]
+try:
+    spaces = json.loads(subprocess.check_output(
+        ["timeout", "2", "hyprctl", "-j", "workspaces"], text=True, timeout=3
+    ))
+except Exception:
+    raise SystemExit
+for ws in spaces:
+    if str(ws.get("monitor") or "") != src:
+        continue
+    # Skip empty workspaces — destroying the output is enough.
+    if int(ws.get("windows") or 0) <= 0:
+        continue
+    name = str(ws.get("name") or "")
+    wid = ws.get("id")
+    # Named ext-* need the name: prefix for Lua dispatch.
+    if name.startswith("ext-"):
+        target = f"name:{name}"
+    elif name.startswith("name:"):
+        target = name
+    elif name:
+        target = name
+    else:
+        target = str(wid or "")
+    if not target:
+        continue
+    expr = f'hl.dsp.workspace.move({{ workspace = "{target}", monitor = "{dst}" }})'
+    try:
+        subprocess.run(
+            ["timeout", "2", "hyprctl", "dispatch", expr],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, timeout=3,
+        )
+    except Exception:
+        pass
+PY
 }
 
 cleanup_extend_monitor() {
   # Serialize stop-path vs cast-exit-path cleanups. Concurrent hyprctl
-  # output remove + monitor reshuffles are what freeze eDP for ~30s.
+  # output remove + monitor reshuffles are what freeze eDP for minutes.
   local lock="$STATE_DIR/cleanup.lock"
   mkdir -p "$STATE_DIR"
-  # Subshell flock so the lock is released when this function returns
-  # (a bare `exec 9>` would hold it until miracast-ctl exits).
   (
-    flock 9 || true
+    # Bound wait — a stuck prior cleanup must not block forever.
+    flock -w 5 9 || true
     local name="" primary=""
     if [[ -f "$HEADLESS_FILE" ]]; then
       name="$(cat "$HEADLESS_FILE" 2>/dev/null || true)"
@@ -1098,35 +1099,37 @@ cleanup_extend_monitor() {
     primary="$(primary_monitor_name)"
 
     if [[ -n "$name" ]]; then
+      # 1) Focus laptop first so the seat is not on the dying output.
       if [[ -n "$primary" ]]; then
-        hyprctl dispatch "hl.dsp.focus({ monitor = \"${primary}\" })" >/dev/null 2>&1 || true
-        # Move every workspace (including special:miracast) off the cast output
-        # before destroy — Hyprland stalls if focus/workspaces still point at it.
-        migrate_workspaces_from_monitor "$name" "$primary" 0
-        hyprctl dispatch "hl.dsp.focus({ monitor = \"${primary}\" })" >/dev/null 2>&1 || true
-        hyprctl dispatch "hl.dsp.focus({ workspace = \"1\" })" >/dev/null 2>&1 || true
+        hypr_try dispatch "hl.dsp.focus({ monitor = \"${primary}\" })"
       fi
 
-      # Cursor restore before remove — switching cursor mode while a scaled
-      # virtual output vanishes has left eDP input wedged in the past.
+      # 2) Move only occupied workspaces off the cast output (timeouts inside).
+      if [[ -n "$primary" ]]; then
+        migrate_workspaces_from_monitor "$name" "$primary"
+        hypr_try dispatch "hl.dsp.focus({ monitor = \"${primary}\" })"
+      fi
+
+      # 3) Cursor restore before remove.
       restore_software_cursors
 
-      # Collapse the cast surface to scale 1 at a non-overlapping parking spot
-      # so the subsequent remove is a small layout change, not a scaled tear-down.
-      hyprctl eval "hl.monitor({ output = \"${name}\", mode = \"1280x720@60\", position = \"8192x0\", scale = 1 })" >/dev/null 2>&1 || true
-      reassert_primary_monitor
-      # Let screencopy / seat release the parked output before destroy.
-      sleep 0.25
-
-      hyprctl output remove "$name" >/dev/null 2>&1 || true
+      # 4) Collapse to scale 1 at a parking spot, then remove. Both bounded.
+      hypr_try eval "hl.monitor({ output = \"${name}\", mode = \"1280x720@60\", position = \"8192x0\", scale = 1 })"
+      # Give screencopy / DRM a moment after scale collapse.
+      sleep 0.6
+      hypr_try output remove "$name"
+      # If remove timed out, try once more after another beat.
+      if timeout 1 hyprctl -j monitors 2>/dev/null | grep -q "\"name\": \"$name\""; then
+        sleep 0.5
+        hypr_try output remove "$name"
+      fi
       rm -f "$HEADLESS_FILE"
-      unpin_extend_workspaces
 
-      # Second pass after the output is gone.
-      reassert_primary_monitor
+      if [[ -n "$primary" ]]; then
+        hypr_try dispatch "hl.dsp.focus({ monitor = \"${primary}\" })"
+      fi
     else
       restore_software_cursors
-      reassert_primary_monitor
     fi
   ) 9>"$lock"
 }
@@ -1708,11 +1711,14 @@ while time.time() < deadline:
 PY
   nmcli connection delete id "FluxCast WFD" 2>/dev/null || true
   # Remember Extend scale for this device before the output vanishes.
-  remember_extend_scale
-  # Brief settle so wf-recorder's screencopy session is gone before we tear
-  # down the virtual output (removing it under an active capture freezes eDP).
-  sleep 0.2
-  cleanup_extend_monitor
+  remember_extend_scale || true
+  # Kill any leftover capture that still holds screencopy on the headless —
+  # removing a scaled virtual output under an active capture freezes eDP.
+  pkill -x wf-recorder 2>/dev/null || true
+  pkill -f 'ffmpeg.*rtp_mpegts' 2>/dev/null || true
+  # Longer settle: DRM/screencopy release after a long cast can take >200ms.
+  sleep 1.0
+  cleanup_extend_monitor || true
   local settings peer_name mode
   settings="$(read_settings)"
   peer_name="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("lastPeerName",""))' "$settings")"
@@ -1974,9 +1980,6 @@ cmd_ensure_capture() {
   [[ "$info" == *"restarted=true"* ]] && restarted=true
   [[ "$info" == *"healthy=true"* ]] && healthy=true
   pid="$(echo "$info" | sed -n 's/.*pid=\([0-9]*\).*/\1/p')"
-  # Re-assert pins after scale/reseat without stealing the cursor if the user
-  # is working on the cast display (steal_focus=0).
-  tame_extend_workspaces "" 0 >/dev/null 2>&1 || true
   emit "{\"ok\":$healthy,\"captureRestarted\":$restarted,\"captureHealthy\":$healthy,\"fluxPid\":\"$pid\",\"detail\":\"$info\"}"
   [[ "$healthy" == "true" ]]
 }
