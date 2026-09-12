@@ -91,7 +91,12 @@ then
   cast_live=1
 fi
 
-scale_log "begin name=$name requested=$requested tracked=${tracked:-none} cast_live=$cast_live"
+# Rebind whenever FluxCast is live OR an Extend output is tracked. Tests (and
+# brief pid-detection races) may have headless.name without a detectable python.
+needs_rebind=0
+[[ "$cast_live" -eq 1 || -n "$tracked" ]] && needs_rebind=1
+
+scale_log "begin name=$name requested=$requested tracked=${tracked:-none} cast_live=$cast_live needs_rebind=$needs_rebind"
 
 persist_monitors_lua() {
   local scale="$1" gdk="$2"
@@ -158,7 +163,8 @@ apply_monitor_with_remap() {
   local px="${pos%%x*}"
   local py="${pos#*x}"
   local extend_pos nudge_pos
-  if [[ "${cast_live:-0}" -eq 1 ]]; then
+  if [[ "${needs_rebind:-0}" -eq 1 ]]; then
+    # Single apply while casting / Extend is tracked — skip ScreenMoveRemap nudge.
     hypr_set_geometry "$out" "$mode" "$pos" "$scale" || true
     return 0
   fi
@@ -214,10 +220,10 @@ rebind_miracast_geometry() {
   focus_primary_monitor || true
   if [[ -x "$CTL" ]]; then
     (
-      sleep 3
+      sleep "${OMARCHY_TEST_DEFER_SLEEP:-3}"
       scale_log "rebind deferred ensure-capture pass1"
       "$CTL" ensure-capture 4 || true
-      sleep 2
+      sleep "${OMARCHY_TEST_DEFER_SLEEP:-2}"
       scale_log "rebind deferred ensure-capture pass2"
       "$CTL" ensure-capture 3 || true
     ) >>"$SCALE_LOG" 2>&1 &
@@ -385,13 +391,14 @@ fi
 # ensure-capture after we have already killed wf-recorder/ffmpeg.
 set +e
 
-if [[ "$cast_live" -eq 1 && -x "$CTL" ]]; then
+if [[ "$needs_rebind" -eq 1 && -x "$CTL" ]]; then
   # Safety net: even if we die during hyprctl, capture still gets rebuilt.
+  # OMARCHY_TEST_DEFER_SLEEP shortens the wait in regression tests.
   (
-    sleep 3
+    sleep "${OMARCHY_TEST_DEFER_SLEEP:-3}"
     scale_log "deferred ensure-capture pass1"
     "$CTL" ensure-capture 4 || true
-    sleep 2
+    sleep "${OMARCHY_TEST_DEFER_SLEEP:-2}"
     scale_log "deferred ensure-capture pass2"
     "$CTL" ensure-capture 3 || true
   ) >>"$SCALE_LOG" 2>&1 &
@@ -408,13 +415,13 @@ persist_monitors_lua "$new_scale" "$new_gdk_scale" || true
 # Primary logical size may have changed — keep Miracast glued to the edge.
 scale_log "reseat_miracast"
 reseat_miracast || true
-if [[ "$cast_live" -eq 1 && -x "$CTL" ]]; then
-  sleep 0.5
+if [[ "$needs_rebind" -eq 1 && -x "$CTL" ]]; then
+  sleep "${OMARCHY_TEST_ENSURE_SLEEP:-0.5}"
   scale_log "eDP/primary ensure-capture after scale"
   "$CTL" ensure-capture 4 >>"$SCALE_LOG" 2>&1 || true
-  sleep 1.5
+  sleep "${OMARCHY_TEST_ENSURE_SLEEP:-1.5}"
   "$CTL" ensure-capture 3 >>"$SCALE_LOG" 2>&1 || true
 fi
-scale_log "done name=$name scale=$new_scale cast_live=$cast_live tracked=${tracked:-none}"
+scale_log "done name=$name scale=$new_scale cast_live=$cast_live tracked=${tracked:-none} needs_rebind=$needs_rebind"
 
 printf '%s\n' "$new_scale"
