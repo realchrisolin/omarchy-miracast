@@ -10,6 +10,9 @@ STATUS_FILE="$STATE_DIR/status.json"
 SETTINGS_FILE="$CONFIG_DIR/settings.json"
 PEERS_FILE="$STATE_DIR/peers.json"
 HEADLESS_FILE="$STATE_DIR/headless.name"  # tracked Extend output name (may be peer-named)
+# Headless left parked/disabled on Stop — remove on next connect, never during
+# disconnect (hyprctl output remove freezes eDP for seconds–minutes).
+PARKED_FILE="$STATE_DIR/parked-headless.name"
 CURSOR_PREV_FILE="$STATE_DIR/cursor-no-hw.prev"
 MODE_STATE_FILE="$STATE_DIR/sink-modes.json"  # sink-advertised CEA/VESA modes from RTSP
 # Fingerprint of the Extend output when capture last (re)bound. Hyprland reload
@@ -137,6 +140,8 @@ defaults = {
     "videoEncoder": "auto",
     # Preferred Miracast stream mode id, e.g. "1280x720p30".
     "streamMode": "1280x720p30",
+    # Display panel: false = expand all outputs; true = accordion (focused only).
+    "onlyExpandFocusedDisplay": False,
 }
 try:
     data = json.load(open(path))
@@ -988,9 +993,19 @@ else:
   print(int(m.get("width") or 1920), int(m.get("height") or 1080), m.get("scale") or 1)
 ' "$old")"
 
-  # Remove any previous session virtual output we created.
+  # Remove parked / previous session virtual output (safe path — not on Stop).
+  if [[ -f "$PARKED_FILE" ]]; then
+    local parked=""
+    parked="$(tr -d '\n' <"$PARKED_FILE" 2>/dev/null || true)"
+    rm -f "$PARKED_FILE"
+    if [[ -n "$parked" ]]; then
+      disconnect_log "connect-time remove parked name=$parked"
+      remove_virtual_output_safe "$parked"
+    fi
+  fi
   if [[ -n "$old" ]]; then
-    hyprctl output remove "$old" >/dev/null 2>&1 || true
+    disconnect_log "connect-time remove previous name=$old"
+    remove_virtual_output_safe "$old"
   fi
   rm -f "$HEADLESS_FILE" "$CAPTURE_GEOM_FILE"
 
@@ -1210,11 +1225,29 @@ disconnect_log() {
   printf '%s %s\n' "$(date -Iseconds 2>/dev/null || date)" "$*" >>"$LOG_DIR/disconnect.log"
 }
 
+# Remove a virtual output with settle time. Call on *connect*, never on Stop —
+# disconnect.log shows eDP freezes for seconds–minutes on `output remove`.
+remove_virtual_output_safe() {
+  local name="${1:-}"
+  [[ -n "$name" ]] || return 0
+  pause_extend_capture >/dev/null || true
+  wait_capture_senders_gone 40 || true
+  sleep 1.5
+  wait_capture_senders_gone 20 || true
+  # Prefer disable first (hides from UI); remove if still present.
+  timeout 2 hyprctl keyword monitor "${name},disable" >/dev/null 2>&1 || true
+  sleep 0.5
+  timeout 2 hyprctl output remove "$name" >/dev/null 2>&1 || true
+  sleep 0.5
+  if timeout 1 hyprctl -j monitors 2>/dev/null | grep -q "\"name\": \"$name\""; then
+    timeout 2 hyprctl output remove "$name" >/dev/null 2>&1 || true
+  fi
+}
+
 cleanup_extend_monitor() {
-  # Stop must NOT block on `hyprctl output remove` — that call can freeze the
-  # Hyprland event loop for ~30–90s even after the client times out (seen in
-  # disconnect.log: remove at T+5s, eDP dead for a minute+). Sync path only
-  # detaches capture + migrates windows; removal is deferred.
+  # Never call `hyprctl output remove` here. Deferred remove still froze eDP
+  # ~3s after Stop (disconnect.log 14:12:29). Park + disable instead; remove
+  # on the next ensure_extend_monitor / connect.
   local lock="$STATE_DIR/cleanup.lock"
   local name="" primary=""
   mkdir -p "$STATE_DIR"
@@ -1226,7 +1259,6 @@ cleanup_extend_monitor() {
     primary="$(primary_monitor_name)"
     disconnect_log "cleanup begin name=${name:-none} primary=${primary:-none}"
 
-    # 0) Detach screencopy BEFORE any hypr geometry on the cast output.
     pause_extend_capture >/dev/null || true
     wait_capture_senders_gone 50 || true
     sleep 0.8
@@ -1239,49 +1271,22 @@ cleanup_extend_monitor() {
         hypr_try dispatch "hl.dsp.focus({ monitor = \"${primary}\" })"
       fi
       restore_software_cursors
-      # Drop tracking immediately so a reconnect can create a fresh headless
-      # even if deferred remove is still pending.
-      rm -f "$HEADLESS_FILE" "$CAPTURE_GEOM_FILE"
-      disconnect_log "cleanup sync done; deferring output remove name=$name"
-      printf '%s\n' "$name" >"$STATE_DIR/pending-remove.name"
-      printf '%s\n' "${primary:-}" >"$STATE_DIR/pending-remove.primary"
+      # Park off-screen then disable — no output remove on the Stop path.
+      timeout 2 hyprctl eval \
+        "hl.monitor({ output = \"${name}\", mode = \"1280x720@30\", position = \"8192x0\", scale = 1 })" \
+        >/dev/null 2>&1 || true
+      sleep 0.3
+      timeout 2 hyprctl keyword monitor "${name},disable" >/dev/null 2>&1 || true
+      printf '%s\n' "$name" >"$PARKED_FILE"
+      rm -f "$HEADLESS_FILE" "$CAPTURE_GEOM_FILE" \
+        "$STATE_DIR/pending-remove.name" "$STATE_DIR/pending-remove.primary"
+      disconnect_log "cleanup parked+disabled name=$name (remove on next connect)"
     else
       restore_software_cursors
       rm -f "$CAPTURE_GEOM_FILE"
       disconnect_log "cleanup done (no tracked headless)"
     fi
   ) 9>"$lock"
-
-  # Deferred remove — do not hold Stop/UI on a wedging compositor call.
-  if [[ -f "$STATE_DIR/pending-remove.name" ]]; then
-    (
-      local rm_name rm_primary
-      rm_name="$(tr -d '\n' <"$STATE_DIR/pending-remove.name" 2>/dev/null || true)"
-      rm_primary="$(tr -d '\n' <"$STATE_DIR/pending-remove.primary" 2>/dev/null || true)"
-      rm -f "$STATE_DIR/pending-remove.name" "$STATE_DIR/pending-remove.primary"
-      [[ -n "$rm_name" ]] || exit 0
-      disconnect_log "deferred remove sleep name=$rm_name"
-      sleep 3
-      wait_capture_senders_gone 30 || true
-      sleep 0.5
-      disconnect_log "deferred output remove name=$rm_name"
-      # Fresh timeout each attempt; ignore failure — orphan headless is better
-      # than a minute of frozen eDP.
-      timeout 2 hyprctl output remove "$rm_name" >/dev/null 2>&1 || true
-      sleep 1
-      if timeout 1 hyprctl -j monitors 2>/dev/null | grep -q "\"name\": \"$rm_name\""; then
-        disconnect_log "deferred remove retry name=$rm_name"
-        sleep 2
-        wait_capture_senders_gone 10 || true
-        timeout 2 hyprctl output remove "$rm_name" >/dev/null 2>&1 || true
-      fi
-      if [[ -n "$rm_primary" ]]; then
-        timeout 2 hyprctl dispatch "hl.dsp.focus({ monitor = \"${rm_primary}\" })" >/dev/null 2>&1 || true
-      fi
-      disconnect_log "deferred remove finished name=$rm_name"
-    ) >>"$LOG_DIR/disconnect.log" 2>&1 &
-    disown || true
-  fi
 }
 
 json_escape() {
@@ -1749,6 +1754,7 @@ pos = settings.get("extendPosition") or data.get("extendPosition") or "right"
 if pos not in ("right", "left", "above", "below"):
     pos = "right"
 data["extendPosition"] = pos
+data["onlyExpandFocusedDisplay"] = bool(settings.get("onlyExpandFocusedDisplay", False))
 data.setdefault("peer", settings.get("lastPeerMac") or "")
 data.setdefault("peerName", settings.get("lastPeerName") or "")
 print(json.dumps(data, separators=(",", ":")))
@@ -1779,6 +1785,7 @@ pos = settings.get("extendPosition") or data.get("extendPosition") or "right"
 if pos not in ("right", "left", "above", "below"):
     pos = "right"
 data["extendPosition"] = pos
+data["onlyExpandFocusedDisplay"] = bool(settings.get("onlyExpandFocusedDisplay", False))
 data.setdefault("peer", settings.get("lastPeerMac") or "")
 data.setdefault("peerName", settings.get("lastPeerName") or "")
 print(json.dumps(data, separators=(",", ":")))
