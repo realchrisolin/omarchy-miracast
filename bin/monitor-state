@@ -1,0 +1,74 @@
+#!/bin/bash
+# Enhanced monitor panel state for Omarchy Display + Miracast.
+# Same line layout as omarchy-monitor-state, but the displays JSON includes
+# scale, refreshRate, x, y, brightness, brightnessAvailable, and miracast.
+
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-miracast"
+TRACKED_FILE="$STATE_DIR/headless.name"
+tracked=""
+[[ -f "$TRACKED_FILE" ]] && tracked="$(cat "$TRACKED_FILE" 2>/dev/null || true)"
+
+monitors_json=$(hyprctl monitors all -j 2>/dev/null || echo '[]')
+focused_monitor=$(printf '%s\n' "$monitors_json" | jq -r '[.[] | select(.focused == true)][0].name // ""')
+
+{ omarchy-brightness-display --monitor "$focused_monitor" 2>/dev/null; echo; } | head -n 1
+
+# internal / external / internalEnabled / mirror — exclude Miracast virtual outputs
+printf '%s\n' "$monitors_json" | jq -r --arg t "$tracked" '
+  def internal: test("^(eDP|LVDS|DSI)-");
+  def virtual: startswith("HEADLESS") or (. == $t and $t != "");
+  ([.[] | select((.name | internal) and (.name | virtual | not))][0].name // ""),
+  ([.[] | select((.name | internal | not) and (.name | virtual | not))][0].name // ""),
+  ([.[] | select((.name | internal) and .disabled != true)][0].name // ""),
+  ([.[] | select(.mirrorOf != "none") | if (.name | internal) then .mirrorOf else .name end][0] // "")
+'
+
+printf '%s\n' "$focused_monitor"
+omarchy-hyprland-monitor-scaling 2>/dev/null || echo
+
+# Enrich each monitor; skip brightness for virtual Miracast / HEADLESS outputs.
+python3 - "$monitors_json" "$tracked" <<'PY'
+import json, subprocess, sys
+
+ms = json.loads(sys.argv[1] or "[]")
+tracked = sys.argv[2] if len(sys.argv) > 2 else ""
+
+def is_virtual(name: str) -> bool:
+    n = str(name or "")
+    return n.startswith("HEADLESS") or (bool(tracked) and n == tracked)
+
+out = []
+for m in ms:
+    name = str(m.get("name") or "")
+    virtual = is_virtual(name)
+    entry = {
+        "name": name,
+        "enabled": m.get("disabled") is not True,
+        "focused": m.get("focused") is True,
+        "width": int(m.get("width") or 0),
+        "height": int(m.get("height") or 0),
+        "scale": float(m.get("scale") or 1),
+        "refreshRate": float(m.get("refreshRate") or 60),
+        "x": int(m.get("x") or 0),
+        "y": int(m.get("y") or 0),
+        "brightness": None,
+        "brightnessAvailable": False,
+        "miracast": virtual,
+    }
+    if name and not virtual:
+        try:
+            raw = subprocess.check_output(
+                ["omarchy-brightness-display", "--monitor", name],
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=1.5,
+            ).strip().splitlines()
+            val = (raw[0] if raw else "").strip()
+            if val.isdigit():
+                entry["brightness"] = int(val)
+                entry["brightnessAvailable"] = True
+        except Exception:
+            pass
+    out.append(entry)
+print(json.dumps(out, separators=(",", ":")))
+PY

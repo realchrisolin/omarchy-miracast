@@ -1,0 +1,15 @@
+# Local / editor
+*~
+*.swp
+.DS_Store
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Local runtime (lives under XDG on a real install)
+*.log
+.cache/

@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "colin.monitor",
+  "name": "Display",
+  "version": "1.2.0",
+  "author": "realchrisolin",
+  "license": "MIT",
+  "description": "Brightness, text size, scale, displays, and Miracast / Wi‑Fi Display mirroring.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Display",
+    "description": "Brightness, text size, scale, displays, and Miracast mirroring.",
+    "category": "System",
+    "allowMultiple": false
+  },
+  "omarchy": {
+    "clonedFrom": "omarchy.monitor"
+  }
+}

@@ -1,0 +1,1564 @@
+#!/usr/bin/env bash
+# JSON control plane for Omarchy Display Miracast / Wi‑Fi Display.
+set -euo pipefail
+
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-miracast"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-miracast"
+LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-miracast/logs"
+PID_FILE="$STATE_DIR/cast.pid"
+STATUS_FILE="$STATE_DIR/status.json"
+SETTINGS_FILE="$CONFIG_DIR/settings.json"
+PEERS_FILE="$STATE_DIR/peers.json"
+HEADLESS_FILE="$STATE_DIR/headless.name"  # tracked Extend output name (may be peer-named)
+CURSOR_PREV_FILE="$STATE_DIR/cursor-no-hw.prev"
+MODE_STATE_FILE="$STATE_DIR/sink-modes.json"  # sink-advertised CEA/VESA modes from RTSP
+
+# Headless capture cannot include the hardware cursor plane — force software
+# cursors while Extend is live so the pointer is visible on the Miracast sink.
+enable_software_cursors() {
+  local prev
+  prev="$(hyprctl getoption cursor:no_hardware_cursors -j 2>/dev/null | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("int", 2))
+except Exception: print(2)' 2>/dev/null || echo 2)"
+  printf '%s\n' "$prev" > "$CURSOR_PREV_FILE"
+  hyprctl eval 'hl.config({ cursor = { no_hardware_cursors = true } })' >/dev/null 2>&1 || true
+}
+
+restore_software_cursors() {
+  local prev=""
+  if [[ -f "$CURSOR_PREV_FILE" ]]; then
+    prev="$(cat "$CURSOR_PREV_FILE" 2>/dev/null || true)"
+    rm -f "$CURSOR_PREV_FILE"
+  fi
+  # Restore the exact prior value (0/1/2). Forcing `false` when the session
+  # default was auto (2) can leave the laptop cursor/compositor in a bad state.
+  if [[ "$prev" =~ ^[0-9]+$ ]]; then
+    hyprctl eval "hl.config({ cursor = { no_hardware_cursors = ${prev} } })" >/dev/null 2>&1 || true
+  fi
+}
+
+# True if this Hyprland output is our Miracast virtual display (or legacy HEADLESS-*).
+is_virtual_output_name() {
+  local name="$1"
+  local tracked=""
+  [[ -z "$name" ]] && return 1
+  [[ "$name" == HEADLESS* ]] && return 0
+  if [[ -f "$HEADLESS_FILE" ]]; then
+    tracked="$(cat "$HEADLESS_FILE" 2>/dev/null || true)"
+    [[ -n "$tracked" && "$name" == "$tracked" ]] && return 0
+  fi
+  return 1
+}
+
+# Turn a Miracast peer name into a safe Hyprland output name.
+# Spaces become '-' (hyprctl truncates at spaces); keep common device chars.
+sanitize_extend_output_name() {
+  local peer_name="$1" peer_mac="$2"
+  python3 - "$peer_name" "$peer_mac" <<'PY'
+import re, sys
+raw = (sys.argv[1] or "").strip()
+mac = (sys.argv[2] or "").replace(":", "").replace("-", "").upper()
+# Collapse whitespace to hyphen — hyprctl treats the name as one argv token,
+# but callers may still pass unquoted strings.
+s = re.sub(r"\s+", "-", raw)
+# Allow letters, digits, and a few separators commonly seen in P2P names.
+s = re.sub(r"[^A-Za-z0-9._+-]", "", s)
+s = s.strip("._-")[:48]
+if not s:
+    tail = mac[-6:] if len(mac) >= 6 else (mac or "sink")
+    s = f"Miracast-{tail}"
+print(s)
+PY
+}
+
+# If name already exists (and isn't the output we're replacing), append -2, -3, …
+unique_extend_output_name() {
+  local desired="$1" replacing="$2"
+  python3 - "$desired" "$replacing" <<'PY'
+import json, subprocess, sys
+desired, replacing = sys.argv[1], sys.argv[2]
+try:
+    ms = json.loads(subprocess.check_output(["hyprctl", "-j", "monitors"], text=True))
+except Exception:
+    ms = []
+existing = {str(m.get("name") or "") for m in ms}
+name = desired
+n = 2
+while name in existing and name != replacing:
+    name = f"{desired}-{n}"
+    n += 1
+    if n > 50:
+        break
+print(name)
+PY
+}
+LOG_FILE="$LOG_DIR/cast.log"
+LAT_FILE="$LOG_DIR/latency.jsonl"
+
+PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Optional local FluxCast checkout. Prefer FLUXCAST_ROOT in the environment.
+DEFAULT_SPIKE_ROOT="${FLUXCAST_ROOT:-}"
+
+mkdir -p "$STATE_DIR" "$CONFIG_DIR" "$LOG_DIR"
+
+read_settings() {
+  python3 - "$SETTINGS_FILE" <<'PY'
+import json, sys
+path = sys.argv[1]
+# fps/outputRes/extendResolution tune CPU: capture fewer pixels, encode fewer frames.
+defaults = {
+    "mode": "mirror",
+    "extendPosition": "right",
+    "lastPeerMac": "",
+    "lastPeerName": "",
+    "fps": "20",
+    "bitrate": "4M",
+    "outputRes": "1280x720",
+    "extendResolution": "1280x720",
+    # auto | vaapi | qsv | software — FluxCast reads FLUXCAST_WFD_ENCODER.
+    "videoEncoder": "auto",
+    # Preferred Miracast stream mode id, e.g. "1280x720p30".
+    "streamMode": "1280x720p30",
+}
+try:
+    data = json.load(open(path))
+except Exception:
+    data = {}
+if not isinstance(data, dict):
+    data = {}
+out = {**defaults, **data}
+print(json.dumps(out, separators=(",", ":")))
+PY
+}
+
+write_settings() {
+  python3 - "$SETTINGS_FILE" "$@" <<'PY'
+import json, sys
+path = sys.argv[1]
+try:
+    data = json.load(open(path))
+except Exception:
+    data = {}
+if not isinstance(data, dict):
+    data = {}
+for item in sys.argv[2:]:
+    if "=" in item:
+        k, v = item.split("=", 1)
+        data[k] = v
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, separators=(",", ":"))
+    f.write("\n")
+print(json.dumps(data, separators=(",", ":")))
+PY
+}
+
+peer_name_for() {
+  local mac="$1"
+  python3 - "$PEERS_FILE" "$SETTINGS_FILE" "$mac" <<'PY'
+import json, sys
+peers_path, settings_path, mac = sys.argv[1], sys.argv[2], sys.argv[3].upper()
+name = ""
+try:
+    peers = json.load(open(peers_path))
+    for p in peers if isinstance(peers, list) else []:
+        if str(p.get("mac", "")).upper() == mac:
+            name = str(p.get("name") or "")
+            break
+except Exception:
+    pass
+if not name:
+    try:
+        s = json.load(open(settings_path))
+        if str(s.get("lastPeerMac", "")).upper() == mac:
+            name = str(s.get("lastPeerName") or "")
+    except Exception:
+        pass
+print(name)
+PY
+}
+
+extend_position() {
+  python3 - "$SETTINGS_FILE" <<'PY'
+import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    data = {}
+pos = str(data.get("extendPosition") or "right")
+if pos not in ("right", "left", "above", "below"):
+    pos = "right"
+print(pos)
+PY
+}
+
+# Configured Extend capture resolution (physical pixels wf-recorder sees).
+# Default 1280x720 so we do not capture full laptop 1080p only to downscale in ffmpeg.
+extend_resolution() {
+  python3 - "$SETTINGS_FILE" <<'PY'
+import json, re, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    data = {}
+res = str(data.get("extendResolution") or "1280x720")
+if not re.fullmatch(r"\d+x\d+", res):
+    res = "1280x720"
+print(res)
+PY
+}
+
+# Compute placement for the Extend virtual output.
+# Prints: MODE|XxY|SCALE  (mode like 1280x720@60, position like -1200x0, scale like 1.6)
+# Position uses each output's *logical* size so edges stay adjacent after scale changes.
+extend_geometry_parts() {
+  local position="${1:-right}"
+  local tracked=""
+  local extend_res
+  [[ -f "$HEADLESS_FILE" ]] && tracked="$(cat "$HEADLESS_FILE" 2>/dev/null || true)"
+  extend_res="$(extend_resolution)"
+  python3 - "$position" "$tracked" "$extend_res" "$SETTINGS_FILE" <<'PY'
+import json, subprocess, sys
+pos = sys.argv[1]
+tracked = sys.argv[2] if len(sys.argv) > 2 else ""
+extend_res = sys.argv[3] if len(sys.argv) > 3 else "1280x720"
+settings_path = sys.argv[4] if len(sys.argv) > 4 else ""
+try:
+    ew, eh = [int(x) for x in extend_res.split("x", 1)]
+except Exception:
+    ew, eh = 1280, 720
+
+def is_virtual(name: str) -> bool:
+    n = str(name or "")
+    return n.startswith("HEADLESS") or (bool(tracked) and n == tracked)
+
+raw = subprocess.check_output(["hyprctl", "-j", "monitors"], text=True)
+ms = json.loads(raw)
+primary = next((m for m in ms if m.get("focused")), None) or (ms[0] if ms else None)
+if not primary:
+    print(f"{ew}x{eh}@30|0x0|1")
+    raise SystemExit
+# Prefer a real panel when focus is on the Miracast virtual output.
+if is_virtual(str(primary.get("name", ""))):
+    for m in ms:
+        if not is_virtual(str(m.get("name", ""))):
+            primary = m
+            break
+pw = int(primary.get("width") or 1920)
+ph = int(primary.get("height") or 1080)
+ps = float(primary.get("scale") or 1) or 1.0
+plw = int(round(pw / ps))
+plh = int(round(ph / ps))
+
+virtual = next((m for m in ms if str(m.get("name", "")) == tracked), None) if tracked else None
+if virtual is None:
+    virtual = next((m for m in ms if str(m.get("name", "")).startswith("HEADLESS")), None)
+# Always size the cast surface to extendResolution — matching the laptop's
+# 1080p panel made wf-recorder capture ~2× the pixels ffmpeg then discards.
+hw, hh = ew, eh
+if virtual is not None:
+    vs = float(virtual.get("scale") or 1) or 1.0
+else:
+    vs = 1.0
+hlw = int(round(hw / vs))
+hlh = int(round(hh / vs))
+# Cap Extend refresh to the Miracast stream rate. A 60Hz headless while the
+# sink negotiates 720p30 makes Hyprland composite twice as often as needed.
+refresh = 30
+try:
+    settings = json.load(open(settings_path)) if settings_path else {}
+except Exception:
+    settings = {}
+try:
+    want = int(float(settings.get("extendRefresh") or settings.get("fps") or 30))
+except Exception:
+    want = 30
+if want >= 60:
+    refresh = 60
+elif want >= 30:
+    refresh = 30
+else:
+    # CEA has no 20/24 HD mode on most sinks; keep the virtual output at 30.
+    refresh = 30
+
+if pos == "left":
+    x, y = -hlw, max(0, (plh - hlh) // 2)
+elif pos == "above":
+    x, y = max(0, (plw - hlw) // 2), -hlh
+elif pos == "below":
+    x, y = max(0, (plw - hlw) // 2), plh
+else:  # right
+    x, y = plw, max(0, (plh - hlh) // 2)
+print(f"{hw}x{hh}@{refresh}|{x}x{y}|{vs:g}")
+PY
+}
+
+hypr_set_monitor_geometry() {
+  local name="$1" mode="$2" position="$3" scale="${4:-1}"
+  # Omarchy Hyprland uses the Lua config parser — keyword monitor is rejected.
+  hyprctl eval "hl.monitor({ output = \"${name}\", mode = \"${mode}\", position = \"${position}\", scale = ${scale} })" >/dev/null
+}
+
+fluxcast_pid() {
+  local wrap_pid=""
+  [[ -f "$PID_FILE" ]] || return 0
+  wrap_pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+  [[ -n "$wrap_pid" ]] || return 0
+  python3 - "$wrap_pid" <<'PY'
+import os, sys
+wrap = int(sys.argv[1])
+for pid in os.listdir("/proc"):
+    if not pid.isdigit():
+        continue
+    try:
+        if int(open(f"/proc/{pid}/status").read().split("PPid:")[1].split()[0]) != wrap:
+            continue
+        cmd = open(f"/proc/{pid}/cmdline", "rb").read().replace(b"\0", b" ").decode(errors="ignore")
+    except OSError:
+        continue
+    if "src/main.py" in cmd and "wfd" in cmd:
+        print(pid)
+        break
+else:
+    try:
+        cmd = open(f"/proc/{wrap}/cmdline", "rb").read().replace(b"\0", b" ").decode(errors="ignore")
+        if "src/main.py" in cmd:
+            print(wrap)
+    except OSError:
+        pass
+PY
+}
+
+# Stop wf-recorder/ffmpeg only — leave FluxCast RTSP/P2P up. Used before
+# Hyprland geometry changes on the capture output so screencopy is not attached
+# to a monitor mid-resize (that path freezes the session / freezes the sink).
+pause_extend_capture() {
+  local tracked=""
+  [[ -f "$HEADLESS_FILE" ]] && tracked="$(cat "$HEADLESS_FILE" 2>/dev/null || true)"
+  python3 - "$tracked" <<'PY'
+import os, signal, sys, time
+tracked = sys.argv[1]
+targets = []
+for pid in os.listdir("/proc"):
+    if not pid.isdigit():
+        continue
+    try:
+        cmd = open(f"/proc/{pid}/cmdline", "rb").read().replace(b"\0", b" ").decode(errors="ignore")
+    except OSError:
+        continue
+    base = os.path.basename(cmd.split(" ", 1)[0]) if cmd else ""
+    wf_match = "wf-recorder" in cmd and (
+        "HEADLESS" in cmd or (tracked and tracked in cmd)
+    )
+    ffmpeg_match = (
+        (base in ("ffmpeg", "ffmpeg-") and "rtp_mpegts" in cmd)
+        or (base == "ffmpeg" and "h264_vaapi" in cmd)
+        or (base == "ffmpeg" and "libx264" in cmd and "pipe:0" in cmd)
+    )
+    if wf_match or ffmpeg_match:
+        # Never kill the FluxCast python RTSP process here.
+        if "src/main.py" in cmd:
+            continue
+        targets.append(int(pid))
+    elif base == "ffmpeg":
+        try:
+            cwd = os.readlink(f"/proc/{pid}/cwd")
+        except OSError:
+            cwd = ""
+        if "fluxcast" in cwd:
+            targets.append(int(pid))
+for pid in targets:
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+time.sleep(0.25)
+for pid in targets:
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+print(f"paused={len(targets)}")
+PY
+}
+
+# SIGUSR1 FluxCast to rebuild wf-recorder/ffmpeg without dropping RTSP/P2P.
+# Prints: restarted=(true|false) healthy=(true|false) pid=...
+# Pass "quick" as $1 to signal without waiting for TX health (used by scale).
+restart_extend_capture() {
+  local flux_pid capture_restarted=false capture_healthy=false
+  local quick="${1:-}"
+  flux_pid="$(fluxcast_pid || true)"
+  if [[ -n "$flux_pid" ]] && kill -USR1 "$flux_pid" 2>/dev/null; then
+    capture_restarted=true
+    if [[ "$quick" == "quick" ]]; then
+      echo "restarted=true healthy=true pid=${flux_pid}"
+      return 0
+    fi
+    capture_healthy="$(python3 - "$LOG_FILE" <<'PY'
+import glob, os, re, time, sys
+
+def iface_tx():
+    total = 0
+    found = False
+    for path in glob.glob("/sys/class/net/p2p-*/statistics/tx_bytes"):
+        try:
+            total += int(open(path).read().strip())
+            found = True
+        except OSError:
+            pass
+    return total if found else None
+
+log = sys.argv[1]
+try:
+    start_size = os.path.getsize(log)
+except OSError:
+    start_size = 0
+before = iface_tx()
+deadline = time.time() + 5.0
+saw_restart = False
+pat_restart = re.compile(r"Desktop capture pipeline restarted|Capture restart finished")
+pat_fail = re.compile(r"Capture restart failed")
+while time.time() < deadline:
+    try:
+        with open(log, "r", errors="ignore") as fh:
+            fh.seek(start_size)
+            chunk = fh.read()
+    except OSError:
+        chunk = ""
+    if pat_fail.search(chunk):
+        print("false")
+        raise SystemExit
+    if pat_restart.search(chunk):
+        saw_restart = True
+        time.sleep(1.0)
+        after = iface_tx()
+        if before is None or after is None or after > before + 32 * 1024:
+            print("true")
+            raise SystemExit
+        time.sleep(1.2)
+        after2 = iface_tx()
+        print("true" if (after2 is not None and before is not None and after2 > before + 32 * 1024) else "false")
+        raise SystemExit
+    time.sleep(0.25)
+print("true" if saw_restart else "false")
+PY
+)"
+    [[ "$capture_healthy" == "true" ]] || capture_healthy=false
+  fi
+  echo "restarted=${capture_restarted} healthy=${capture_healthy} pid=${flux_pid}"
+}
+
+apply_extend_position() {
+  local position="${1:-}"
+  if [[ -z "$position" ]]; then
+    position="$(extend_position)"
+  fi
+  if [[ "$position" != "right" && "$position" != "left" && "$position" != "above" && "$position" != "below" ]]; then
+    emit '{"ok":false,"error":"position must be right|left|above|below"}'
+    return 1
+  fi
+  write_settings "extendPosition=$position" >/dev/null
+
+  local headless=""
+  if [[ -f "$HEADLESS_FILE" ]]; then
+    headless="$(cat "$HEADLESS_FILE" 2>/dev/null || true)"
+  fi
+  if [[ -z "$headless" ]]; then
+    # No live virtual display — settings saved for next Extend session.
+    emit "{\"ok\":true,\"position\":\"$position\",\"applied\":false}"
+    return 0
+  fi
+  # Confirm it still exists
+  if ! hyprctl -j monitors 2>/dev/null | python3 -c 'import json,sys; name=sys.argv[1]; ms=json.load(sys.stdin); raise SystemExit(0 if any(m.get("name")==name for m in ms) else 1)' "$headless"; then
+    emit "{\"ok\":true,\"position\":\"$position\",\"applied\":false}"
+    return 0
+  fi
+  local parts mode pos scale rest primary
+  parts="$(extend_geometry_parts "$position")"
+  mode="${parts%%|*}"
+  rest="${parts#*|}"
+  pos="${rest%%|*}"
+  scale="${rest#*|}"
+  [[ "$scale" == "$rest" || -z "$scale" ]] && scale="1"
+  # Prefer the live refresh rate from Hyprland when available.
+  local refresh
+  refresh="$(hyprctl -j monitors 2>/dev/null | python3 -c 'import json,sys; name=sys.argv[1]; ms=json.load(sys.stdin); m=next((x for x in ms if x.get("name")==name),None); print(m.get("refreshRate") if m else "60")' "$headless" 2>/dev/null || echo 60)"
+  mode="${mode%%@*}@${refresh}"
+
+  # Same safe order as monitor-scale: leave the cast output, detach capture,
+  # move geometry, then rebuild capture once the compositor has settled.
+  primary="$(primary_monitor_name)"
+  if [[ -n "$primary" ]]; then
+    hyprctl dispatch focusmonitor "$primary" >/dev/null 2>&1 || true
+  fi
+  pause_extend_capture >/dev/null || true
+  sleep 0.2
+  if ! hypr_set_monitor_geometry "$headless" "$mode" "$pos" "$scale"; then
+    restart_extend_capture >/dev/null || true
+    emit "{\"ok\":false,\"error\":\"hyprctl eval failed\",\"position\":\"$position\",\"monitor\":\"$headless\"}"
+    return 1
+  fi
+  sleep 0.45
+
+  local restart_info capture_restarted=false capture_healthy=false flux_pid=""
+  restart_info="$(restart_extend_capture)"
+  [[ "$restart_info" == *"restarted=true"* ]] && capture_restarted=true
+  [[ "$restart_info" == *"healthy=true"* ]] && capture_healthy=true
+  flux_pid="$(echo "$restart_info" | sed -n 's/.*pid=\([0-9]*\).*/\1/p')"
+
+  emit "{\"ok\":true,\"position\":\"$position\",\"applied\":true,\"captureRestarted\":$capture_restarted,\"captureHealthy\":$capture_healthy,\"monitor\":\"$headless\",\"mode\":\"$mode\",\"pos\":\"$pos\",\"fluxPid\":\"$flux_pid\"}"
+}
+
+ensure_extend_monitor() {
+  # Create a Hyprland headless output named after the Miracast sink, placed
+  # relative to the primary display. Args: [peer_name] [peer_mac]
+  local peer_name="${1:-}" peer_mac="${2:-}"
+  local primary width height scale headless position old="" desired
+  position="$(extend_position)"
+  if [[ -f "$HEADLESS_FILE" ]]; then
+    old="$(cat "$HEADLESS_FILE" 2>/dev/null || true)"
+  fi
+
+  primary="$(hyprctl -j monitors 2>/dev/null | python3 -c '
+import json,sys
+tracked=sys.argv[1]
+ms=json.load(sys.stdin)
+def virt(n):
+  n=str(n or "")
+  return n.startswith("HEADLESS") or (tracked and n==tracked)
+cands=[m for m in ms if not virt(m.get("name",""))]
+m=next((x for x in cands if x.get("focused")), cands[0] if cands else (ms[0] if ms else None))
+print(m["name"] if m else "eDP-1")
+' "$old")"
+  read -r width height scale <<<"$(hyprctl -j monitors 2>/dev/null | python3 -c '
+import json,sys
+tracked=sys.argv[1]
+ms=json.load(sys.stdin)
+def virt(n):
+  n=str(n or "")
+  return n.startswith("HEADLESS") or (tracked and n==tracked)
+cands=[m for m in ms if not virt(m.get("name",""))]
+m=next((x for x in cands if x.get("focused")), cands[0] if cands else None)
+if not m:
+  print("1920 1080 1")
+else:
+  print(int(m.get("width") or 1920), int(m.get("height") or 1080), m.get("scale") or 1)
+' "$old")"
+
+  # Remove any previous session virtual output we created.
+  if [[ -n "$old" ]]; then
+    hyprctl output remove "$old" >/dev/null 2>&1 || true
+  fi
+  rm -f "$HEADLESS_FILE"
+
+  desired="$(sanitize_extend_output_name "$peer_name" "$peer_mac")"
+  headless="$(unique_extend_output_name "$desired" "")"
+  if [[ -z "$headless" ]]; then
+    echo ""
+    return 1
+  fi
+  # Named headless: shows as the Miracast device in the Display panel.
+  if ! hyprctl output create headless "$headless" >/dev/null; then
+    echo ""
+    return 1
+  fi
+  # Confirm it exists under the requested name.
+  if ! hyprctl -j monitors 2>/dev/null | python3 -c 'import json,sys; name=sys.argv[1]; ms=json.load(sys.stdin); raise SystemExit(0 if any(m.get("name")==name for m in ms) else 1)' "$headless"; then
+    echo ""
+    return 1
+  fi
+
+  # Track before geometry so placement uses this output's size/scale.
+  printf '%s\n' "$headless" > "$HEADLESS_FILE"
+  local parts mode pos scale rest
+  parts="$(extend_geometry_parts "$position")"
+  mode="${parts%%|*}"
+  rest="${parts#*|}"
+  pos="${rest%%|*}"
+  scale="${rest#*|}"
+  [[ "$scale" == "$rest" || -z "$scale" ]] && scale="1"
+  hypr_set_monitor_geometry "$headless" "$mode" "$pos" "$scale" >/dev/null 2>&1 || true
+  echo "$headless"
+}
+
+# Primary laptop panel name (eDP/LVDS/DSI), else focused non-virtual.
+primary_monitor_name() {
+  local tracked=""
+  [[ -f "$HEADLESS_FILE" ]] && tracked="$(cat "$HEADLESS_FILE" 2>/dev/null || true)"
+  hyprctl -j monitors 2>/dev/null | python3 -c '
+import json,sys
+tracked=sys.argv[1]
+ms=json.load(sys.stdin)
+def virt(n):
+  n=str(n or "")
+  return n.startswith("HEADLESS") or (tracked and n==tracked)
+for m in ms:
+  if str(m.get("name","")).startswith(("eDP","LVDS","DSI")):
+    print(m["name"]); raise SystemExit
+cands=[m for m in ms if not virt(m.get("name",""))]
+m=next((x for x in cands if x.get("focused")), cands[0] if cands else None)
+print(m["name"] if m else "")
+' "$tracked" 2>/dev/null || true
+}
+
+reassert_primary_monitor() {
+  local primary
+  primary="$(primary_monitor_name)"
+  [[ -n "$primary" ]] || return 0
+  python3 - "$primary" <<'PY' 2>/dev/null || true
+import json, subprocess, sys
+want = sys.argv[1]
+try:
+    ms = json.loads(subprocess.check_output(["hyprctl", "-j", "monitors"], text=True))
+except Exception:
+    raise SystemExit
+primary = next((m for m in ms if m.get("name") == want), None)
+if not primary:
+    raise SystemExit
+mode = f"{int(primary['width'])}x{int(primary['height'])}@{primary.get('refreshRate') or 60}"
+scale = float(primary.get("scale") or 1) or 1.0
+subprocess.run(
+    ["hyprctl", "eval",
+     f'hl.monitor({{ output = "{want}", mode = "{mode}", position = "0x0", scale = {scale:g} }})'],
+    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+)
+# Keep input focused on the laptop so removing the cast output cannot leave
+# the cursor/seat attached to a dying monitor.
+subprocess.run(
+    ["hyprctl", "dispatch", "focusmonitor", want],
+    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+)
+PY
+}
+
+# Move every workspace off the Miracast virtual output onto the laptop before
+# removing it. Hyprland can stall for tens of seconds if a scaled headless
+# disappears while workspaces/focus still reference it.
+migrate_workspaces_from_monitor() {
+  local from="$1" to="$2"
+  [[ -n "$from" && -n "$to" && "$from" != "$to" ]] || return 0
+  hyprctl -j workspaces 2>/dev/null | python3 - "$from" "$to" <<'PY' 2>/dev/null || true
+import json, subprocess, sys
+src, dst = sys.argv[1], sys.argv[2]
+try:
+    spaces = json.loads(subprocess.check_output(["hyprctl", "-j", "workspaces"], text=True))
+except Exception:
+    raise SystemExit
+for ws in spaces:
+    if str(ws.get("monitor") or "") != src:
+        continue
+    wid = ws.get("id")
+    if wid is None:
+        continue
+    subprocess.run(
+        ["hyprctl", "dispatch", "moveworkspacetomonitor", str(wid), dst],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+    )
+PY
+}
+
+cleanup_extend_monitor() {
+  # Serialize stop-path vs cast-exit-path cleanups. Concurrent hyprctl
+  # output remove + monitor reshuffles are what freeze eDP for ~30s.
+  local lock="$STATE_DIR/cleanup.lock"
+  mkdir -p "$STATE_DIR"
+  # Subshell flock so the lock is released when this function returns
+  # (a bare `exec 9>` would hold it until miracast-ctl exits).
+  (
+    flock 9 || true
+    local name="" primary=""
+    if [[ -f "$HEADLESS_FILE" ]]; then
+      name="$(cat "$HEADLESS_FILE" 2>/dev/null || true)"
+    fi
+    primary="$(primary_monitor_name)"
+
+    if [[ -n "$name" ]]; then
+      if [[ -n "$primary" ]]; then
+        hyprctl dispatch focusmonitor "$primary" >/dev/null 2>&1 || true
+        migrate_workspaces_from_monitor "$name" "$primary"
+      fi
+
+      # Cursor restore before remove — switching cursor mode while a scaled
+      # virtual output vanishes has left eDP input wedged in the past.
+      restore_software_cursors
+
+      # Collapse the cast surface to scale 1 at a non-overlapping parking spot
+      # so the subsequent remove is a small layout change, not a scaled tear-down.
+      hyprctl eval "hl.monitor({ output = \"${name}\", mode = \"1280x720@60\", position = \"8192x0\", scale = 1 })" >/dev/null 2>&1 || true
+      reassert_primary_monitor
+      # Let screencopy / seat release the parked output before destroy.
+      sleep 0.15
+
+      hyprctl output remove "$name" >/dev/null 2>&1 || true
+      rm -f "$HEADLESS_FILE"
+
+      # Second pass after the output is gone.
+      reassert_primary_monitor
+    else
+      restore_software_cursors
+      reassert_primary_monitor
+    fi
+  ) 9>"$lock"
+}
+
+json_escape() {
+  python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()[:-1] if False else sys.argv[1]))' "$1"
+}
+
+emit() {
+  python3 - "$@" <<'PY'
+import json, sys
+print(json.dumps(json.loads(sys.argv[1]), separators=(",", ":")))
+PY
+}
+
+write_status() {
+  local phase="$1" message="$2"
+  shift 2 || true
+  python3 - "$STATUS_FILE" "$phase" "$message" "$@" <<'PY'
+import json, sys, time
+path, phase, message = sys.argv[1], sys.argv[2], sys.argv[3]
+extra = {}
+# remaining args as key=value
+for item in sys.argv[4:]:
+    if "=" in item:
+        k, v = item.split("=", 1)
+        extra[k] = v
+data = {
+    "phase": phase,
+    "message": message,
+    "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    **extra,
+}
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, separators=(",", ":"))
+    f.write("\n")
+print(json.dumps(data, separators=(",", ":")))
+PY
+}
+
+resolve_fluxcast_root() {
+  if [[ -n "${FLUXCAST_ROOT:-}" && -d "$FLUXCAST_ROOT" ]]; then
+    echo "$FLUXCAST_ROOT"
+    return
+  fi
+  if [[ -n "${1:-}" && -d "$1" ]]; then
+    echo "$1"
+    return
+  fi
+  # Optional path in settings.json (keeps machine-specific roots out of the repo).
+  local from_settings=""
+  if [[ -f "$SETTINGS_FILE" ]]; then
+    from_settings="$(python3 -c 'import json,sys
+try:
+  print(json.load(open(sys.argv[1])).get("fluxcastRoot") or "")
+except Exception:
+  print("")' "$SETTINGS_FILE" 2>/dev/null || true)"
+  fi
+  if [[ -n "$from_settings" && -d "$from_settings" ]]; then
+    echo "$from_settings"
+    return
+  fi
+  if [[ -n "$DEFAULT_SPIKE_ROOT" && -d "$DEFAULT_SPIKE_ROOT" ]]; then
+    echo "$DEFAULT_SPIKE_ROOT"
+    return
+  fi
+  # Sibling checkout next to the plugin repo (e.g. ../fluxcast).
+  local sibling
+  sibling="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/fluxcast"
+  if [[ -d "$sibling/src" ]]; then
+    echo "$sibling"
+    return
+  fi
+  echo ""
+}
+
+cmd_doctor() {
+  local root
+  root="$(resolve_fluxcast_root "${1:-}")"
+  python3 - "$root" <<'PY'
+import json, os, shutil, subprocess, sys
+
+root = sys.argv[1]
+checks = []
+
+def add(name, status, message, detail=""):
+    checks.append({"name": name, "status": status, "message": message, "detail": detail})
+
+def which(name):
+    return shutil.which(name) or ""
+
+for bin_name, label in [
+    ("nmcli", "NetworkManager CLI"),
+    ("dnsmasq", "P2P DHCP server"),
+    ("wf-recorder", "Wayland capture"),
+    ("ffmpeg", "encoder"),
+    ("xrandr", "monitor detection"),
+    ("iw", "Wi-Fi interfaces"),
+    ("python3", "runtime"),
+]:
+    path = which(bin_name)
+    if path:
+        add(bin_name, "ok", f"{label} found", path)
+    else:
+        add(bin_name, "fail", f"{label} missing — install via omarchy pkg add", "")
+
+# FluxCast source
+main_py = os.path.join(root, "src", "main.py") if root else ""
+if root and os.path.isfile(main_py):
+    add("fluxcast", "ok", "FluxCast source root ready", root)
+else:
+    add("fluxcast", "fail", "FluxCast source root not found; set fluxcastRoot / FLUXCAST_ROOT", root or "")
+
+# UFW
+ufw = which("ufw")
+ufw_active = False
+ufw_detail = ""
+if ufw:
+    try:
+        out = subprocess.check_output(["ufw", "status"], text=True, stderr=subprocess.DEVNULL)
+        ufw_detail = out.strip().splitlines()[0] if out.strip() else ""
+        ufw_active = "Status: active" in out
+    except Exception as e:
+        ufw_detail = str(e)
+    if ufw_active:
+        needed = ["7236/tcp", "67/udp", "68/udp"]
+        missing = [p for p in needed if p not in out]
+        if missing:
+            add("firewall", "warn", "UFW active but Miracast ports may be blocked", "missing=" + ",".join(missing))
+        else:
+            add("firewall", "ok", "UFW active with Miracast ports present", ufw_detail)
+    else:
+        add("firewall", "ok", "UFW installed but inactive", ufw_detail)
+else:
+    add("firewall", "ok", "no ufw binary (nft/iptables not probed)", "")
+
+# P2P device
+try:
+    out = subprocess.check_output(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE", "device"], text=True)
+    p2p = [ln for ln in out.splitlines() if ":wifi-p2p:" in ln]
+    if p2p:
+        add("p2p", "ok", "Wi-Fi P2P device visible", p2p[0])
+    else:
+        add("p2p", "warn", "No wifi-p2p device in nmcli", out.strip()[:200])
+except Exception as e:
+    add("p2p", "fail", "nmcli device probe failed", str(e))
+
+fails = sum(1 for c in checks if c["status"] == "fail")
+warns = sum(1 for c in checks if c["status"] == "warn")
+ready = fails == 0
+print(json.dumps({
+    "ok": ready,
+    "ready": ready,
+    "fail_count": fails,
+    "warn_count": warns,
+    "fluxcast_root": root,
+    "checks": checks,
+}, separators=(",", ":")))
+PY
+}
+
+cmd_firewall_open() {
+  if ! command -v ufw >/dev/null 2>&1; then
+    write_status "idle" "ufw not installed; nothing to open"
+    return 0
+  fi
+  # Prefer interactive sudo via floating terminal when needed
+  local script
+  script=$(cat <<'EOS'
+set -euo pipefail
+sudo ufw allow 7236/tcp comment 'FluxCast WFD RTSP' || true
+sudo ufw allow 67/udp comment 'DHCP server' || true
+sudo ufw allow 68/udp comment 'DHCP client' || true
+sudo ufw allow 19000:19100/udp comment 'FluxCast RTP local' || true
+sudo ufw allow 42000:42100/udp comment 'FluxCast sink RTP/RTCP' || true
+sudo ufw status | head -40
+EOS
+)
+  if command -v omarchy-launch-floating-terminal-with-presentation >/dev/null 2>&1; then
+    omarchy-launch-floating-terminal-with-presentation "bash -lc $(printf '%q' "$script")"
+    write_status "idle" "Opened UFW Miracast rules (via floating terminal)"
+  else
+    bash -lc "$script"
+    write_status "idle" "Opened UFW Miracast rules"
+  fi
+}
+
+cmd_scan() {
+  local root
+  root="$(resolve_fluxcast_root "${1:-}")"
+  if [[ -z "$root" || ! -f "$root/src/main.py" ]]; then
+    emit '{"ok":false,"peers":[],"error":"fluxcast root missing"}'
+    return 1
+  fi
+  local out
+  out="$(cd "$root" && PYTHONUNBUFFERED=1 python3 -u src/main.py --protocol wfd --wfd-scan --wfd-p2p-backend nm 2>/dev/null || true)"
+  python3 - "$out" "$PEERS_FILE" <<'PY'
+import json, re, sys
+text, peers_path = sys.argv[1], sys.argv[2]
+peers = []
+# Example scan line: [4] AA:BB:CC:DD:EE:FF  Living-Room-TV via NetworkManager
+for m in re.finditer(r"\[(\d+)\]\s+([0-9A-Fa-f:]{17})\s+(\S+)", text):
+    peers.append({
+        "index": int(m.group(1)),
+        "mac": m.group(2).upper(),
+        "name": m.group(3),
+    })
+with open(peers_path, "w", encoding="utf-8") as f:
+    json.dump(peers, f, separators=(",", ":"))
+    f.write("\n")
+print(json.dumps({"ok": True, "peers": peers, "raw": text[-2000:]}, separators=(",", ":")))
+PY
+}
+
+cmd_get_mode() {
+  python3 - "$SETTINGS_FILE" <<'PY'
+import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    data = {}
+mode = str(data.get("mode") or "mirror")
+if mode not in ("mirror", "extend"):
+    mode = "mirror"
+print(json.dumps({"mode": mode}, separators=(",", ":")))
+PY
+}
+
+cmd_set_mode() {
+  local mode="${1:-mirror}"
+  if [[ "$mode" != "mirror" && "$mode" != "extend" ]]; then
+    emit '{"ok":false,"error":"mode must be mirror or extend"}'
+    return 1
+  fi
+  write_settings "mode=$mode" >/dev/null
+  emit "{\"ok\":true,\"mode\":\"$mode\"}"
+}
+
+# Merge sink-advertised stream modes + preferred/current into a status object.
+# Must use python3 -c (like enrich_peer_name) so stdin stays the JSON pipe.
+# A heredoc would steal stdin and wipe phase/running from status.
+attach_stream_mode_fields() {
+  python3 -c '
+import json, re, sys
+mode_path, settings_path = sys.argv[1], sys.argv[2]
+try:
+    data = json.loads(sys.stdin.read() or "{}")
+except Exception:
+    data = {}
+if not isinstance(data, dict):
+    data = {}
+try:
+    settings = json.load(open(settings_path))
+except Exception:
+    settings = {}
+try:
+    modes = json.load(open(mode_path))
+except Exception:
+    modes = {}
+supported = modes.get("supported") if isinstance(modes.get("supported"), list) else []
+# Fallback presets when the sink has not been queried yet this boot.
+if not supported:
+    supported = [
+        {"id": "1280x720p30", "label": "1280x720@30", "width": 1280, "height": 720, "fps": 30, "resolution": "1280x720"},
+        {"id": "1280x720p60", "label": "1280x720@60", "width": 1280, "height": 720, "fps": 60, "resolution": "1280x720"},
+        {"id": "1920x1080p30", "label": "1920x1080@30", "width": 1920, "height": 1080, "fps": 30, "resolution": "1920x1080"},
+        {"id": "1920x1080p60", "label": "1920x1080@60", "width": 1920, "height": 1080, "fps": 60, "resolution": "1920x1080"},
+    ]
+preferred = str(settings.get("streamMode") or "")
+current = str(modes.get("current") or preferred or "")
+if not current and preferred:
+    current = preferred
+ids = {str(m.get("id") or "") for m in supported}
+if preferred and preferred not in ids:
+    # Keep a custom preference visible even if the sink list is stale.
+    m = re.fullmatch(r"(\d+)x(\d+)p(\d+)", preferred)
+    if m:
+        w, h, f = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        supported.append({"id": preferred, "label": f"{w}x{h}@{f}", "width": w, "height": h, "fps": f, "resolution": f"{w}x{h}"})
+data["streamMode"] = current or preferred or "1280x720p30"
+data["streamModePreferred"] = preferred or data["streamMode"]
+data["streamModes"] = supported
+print(json.dumps(data, separators=(",", ":")))
+' "$MODE_STATE_FILE" "$SETTINGS_FILE"
+}
+
+cmd_get_stream_mode() {
+  echo '{}' | attach_stream_mode_fields
+}
+
+cmd_set_stream_mode() {
+  local mode_id="${1:-}"
+  if [[ -z "$mode_id" ]]; then
+    emit '{"ok":false,"error":"stream mode id required, e.g. 1280x720p30"}'
+    return 1
+  fi
+  python3 - "$SETTINGS_FILE" "$MODE_STATE_FILE" "$mode_id" <<'PY'
+import json, re, sys
+settings_path, mode_path, mode_id = sys.argv[1], sys.argv[2], sys.argv[3]
+m = re.fullmatch(r"(\d+)x(\d+)p(\d+)", mode_id)
+if not m:
+    print(json.dumps({"ok": False, "error": "mode must look like 1280x720p30"}))
+    raise SystemExit(0)
+w, h, fps = int(m.group(1)), int(m.group(2)), int(m.group(3))
+res = f"{w}x{h}"
+try:
+    data = json.load(open(settings_path))
+except Exception:
+    data = {}
+if not isinstance(data, dict):
+    data = {}
+data["streamMode"] = mode_id
+data["outputRes"] = res
+data["extendResolution"] = res
+data["fps"] = str(fps)
+data["extendRefresh"] = str(30 if fps < 60 else 60)
+with open(settings_path, "w", encoding="utf-8") as fh:
+    json.dump(data, fh, separators=(",", ":"))
+    fh.write("\n")
+# Update "current" preference in mode state without wiping supported list.
+try:
+    modes = json.load(open(mode_path))
+except Exception:
+    modes = {}
+if not isinstance(modes, dict):
+    modes = {}
+modes["current"] = mode_id
+entry = {"id": mode_id, "label": f"{w}x{h}@{fps}", "width": w, "height": h, "fps": fps, "resolution": res}
+supported = modes.get("supported") if isinstance(modes.get("supported"), list) else []
+if not any(str(x.get("id")) == mode_id for x in supported):
+    supported.append(entry)
+    supported.sort(key=lambda x: (x.get("height", 0), x.get("width", 0), x.get("fps", 0)))
+modes["supported"] = supported
+try:
+    with open(mode_path, "w", encoding="utf-8") as fh:
+        json.dump(modes, fh, separators=(",", ":"))
+        fh.write("\n")
+except OSError:
+    pass
+print(json.dumps({"ok": True, "streamMode": mode_id, "outputRes": res, "fps": fps}, separators=(",", ":")))
+PY
+}
+
+is_running() {
+  [[ -f "$PID_FILE" ]] || return 1
+  local pid
+  pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+  [[ -n "$pid" ]] || return 1
+  kill -0 "$pid" 2>/dev/null
+}
+
+p2p_group_up() {
+  # True when a real P2P group interface exists (not just p2p-dev), or when
+  # NetworkManager still reports the FluxCast WFD connection as active.
+  if iw dev 2>/dev/null | awk '
+    $1 == "Interface" && $2 ~ /^p2p-wlp/ { iface=$2; next }
+    iface != "" && $1 == "type" && ($2 == "P2P-GO" || $2 == "P2P-client") { found=1 }
+    $1 == "Interface" { iface="" }
+    END { exit found ? 0 : 1 }
+  '; then
+    return 0
+  fi
+  nmcli -t -f NAME,DEVICE,STATE connection show --active 2>/dev/null \
+    | rg -q '^FluxCast WFD:'
+}
+
+fluxcast_python_running() {
+  python3 - <<'PY'
+import os, sys
+for pid in os.listdir("/proc"):
+    if not pid.isdigit():
+        continue
+    try:
+        exe = os.path.realpath(f"/proc/{pid}/exe")
+    except OSError:
+        continue
+    if "python" not in os.path.basename(exe):
+        continue
+    try:
+        cmd = open(f"/proc/{pid}/cmdline", "rb").read().replace(b"\0", b" ").decode()
+    except OSError:
+        continue
+    if "src/main.py" in cmd and "--protocol" in cmd and "wfd" in cmd:
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+
+reconcile_stale_cast() {
+  # Only reclaim wedged sessions AFTER media is playing. Earlier phases
+  # (connecting/dhcp/rtsp) often flap the P2P iface during DHCP/RTSP setup;
+  # killing there caused silent reconnect failures mid-handshake.
+  is_running || return 0
+  local phase=""
+  if [[ -f "$STATUS_FILE" ]]; then
+    phase="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("phase",""))' "$STATUS_FILE" 2>/dev/null || true)"
+  fi
+  [[ "$phase" == "streaming" ]] || return 0
+  if p2p_group_up; then
+    return 0
+  fi
+  # Sustained grace: require the group to stay down across several checks.
+  local i
+  for i in 1 2 3 4 5; do
+    sleep 1
+    if p2p_group_up; then
+      return 0
+    fi
+  done
+  cmd_stop >/dev/null || true
+  write_status "error" "Miracast link dropped after streaming started" >/dev/null || true
+}
+
+enrich_peer_name() {
+  # Read JSON status from stdin; script via -c so stdin stays the pipe.
+  python3 -c '
+import json, sys
+peers_path, settings_path = sys.argv[1], sys.argv[2]
+data = json.loads(sys.stdin.read() or "{}")
+mac = str(data.get("peer") or "").upper()
+name = str(data.get("peerName") or "").strip()
+if not name and mac:
+    try:
+        for p in json.load(open(peers_path)):
+            if str(p.get("mac", "")).upper() == mac:
+                name = str(p.get("name") or "")
+                break
+    except Exception:
+        pass
+if not name and mac:
+    try:
+        s = json.load(open(settings_path))
+        if str(s.get("lastPeerMac", "")).upper() == mac:
+            name = str(s.get("lastPeerName") or "")
+    except Exception:
+        pass
+if name:
+    data["peerName"] = name
+print(json.dumps(data, separators=(",", ":")))
+' "$PEERS_FILE" "$SETTINGS_FILE"
+}
+
+cmd_status() {
+  reconcile_stale_cast || true
+  local settings link_up="false"
+  settings="$(read_settings)"
+  if p2p_group_up; then link_up="true"; fi
+  if is_running; then
+    local pid
+    pid="$(cat "$PID_FILE")"
+    python3 - "$STATUS_FILE" "$pid" "$settings" "$link_up" <<'PY' | enrich_peer_name | attach_stream_mode_fields
+import json, sys
+path, pid, settings_raw, link_up = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+try:
+    data = json.load(open(path))
+except Exception:
+    data = {"phase": "streaming", "message": "Cast process running"}
+try:
+    settings = json.loads(settings_raw)
+except Exception:
+    settings = {}
+data["running"] = True
+data["pid"] = int(pid)
+data["linkUp"] = link_up == "true"
+data["mode"] = settings.get("mode") or data.get("mode") or "mirror"
+pos = settings.get("extendPosition") or data.get("extendPosition") or "right"
+if pos not in ("right", "left", "above", "below"):
+    pos = "right"
+data["extendPosition"] = pos
+data.setdefault("peer", settings.get("lastPeerMac") or "")
+data.setdefault("peerName", settings.get("lastPeerName") or "")
+print(json.dumps(data, separators=(",", ":")))
+PY
+    return 0
+  fi
+  python3 - "$STATUS_FILE" "$settings" "$link_up" <<'PY' | enrich_peer_name | attach_stream_mode_fields
+import json, sys
+path, settings_raw, link_up = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    data = json.load(open(path))
+except Exception:
+    data = {"phase": "idle", "message": "Idle"}
+try:
+    settings = json.loads(settings_raw)
+except Exception:
+    settings = {}
+# If not running, keep last peer identity for UI but force idle-ish phase unless error
+if data.get("phase") not in ("error",):
+    if data.get("phase") in ("connecting", "dhcp", "rtsp", "streaming", "scanning"):
+        data["phase"] = "idle"
+        data["message"] = "Idle"
+data["running"] = False
+data["pid"] = None
+data["linkUp"] = link_up == "true"
+data["mode"] = settings.get("mode") or data.get("mode") or "mirror"
+pos = settings.get("extendPosition") or data.get("extendPosition") or "right"
+if pos not in ("right", "left", "above", "below"):
+    pos = "right"
+data["extendPosition"] = pos
+data.setdefault("peer", settings.get("lastPeerMac") or "")
+data.setdefault("peerName", settings.get("lastPeerName") or "")
+print(json.dumps(data, separators=(",", ":")))
+PY
+}
+
+cmd_stop() {
+  if [[ -f "$PID_FILE" ]]; then
+    local pid
+    pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+    if [[ -n "$pid" ]]; then
+      # Kill the wrapper and its process group (ffmpeg/wf-recorder hold RTP ports).
+      kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+      sleep 0.5
+      kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+    fi
+    rm -f "$PID_FILE"
+  fi
+  # Best-effort cleanup of FluxCast / capture leftovers without self-matching kill
+  python3 - "$HEADLESS_FILE" <<'PY'
+import os, signal, time, sys
+tracked = ""
+try:
+    tracked = open(sys.argv[1]).read().strip()
+except Exception:
+    pass
+targets = []
+for pid in os.listdir("/proc"):
+    if not pid.isdigit():
+        continue
+    try:
+        cmd = open(f"/proc/{pid}/cmdline", "rb").read().replace(b"\0", b" ").decode(errors="ignore")
+    except OSError:
+        continue
+    base = os.path.basename(cmd.split(" ", 1)[0]) if cmd else ""
+    # Capture may target HEADLESS-* or a peer-named Extend output.
+    wf_match = "wf-recorder" in cmd and (
+        "HEADLESS" in cmd or (tracked and tracked in cmd)
+    )
+    if ("src/main.py" in cmd and "--protocol" in cmd and "wfd" in cmd) or \
+       wf_match or \
+       (base in ("ffmpeg", "ffmpeg-") and "rtp_mpegts" in cmd):
+        targets.append(int(pid))
+    # Also match ffmpeg launched for FluxCast RTP even if cmdline differs
+    elif base == "ffmpeg":
+        try:
+            cwd = os.readlink(f"/proc/{pid}/cwd")
+        except OSError:
+            cwd = ""
+        if "fluxcast" in cwd:
+            targets.append(int(pid))
+for pid in targets:
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+time.sleep(0.4)
+for pid in targets:
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+# Wait briefly for common RTP source ports to free
+deadline = time.time() + 2.0
+while time.time() < deadline:
+    busy = False
+    for port in (19002, 19003):
+        try:
+            import socket
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("0.0.0.0", port))
+            s.close()
+        except OSError:
+            busy = True
+            break
+    if not busy:
+        break
+    time.sleep(0.15)
+PY
+  nmcli connection delete id "FluxCast WFD" 2>/dev/null || true
+  # Brief settle so wf-recorder's screencopy session is gone before we tear
+  # down the virtual output (removing it under an active capture freezes eDP).
+  sleep 0.2
+  cleanup_extend_monitor
+  local settings peer_name mode
+  settings="$(read_settings)"
+  peer_name="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("lastPeerName",""))' "$settings")"
+  mode="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("mode","mirror"))' "$settings")"
+  write_status "idle" "Stopped" "mode=$mode" "peerName=$peer_name"
+}
+
+cmd_start() {
+  local peer="" peer_name="" monitor="eDP-1" root="" go_intent="15" fps="" bitrate="" output_res="" with_audio="0" auto_fw="1" mode=""
+  local settings
+  settings="$(read_settings)"
+  fps="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("fps","30"))' "$settings")"
+  bitrate="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("bitrate","4M"))' "$settings")"
+  output_res="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("outputRes","1280x720"))' "$settings")"
+  # Prefer explicit streamMode (e.g. 1920x1080p30) over loose fps/outputRes.
+  eval "$(python3 -c 'import json,re,sys
+s=json.loads(sys.argv[1]); mid=str(s.get("streamMode") or "")
+m=re.fullmatch(r"(\d+)x(\d+)p(\d+)", mid)
+if m:
+  print(f"output_res={m.group(1)}x{m.group(2)}")
+  print(f"fps={m.group(3)}")
+' "$settings")"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --peer) peer="$2"; shift 2 ;;
+      --peer-name) peer_name="$2"; shift 2 ;;
+      --monitor) monitor="$2"; shift 2 ;;
+      --mode) mode="$2"; shift 2 ;;
+      --fluxcast-root) root="$2"; shift 2 ;;
+      --go-intent) go_intent="$2"; shift 2 ;;
+      --fps) fps="$2"; shift 2 ;;
+      --bitrate) bitrate="$2"; shift 2 ;;
+      --output-res) output_res="$2"; shift 2 ;;
+      --with-audio) with_audio="1"; shift ;;
+      --no-firewall) auto_fw="0"; shift ;;
+      *) shift ;;
+    esac
+  done
+  [[ -n "$fps" ]] || fps="30"
+  [[ -n "$bitrate" ]] || bitrate="4M"
+  [[ -n "$output_res" ]] || output_res="1280x720"
+
+  if [[ -z "$peer" ]]; then
+    emit '{"ok":false,"error":"--peer MAC required"}'
+    return 1
+  fi
+  root="$(resolve_fluxcast_root "$root")"
+  if [[ -z "$root" || ! -f "$root/src/main.py" ]]; then
+    emit '{"ok":false,"error":"fluxcast root missing"}'
+    return 1
+  fi
+
+  if [[ -z "$mode" ]]; then
+    mode="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("mode","mirror"))' "$(read_settings)")"
+  fi
+  if [[ "$mode" != "mirror" && "$mode" != "extend" ]]; then
+    mode="mirror"
+  fi
+  if [[ -z "$peer_name" ]]; then
+    peer_name="$(peer_name_for "$peer")"
+  fi
+  write_settings "mode=$mode" "lastPeerMac=$peer" "lastPeerName=$peer_name" >/dev/null
+
+  cmd_stop >/dev/null
+
+  if [[ "$mode" == "extend" ]]; then
+    local headless
+    headless="$(ensure_extend_monitor "$peer_name" "$peer" || true)"
+    if [[ -z "$headless" ]]; then
+      emit '{"ok":false,"error":"failed to create Hyprland headless output for extend"}'
+      return 1
+    fi
+    monitor="$headless"
+    enable_software_cursors
+  fi
+
+  if [[ "$auto_fw" == "1" ]]; then
+    if command -v ufw >/dev/null 2>&1; then
+      if ufw status 2>/dev/null | grep -q "Status: active"; then
+        if ! ufw status 2>/dev/null | grep -q "7236/tcp"; then
+          cmd_firewall_open >/dev/null || true
+        fi
+      fi
+    fi
+  fi
+
+  : > "$LOG_FILE"
+  : > "$LAT_FILE"
+  local label="${peer_name:-$peer}"
+  local action_word="Mirroring"
+  [[ "$mode" == "extend" ]] && action_word="Extending"
+  write_status "connecting" "Connecting to $label" "peer=$peer" "peerName=$peer_name" "monitor=$monitor" "mode=$mode" >/dev/null
+
+  local audio_args=(--wfd-no-audio)
+  if [[ "$with_audio" == "1" ]]; then
+    audio_args=()
+  fi
+
+  # GPU encode policy for FluxCast (see src/wfd/hw_encode.py). Prefer VAAPI/QSV
+  # when present; power bias still prefers GPU but trims bitrate on battery /
+  # power-saver. Override with settings videoEncoder or FLUXCAST_WFD_ENCODER.
+  local video_encoder
+  video_encoder="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("videoEncoder","auto"))' "$settings")"
+  [[ -n "$video_encoder" ]] || video_encoder="auto"
+
+  (
+    cd "$root"
+    export PYTHONUNBUFFERED=1
+    export PATH="/usr/bin:/bin:$PATH"
+    export FLUXCAST_WFD_ENCODER="$video_encoder"
+    export FLUXCAST_WFD_MODE_STATE="$MODE_STATE_FILE"
+    python3 -u src/main.py \
+      --protocol wfd \
+      --wfd-peer "$peer" \
+      --monitor "$monitor" \
+      --wfd-capture-backend wf-recorder \
+      --wfd-aosp-pmt-pid \
+      --wfd-p2p-backend nm \
+      --wfd-go-intent "$go_intent" \
+      --fps "$fps" \
+      --output-res "$output_res" \
+      --bitrate "$bitrate" \
+      "${audio_args[@]}" \
+      --wfd-latency-log "$LAT_FILE" \
+      >>"$LOG_FILE" 2>&1
+    ec=$?
+    # Don't overwrite a more specific failure already recorded by the health watcher.
+    current_phase="$(python3 -c 'import json,sys; 
+try: print(json.load(open(sys.argv[1])).get("phase",""))
+except Exception: print("")' "$STATUS_FILE" 2>/dev/null || true)"
+    if [[ "$current_phase" != "error" ]]; then
+      if rg -q "play_accepted|PLAY accepted" "$LAT_FILE" "$LOG_FILE" 2>/dev/null; then
+        printf '%s\n' "{\"phase\":\"idle\",\"message\":\"Session ended\",\"running\":false,\"peer\":\"$peer\",\"peerName\":\"$peer_name\",\"mode\":\"$mode\"}" > "$STATUS_FILE"
+      else
+        printf '%s\n' "{\"phase\":\"error\",\"message\":\"Cast failed before video started (exit $ec)\",\"running\":false,\"peer\":\"$peer\",\"peerName\":\"$peer_name\",\"mode\":\"$mode\"}" > "$STATUS_FILE"
+      fi
+    fi
+    rm -f "$PID_FILE"
+    # Full Extend teardown on any exit (manual stop, sink drop, capture death):
+    # remove the virtual output, restore cursor mode, and re-assert eDP so the
+    # laptop panel does not lock up after a scaled headless disappears.
+    if [[ "$mode" == "extend" ]]; then
+      cleanup_extend_monitor
+    fi
+  ) &
+  local pid=$!
+  echo "$pid" > "$PID_FILE"
+
+  (
+    local saw_play=0
+    local missing_link=0
+    # Stay alive for the whole cast: promote phases, then detect sink drop
+    # only after PLAY (never during RTSP handshake).
+    while kill -0 "$pid" 2>/dev/null; do
+      if [[ "$saw_play" -eq 0 ]] && rg -q "play_accepted|PLAY accepted" "$LAT_FILE" "$LOG_FILE" 2>/dev/null; then
+        write_status "streaming" "$action_word to $label" "peer=$peer" "peerName=$peer_name" "mode=$mode" "monitor=$monitor" "pid=$pid" "running=true" >/dev/null
+        saw_play=1
+        missing_link=0
+      elif [[ "$saw_play" -eq 0 ]]; then
+        if rg -q "rtsp_connected" "$LAT_FILE" 2>/dev/null; then
+          write_status "rtsp" "RTSP connected; negotiating media" "peer=$peer" "peerName=$peer_name" "mode=$mode" "pid=$pid" "running=true" >/dev/null
+        elif rg -q "P2P link is activated|activated;" "$LOG_FILE" 2>/dev/null; then
+          write_status "dhcp" "P2P up; waiting for sink IP / RTSP" "peer=$peer" "peerName=$peer_name" "mode=$mode" "pid=$pid" "running=true" >/dev/null
+        fi
+      fi
+
+      if [[ "$saw_play" -eq 1 ]]; then
+        if p2p_group_up; then
+          missing_link=0
+        else
+          missing_link=$((missing_link + 1))
+          if [[ "$missing_link" -ge 5 ]]; then
+            write_status "error" "Sink disconnected after streaming started" "peer=$peer" "peerName=$peer_name" "mode=$mode" "running=false" >/dev/null
+            kill "$pid" 2>/dev/null || true
+            python3 - <<'PY'
+import os, signal
+for p in os.listdir("/proc"):
+    if not p.isdigit():
+        continue
+    try:
+        exe = os.path.realpath(f"/proc/{p}/exe")
+    except OSError:
+        continue
+    if "python" not in os.path.basename(exe):
+        continue
+    try:
+        cmd = open(f"/proc/{p}/cmdline", "rb").read().replace(b"\0", b" ").decode()
+    except OSError:
+        continue
+    if "src/main.py" in cmd and "--protocol" in cmd and "wfd" in cmd:
+        try:
+            os.kill(int(p), signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+PY
+            break
+          fi
+        fi
+      fi
+      sleep 1
+    done
+  ) &
+
+  emit "{\"ok\":true,\"pid\":$pid,\"peer\":\"$peer\",\"peerName\":\"$peer_name\",\"mode\":\"$mode\",\"monitor\":\"$monitor\",\"phase\":\"connecting\"}"
+}
+
+usage() {
+  cat <<EOF
+Usage: miracast-ctl <command> [args]
+
+Commands:
+  doctor [fluxcast-root]
+  firewall-open
+  scan [fluxcast-root]
+  start --peer MAC [--peer-name NAME] [--mode mirror|extend] [--monitor NAME]
+        [--fluxcast-root DIR] [--go-intent N] [--fps N] [--bitrate RATE]
+        [--output-res WxH] [--with-audio] [--no-firewall]
+  status
+  stop
+  get-mode
+  set-mode mirror|extend
+  get-stream-mode
+  set-stream-mode <id>   # e.g. 1280x720p30 / 1920x1080p60
+  get-extend-position
+  set-extend-position right|left|above|below
+  restart-capture [quick]
+  pause-capture
+EOF
+}
+
+cmd_get_extend_position() {
+  local pos
+  pos="$(extend_position)"
+  emit "{\"position\":\"$pos\"}"
+}
+
+cmd_set_extend_position() {
+  apply_extend_position "${1:-right}"
+}
+
+cmd_restart_capture() {
+  local info restarted=false healthy=false pid="" mode="${1:-}"
+  info="$(restart_extend_capture "$mode")"
+  [[ "$info" == *"restarted=true"* ]] && restarted=true
+  [[ "$info" == *"healthy=true"* ]] && healthy=true
+  pid="$(echo "$info" | sed -n 's/.*pid=\([0-9]*\).*/\1/p')"
+  emit "{\"ok\":true,\"captureRestarted\":$restarted,\"captureHealthy\":$healthy,\"fluxPid\":\"$pid\"}"
+}
+
+cmd_pause_capture() {
+  local info count
+  info="$(pause_extend_capture)"
+  count="${info##*=}"
+  [[ "$count" =~ ^[0-9]+$ ]] || count=0
+  emit "{\"ok\":true,\"paused\":$count}"
+}
+
+main() {
+  local cmd="${1:-}"
+  shift || true
+  case "$cmd" in
+    doctor) cmd_doctor "$@" ;;
+    firewall-open|firewall_open) cmd_firewall_open "$@" ;;
+    scan) cmd_scan "$@" ;;
+    start) cmd_start "$@" ;;
+    status) cmd_status "$@" ;;
+    stop) cmd_stop "$@" ;;
+    get-mode|get_mode) cmd_get_mode "$@" ;;
+    set-mode|set_mode) cmd_set_mode "$@" ;;
+    get-stream-mode|get_stream_mode) cmd_get_stream_mode "$@" ;;
+    set-stream-mode|set_stream_mode) cmd_set_stream_mode "$@" ;;
+    get-extend-position|get_extend_position) cmd_get_extend_position "$@" ;;
+    set-extend-position|set_extend_position) cmd_set_extend_position "$@" ;;
+    restart-capture|restart_capture) cmd_restart_capture "$@" ;;
+    pause-capture|pause_capture) cmd_pause_capture "$@" ;;
+    -h|--help|help|"") usage; exit 0 ;;
+    *) echo "{\"ok\":false,\"error\":\"unknown command\"}" >&2; exit 1 ;;
+  esac
+}
+
+main "$@"
