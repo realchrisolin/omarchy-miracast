@@ -24,7 +24,12 @@ CAPTURE_GEOM_FILE="$STATE_DIR/capture.geometry"
 CAPTURE_PAUSED_FILE="$STATE_DIR/capture.paused"
 # RENDER METHOD preference for FluxCast (dmabuf|vaapi|cpu); live-updated on pill change.
 CAPTURE_ENCODE_FILE="$STATE_DIR/capture-encode"
-# Per-device Extend scales live in settings.json → sinkScales: { "MAC": 2 }
+# Previous Hyprland look/perf knobs while Miracast forced a light profile.
+CAST_HYPR_PERF_PREV_FILE="$STATE_DIR/cast-hypr-perf.prev"
+# Legacy filename from animations-only toggle.
+CAST_ANIMATIONS_PREV_FILE="$STATE_DIR/cast-animations.prev"
+# Per-device Extend scales live in settings.json → sinkScales: { "MAC": 1.6 }.
+# When unset, defaultExtendScale (1) is used — scale 1 is much cheaper for Hyprland.
 
 # Headless capture cannot include the hardware cursor plane — force software
 # cursors while Extend is live so the pointer is visible on the Miracast sink.
@@ -146,6 +151,9 @@ defaults = {
     "streamMode": "1280x720p30",
     # Display panel: false = expand all outputs; true = accordion (focused only).
     "onlyExpandFocusedDisplay": False,
+    # Default Hyprland scale for Miracast Extend when sinkScales has no MAC entry.
+    # 1 minimizes compositor cost; raise per-sink via the Display panel if needed.
+    "defaultExtendScale": 1,
 }
 try:
     data = json.load(open(path))
@@ -297,9 +305,15 @@ PY
 }
 
 extend_scale_get() {
+  # $2 optional override default; else settings.defaultExtendScale (1).
   local mac default="${2:-}"
   mac="$(normalize_peer_mac "$1")"
-  [[ -n "$mac" ]] || { printf '%s' "$default"; return 0; }
+  [[ -n "$mac" ]] || {
+    if [[ -n "$default" ]]; then printf '%s' "$default"
+    else printf '1'
+    fi
+    return 0
+  }
   _migrate_legacy_extend_scales 2>/dev/null || true
   python3 - "$SETTINGS_FILE" "$mac" "$default" <<'PY'
 import json, sys
@@ -308,12 +322,22 @@ try:
     settings = json.load(open(path))
 except Exception:
     settings = {}
+if not isinstance(settings, dict):
+    settings = {}
 scales = settings.get("sinkScales") if isinstance(settings, dict) else {}
 if not isinstance(scales, dict):
     scales = {}
 val = scales.get(mac)
 if val is None or val == "":
-    print(default)
+    if default != "":
+        print(default)
+    else:
+        d = settings.get("defaultExtendScale", 1)
+        try:
+            num = float(d)
+            print(int(num) if num == int(num) else num)
+        except Exception:
+            print(1)
 else:
     print(val)
 PY
@@ -1037,8 +1061,8 @@ else:
   printf '%s\n' "$headless" > "$HEADLESS_FILE"
   rm -f "$CAPTURE_GEOM_FILE"
   local parts mode pos scale rest saved_scale
-  # Restore per-device Extend scale from the last session with this sink (default 1).
-  saved_scale="$(extend_scale_get "$peer_mac" "")"
+  # Restore per-device Extend scale (sinkScales[MAC], else defaultExtendScale=1).
+  saved_scale="$(extend_scale_get "$peer_mac")"
   parts="$(extend_geometry_parts "$position" "$saved_scale")"
   mode="${parts%%|*}"
   rest="${parts#*|}"
@@ -1226,6 +1250,63 @@ wait_capture_senders_gone() {
   sleep 0.3
   [[ "$(capture_senders_alive 2>/dev/null || echo false)" == "false" ]]
 }
+
+# While casting: disable animations only. Do NOT zero borders/gaps/rounding —
+# that removes the focus ring and can break workspace/bar layout.
+# Software cursors stay handled separately (screencopy can't see HW cursor).
+cast_hypr_perf_apply() {
+  if [[ -f "$CAST_HYPR_PERF_PREV_FILE" ]]; then
+    return 0
+  fi
+  rm -f "$CAST_ANIMATIONS_PREV_FILE"
+  local prev
+  prev="$(timeout 3 hyprctl getoption animations:enabled -j 2>/dev/null | python3 -c 'import json,sys
+try:
+  print("true" if json.load(sys.stdin).get("bool") else "false")
+except Exception:
+  print("true")' 2>/dev/null || echo true)"
+  # Also ensure look knobs are not left zeroed from older aggressive profiles.
+  printf '%s\n' "$prev" >"$CAST_HYPR_PERF_PREV_FILE"
+  timeout 3 hyprctl eval 'hl.config({
+    animations = { enabled = false },
+    decoration = { rounding = 6 },
+    general = { border_size = 2, gaps_in = 5, gaps_out = 10 },
+    render = { direct_scanout = 0 },
+  })' >/dev/null 2>&1 || true
+  disconnect_log "cast hypr: animations off (was $prev); borders/gaps restored"
+}
+
+cast_hypr_perf_restore() {
+  # Always put borders/gaps/rounding back even if prev file missing (recovery
+  # from older cast profiles that zeroed them).
+  timeout 3 hyprctl eval 'hl.config({
+    decoration = { rounding = 6 },
+    general = { border_size = 2, gaps_in = 5, gaps_out = 10 },
+    render = { direct_scanout = 0 },
+  })' >/dev/null 2>&1 || true
+
+  local prev="true"
+  if [[ -f "$CAST_HYPR_PERF_PREV_FILE" ]]; then
+    prev="$(cat "$CAST_HYPR_PERF_PREV_FILE" 2>/dev/null || echo true)"
+    rm -f "$CAST_HYPR_PERF_PREV_FILE"
+  elif [[ -f "$CAST_ANIMATIONS_PREV_FILE" ]]; then
+    prev="$(cat "$CAST_ANIMATIONS_PREV_FILE" 2>/dev/null || echo true)"
+    rm -f "$CAST_ANIMATIONS_PREV_FILE"
+  else
+    disconnect_log "cast hypr: borders/gaps restored (no anim prev)"
+    return 0
+  fi
+  if [[ "$prev" == "false" ]]; then
+    timeout 3 hyprctl eval 'hl.config({ animations = { enabled = false } })' >/dev/null 2>&1 || true
+  else
+    timeout 3 hyprctl eval 'hl.config({ animations = { enabled = true } })' >/dev/null 2>&1 || true
+  fi
+  disconnect_log "cast hypr restored (animations=$prev, borders/gaps on)"
+}
+
+# Back-compat aliases used by older call sites / docs.
+cast_animations_disable() { cast_hypr_perf_apply; }
+cast_animations_restore() { cast_hypr_perf_restore; }
 
 disconnect_log() {
   mkdir -p "$LOG_DIR"
@@ -1968,6 +2049,7 @@ cmd_stop() {
   pause_extend_capture >/dev/null || true
   wait_capture_senders_gone 40 || true
   sleep 0.5
+  cast_animations_restore || true
 
   if [[ -f "$PID_FILE" ]]; then
     local pid
@@ -2184,9 +2266,15 @@ print(v if v in ("dmabuf","vaapi","cpu") else "dmabuf")' "$settings")"
     # Scaled outputs use DMA-BUF by default (proven at integer scale 2 with
     # tv-range CQP). Deny with FLUXCAST_WFD_DMABUF_ALLOW_SCALED=0 if needed.
     export FLUXCAST_WFD_DMABUF_ALLOW_SCALED="${FLUXCAST_WFD_DMABUF_ALLOW_SCALED:-}"
-    # Do not force damage-aware capture (omit -D). On virtual Extend outputs,
-    # damage tracking can wake the CPU more than continuous -D and raised
-    # battery draw. Opt in with FLUXCAST_WFD_WF_RECORDER_DAMAGE=1 if desired.
+    # Prefer continuous wf-recorder -D on Extend. Damage-aware (omit -D) with
+    # live UI (e.g. blinking cursors) keeps waking Hyprland harder than a
+    # steady 30fps grab. Only honor DAMAGE=1 if the caller set it explicitly
+    # for this start; clear a stale inherited value otherwise.
+    if [[ "${FLUXCAST_WFD_WF_RECORDER_DAMAGE:-}" =~ ^(1|true|yes|on)$ ]]; then
+      export FLUXCAST_WFD_WF_RECORDER_DAMAGE=1
+    else
+      unset FLUXCAST_WFD_WF_RECORDER_DAMAGE
+    fi
     export FLUXCAST_WFD_MODE_STATE="$MODE_STATE_FILE"
     # When set (file exists), FluxCast must not auto-rebind over an intentional
     # pause (screen lock / Extend position move).
@@ -2226,9 +2314,11 @@ except Exception: print("")' "$STATUS_FILE" 2>/dev/null || true)"
     if [[ "$mode" == "extend" ]]; then
       cleanup_extend_monitor
     fi
+    cast_animations_restore || true
   ) &
   local pid=$!
   echo "$pid" > "$PID_FILE"
+  cast_animations_disable || true
 
   (
     local saw_play=0
@@ -2400,7 +2490,7 @@ except Exception: print("")
     [[ -n "$mac" ]] || { emit "{\"ok\":false,\"error\":\"no device mac\"}"; return 1; }
     extend_scale_set "$mac" "$scale"
   fi
-  emit "{\"ok\":true,\"mac\":\"$mac\",\"scale\":\"$(extend_scale_get "$mac" "")\"}"
+  emit "{\"ok\":true,\"mac\":\"$mac\",\"scale\":\"$(extend_scale_get "$mac")\"}"
 }
 
 main() {

@@ -42,7 +42,8 @@ Panel {
   //   / "miracast" / "miracastPeers"
   //   "textsize"   - global shell/GTK/terminal text size (not per-display).
   readonly property var miracastModeValues: ["mirror", "extend"]
-  readonly property var miracastPosValues: ["left", "right", "above", "below"]
+  // Display order ← ↑ ↓ → (left, above, below, right).
+  readonly property var miracastPosValues: ["left", "above", "below", "right"]
   readonly property var miracastEncodeValues: Model.miracastCaptureEncodeValues()
   readonly property var miracastStreamModeIds: {
     var out = []
@@ -990,6 +991,21 @@ Panel {
       anchors.fill: parent
       onMoveRequested: function(dx, dy) {
         if (!root.cursorActive) { root.cursorActive = true; return }
+        // Vim hjkl on the CAST MODE row set Extend position (h← j↓ k↑ l→).
+        // Only while Extend is active and that row is focused — elsewhere
+        // hjkl keep navigating sections / pills.
+        if (miracast && miracast.mode === "extend"
+            && (root.focusSection === "miracastMode" || root.focusSection === "miracastPos")
+            && (dx !== 0 || dy !== 0)) {
+          var pos = dx < 0 ? "left"
+                  : dx > 0 ? "right"
+                  : dy < 0 ? "above"
+                  : "below"
+          miracast.setExtendPosition(pos)
+          root.focusSection = "miracastPos"
+          root.selectedIndex = Math.max(0, root.miracastPosValues.indexOf(pos))
+          return
+        }
         if (dy !== 0) root.moveCursor(dy)
         else if (dx !== 0) {
           if (root.focusSection === "monitorBrightness") root.adjustBrightness(dx * 5)
@@ -1454,10 +1470,10 @@ Panel {
     required property string posValue
     required property int posIndex
 
-    text: posValue === "left" ? "Left"
-          : posValue === "above" ? "Above"
-          : posValue === "below" ? "Below"
-          : "Right"
+    text: posValue === "left" ? "←"
+          : posValue === "above" ? "↑"
+          : posValue === "below" ? "↓"
+          : "→"
     fontSize: Style.font.caption
     foreground: root.bar.foreground
     fontFamily: root.bar.fontFamily
@@ -1763,53 +1779,100 @@ Panel {
         width: parent.width
         spacing: monitorRow.settingsLabelGap
 
-        Text {
-          text: "CAST MODE"
-          color: Qt.darker(root.bar.foreground, 1.25)
-          font.family: root.bar.fontFamily
-          font.pixelSize: Style.font.caption
-          font.bold: true
-        }
-
-        Grid {
-          id: miracastModeRow
+        // CAST MODE | EXTEND POSITION — shared row, vertical separator when Extend.
+        Row {
+          id: miracastCastRow
           width: parent.width
-          columns: root.miracastModeValues.length
-          spacing: Style.spacing.xs
-          readonly property real cellWidth: root.miracastModeValues.length > 0
-            ? (width - spacing * (columns - 1)) / columns
+          spacing: Style.spacing.sm
+          readonly property bool showPos: miracast.mode === "extend"
+          // Equal pill width across both groups (2 mode + 4 arrows when Extend).
+          readonly property int pillCount: root.miracastModeValues.length
+            + (showPos ? root.miracastPosValues.length : 0)
+          readonly property real sepWidth: showPos ? 1 : 0
+          // Gaps: xs between pills within each group + sm on each side of the separator.
+          readonly property real pillWidth: pillCount > 0
+            ? (width - sepWidth - (showPos ? spacing : 0)
+               - Style.spacing.xs * (
+                   Math.max(0, root.miracastModeValues.length - 1)
+                   + (showPos ? Math.max(0, root.miracastPosValues.length - 1) : 0)
+                 )) / pillCount
             : 0
 
-          Repeater {
-            model: root.miracastModeValues
-            MiracastModePill {
-              required property string modelData
-              required property int index
-              modeValue: modelData
-              modeIndex: index
-              width: miracastModeRow.cellWidth
+          Column {
+            id: miracastModeGroup
+            width: miracastCastRow.pillWidth * root.miracastModeValues.length
+              + Style.spacing.xs * Math.max(0, root.miracastModeValues.length - 1)
+            spacing: monitorRow.settingsLabelGap
+
+            Text {
+              text: "CAST MODE"
+              color: Qt.darker(root.bar.foreground, 1.25)
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+            }
+
+            Row {
+              width: parent.width
+              spacing: Style.spacing.xs
+              Repeater {
+                model: root.miracastModeValues
+                MiracastModePill {
+                  required property string modelData
+                  required property int index
+                  modeValue: modelData
+                  modeIndex: index
+                  width: miracastCastRow.pillWidth
+                }
+              }
+            }
+          }
+
+          Rectangle {
+            visible: miracastCastRow.showPos
+            width: miracastCastRow.sepWidth
+            height: Math.max(miracastModeGroup.height, miracastPosGroup.height)
+            color: root.bar.foreground
+            opacity: 0.25
+            radius: 0
+          }
+
+          Column {
+            id: miracastPosGroup
+            visible: miracastCastRow.showPos
+            width: miracastCastRow.showPos
+              ? miracastCastRow.pillWidth * root.miracastPosValues.length
+                + Style.spacing.xs * Math.max(0, root.miracastPosValues.length - 1)
+              : 0
+            spacing: monitorRow.settingsLabelGap
+
+            Text {
+              text: "EXTEND POSITION"
+              color: Qt.darker(root.bar.foreground, 1.25)
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+            }
+
+            Row {
+              width: parent.width
+              spacing: Style.spacing.xs
+              Repeater {
+                model: root.miracastPosValues
+                MiracastPosPill {
+                  required property string modelData
+                  required property int index
+                  posValue: modelData
+                  posIndex: index
+                  width: miracastCastRow.pillWidth
+                }
+              }
             }
           }
         }
-      }
-
-      Column {
-        visible: !!(monitorRow.display && monitorRow.display.miracast)
-                 && root.showMiracastSessionControls
-                 && miracast.mode === "extend"
-        width: parent.width
-        spacing: monitorRow.settingsLabelGap
 
         Text {
-          text: "EXTEND POSITION"
-          color: Qt.darker(root.bar.foreground, 1.25)
-          font.family: root.bar.fontFamily
-          font.pixelSize: Style.font.caption
-          font.bold: true
-        }
-
-        Text {
-          visible: miracast.positionWarning !== ""
+          visible: miracast.mode === "extend" && miracast.positionWarning !== ""
           width: parent.width
           text: miracast.positionWarning
           color: root.bar.urgent || root.bar.foreground
@@ -1821,27 +1884,6 @@ Panel {
             visible: parent.visible
             delay: 0
             text: miracast.positionWarning
-          }
-        }
-
-        Grid {
-          id: miracastPosRow
-          width: parent.width
-          columns: root.miracastPosValues.length
-          spacing: Style.spacing.xs
-          readonly property real cellWidth: root.miracastPosValues.length > 0
-            ? (width - spacing * (columns - 1)) / columns
-            : 0
-
-          Repeater {
-            model: root.miracastPosValues
-            MiracastPosPill {
-              required property string modelData
-              required property int index
-              posValue: modelData
-              posIndex: index
-              width: miracastPosRow.cellWidth
-            }
           }
         }
       }

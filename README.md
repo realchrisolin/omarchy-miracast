@@ -91,7 +91,8 @@ Override in `~/.config/omarchy-miracast/settings.json` (merged with
 | *(env)* `FLUXCAST_WFD_DMABUF_ALLOW_SCALED` | allow (default) | `0`/`false` = force pipe when Hyprland scale ≠ 1 |
 | `captureEncode` | `dmabuf` | RENDER ENGINE: `dmabuf` (GPU·DMA-BUF) / `vaapi` (GPU·VAAPI) / `cpu` |
 | *(env)* `FLUXCAST_WFD_VAAPI_QP` | `18` | DMA CQP quantizer (lower = sharper / more bitrate) |
-| `sinkScales` | `{}` | Per-sink Extend scale, keyed by MAC |
+| `sinkScales` | `{}` | Per-sink Extend scale, keyed by MAC (overrides default) |
+| `defaultExtendScale` | `1` | Extend scale when a sink has no `sinkScales` entry — **1** is cheapest for Hyprland |
 | `onlyExpandFocusedDisplay` | `false` | Display panel: `false` expands all outputs; `true` = accordion (focused only) |
 
 ### Display panel expansion
@@ -103,9 +104,13 @@ controls). To restore single-row accordion behavior:
 "onlyExpandFocusedDisplay": true
 ```
 
-While connected, **CAST MODE**, **EXTEND POSITION**, **STREAM MODE**, and
-**RENDER ENGINE** live under the Miracast display row (with **SCALE**). Scan /
-doctor / firewall / Stop stay under the **MIRACAST** section.
+While connected, **CAST MODE** (Mirror / Extend) and **EXTEND POSITION**
+(← ↑ ↓ →, Extend only, same row with a vertical separator), **STREAM MODE**,
+and **RENDER ENGINE** live under the Miracast display row (with **SCALE**).
+Scan / doctor / firewall / Stop stay under the **MIRACAST** section.
+
+With focus on the CAST MODE / EXTEND POSITION row and Extend active, vim
+**hjkl** set position: **h** ← left, **j** ↓ below, **k** ↑ above, **l** → right.
 
 ### RENDER ENGINE
 
@@ -122,6 +127,18 @@ Preference is stored in `settings.json` and `$XDG_STATE_HOME/omarchy-miracast/ca
 so a live session can SIGUSR1-rebind without restarting FluxCast. If a GPU path
 fails, FluxCast falls back toward CPU; the **active** pill follows the resolved
 path (`capturePath` / `encoder` in `miracast-ctl status`), not only the preference.
+
+**Capture cadence:** Miracast Extend prefers continuous `wf-recorder -D` (default).
+Damage-aware capture (`FLUXCAST_WFD_WF_RECORDER_DAMAGE=1`, omit `-D`) can wake
+Hyprland more with live UI (blinking cursors, etc.). `miracast-ctl start` clears a
+stale inherited DAMAGE env unless you explicitly set it for that start.
+
+While connected, Hyprland **animations** are turned off and restored on stop.
+Borders/gaps stay on so focus rings and the workspace indicator keep working.
+Software cursors stay on (required for a visible pointer in screencopy).
+
+**Extend scale:** default is `1` (`defaultExtendScale`) for lower Hyprland cost;
+override per sink in the Display panel (`sinkScales`).
 
 ```bash
 miracast-ctl set-capture-encode dmabuf|vaapi|cpu
