@@ -128,27 +128,46 @@ print(p if p in ("right","left","above","below") else "right")' "$SETTINGS_FILE"
   printf '%s\n' "$pos"
 }
 
+hypr_set_geometry() {
+  # Bound hyprctl — under live Miracast an unbounded eval has hung and left
+  # monitor-scale dead after pause-capture with no ensure-capture.
+  local out="$1" mode="$2" pos="$3" scale="$4"
+  scale_log "hyprctl eval out=$out mode=$mode pos=$pos scale=$scale"
+  if timeout 5 hyprctl eval \
+    "hl.monitor({ output = \"${out}\", mode = \"${mode}\", position = \"${pos}\", scale = ${scale} })" \
+    >/dev/null 2>>"$SCALE_LOG"; then
+    scale_log "hyprctl eval ok out=$out"
+    return 0
+  fi
+  local rc=$?
+  scale_log "hyprctl eval failed/timeout rc=$rc out=$out"
+  return "$rc"
+}
+
 # Omarchy's ScreenMoveRemap only watches screen X/Y, not scale/size. A pure
 # scale leaves layer surfaces (background, bar) mapped with a stale buffer that
 # looks zoomed/cropped. Nudge origin by 1px then restore so remap fires.
 # Nudge on the non-shared axis so we never briefly overlap an adjacent output
 # (Hyprland's "monitor overlaps" warning).
 #
-# Never nudge the live Miracast capture output: moving it under wf-recorder
-# causes "Failed to copy frame" and drops the sink. Left/above/below scale
-# already changes X/Y enough to remount; right-side pure scale may leave the
-# Miracast wallpaper stale until the next real move — prefer that over a drop.
+# Never nudge while a Miracast cast is live: the double hyprctl has hung this
+# script after pause-capture, so capture never got ensure-capture. Skip nudge
+# and apply once with a timeout instead.
 apply_monitor_with_remap() {
   local out="$1" mode="$2" pos="$3" scale="$4"
   local px="${pos%%x*}"
   local py="${pos#*x}"
   local extend_pos nudge_pos
+  if [[ "${cast_live:-0}" -eq 1 ]]; then
+    hypr_set_geometry "$out" "$mode" "$pos" "$scale" || true
+    return 0
+  fi
   if [[ -n "$tracked" && "$out" == "$tracked" ]]; then
-    hyprctl eval "hl.monitor({ output = \"${out}\", mode = \"${mode}\", position = \"${pos}\", scale = ${scale} })" >/dev/null
+    hypr_set_geometry "$out" "$mode" "$pos" "$scale" || true
     return 0
   fi
   [[ "$px" =~ ^-?[0-9]+$ && "$py" =~ ^-?[0-9]+$ ]] || {
-    hyprctl eval "hl.monitor({ output = \"${out}\", mode = \"${mode}\", position = \"${pos}\", scale = ${scale} })" >/dev/null
+    hypr_set_geometry "$out" "$mode" "$pos" "$scale" || true
     return 0
   }
   extend_pos="$(read_extend_pos)"
@@ -156,11 +175,11 @@ apply_monitor_with_remap() {
     above|below) nudge_pos="$((px + 1))x${py}" ;;
     *)           nudge_pos="${px}x$((py + 1))" ;;
   esac
-  hyprctl eval "hl.monitor({ output = \"${out}\", mode = \"${mode}\", position = \"${nudge_pos}\", scale = ${scale} })" >/dev/null
+  hypr_set_geometry "$out" "$mode" "$nudge_pos" "$scale" || true
   # Let Quickshell observe the origin change before restoring; ScreenMoveRemap
   # then settles (~200ms) and pulses an unmap/remap on the layer windows.
   sleep 0.05
-  hyprctl eval "hl.monitor({ output = \"${out}\", mode = \"${mode}\", position = \"${pos}\", scale = ${scale} })" >/dev/null
+  hypr_set_geometry "$out" "$mode" "$pos" "$scale" || true
 }
 
 focus_primary_monitor() {
@@ -194,6 +213,15 @@ rebind_miracast_geometry() {
   [[ -n "$tracked" ]] || return 0
   focus_primary_monitor || true
   if [[ -x "$CTL" ]]; then
+    (
+      sleep 3
+      scale_log "rebind deferred ensure-capture pass1"
+      "$CTL" ensure-capture 4 || true
+      sleep 2
+      scale_log "rebind deferred ensure-capture pass2"
+      "$CTL" ensure-capture 3 || true
+    ) >>"$SCALE_LOG" 2>&1 &
+    scale_log "rebind scheduled deferred ensure pid=$!"
     scale_log "rebind pause-capture"
     "$CTL" pause-capture >>"$SCALE_LOG" 2>&1 || true
   fi
@@ -348,27 +376,40 @@ fi
 
 # ---- Real display: live apply + persist to monitors.lua (Omarchy path) ----
 # Keep current position so an active Miracast output isn't shuffled by "auto".
-# Nudge+restore so Omarchy background/bar layer surfaces remount at the new
-# logical size (scale-only leaves X/Y unchanged and skips ScreenMoveRemap).
 #
-# When any Miracast cast is live, detach capture BEFORE remapping the primary:
-# eDP nudge/scale under an active wf-recorder on the adjacent output causes
-# "Failed to copy frame" and leaves FluxCast wedged with a hollow RTSP session.
-# Gate on cast_live (FluxCast python), not only headless.name — that file can
-# be missing while streaming, and set -e must not skip ensure-capture.
+# When any Miracast cast is live, detach capture BEFORE remapping the primary,
+# then ALWAYS rebuild via ensure-capture. hyprctl has hung mid-scale after
+# pause; a deferred ensure still runs if this script is killed.
+#
+# Disable set -e for the remainder — a single hyprctl failure must not skip
+# ensure-capture after we have already killed wf-recorder/ffmpeg.
+set +e
+
 if [[ "$cast_live" -eq 1 && -x "$CTL" ]]; then
+  # Safety net: even if we die during hyprctl, capture still gets rebuilt.
+  (
+    sleep 3
+    scale_log "deferred ensure-capture pass1"
+    "$CTL" ensure-capture 4 || true
+    sleep 2
+    scale_log "deferred ensure-capture pass2"
+    "$CTL" ensure-capture 3 || true
+  ) >>"$SCALE_LOG" 2>&1 &
+  scale_log "scheduled deferred ensure pid=$!"
   focus_primary_monitor || true
   scale_log "eDP/primary pause-capture before scale"
   "$CTL" pause-capture >>"$SCALE_LOG" 2>&1 || true
   sleep 0.2
 fi
+scale_log "apply primary geometry"
 apply_monitor_with_remap "$name" "${width}x${height}@${refresh}" "${x}x${y}" "$new_scale" || true
+scale_log "persist monitors.lua"
 persist_monitors_lua "$new_scale" "$new_gdk_scale" || true
-# Primary logical size may have changed — keep Miracast glued to the edge
-# (rebind pauses again, applies cast geometry, ensure-capture with retries).
+# Primary logical size may have changed — keep Miracast glued to the edge.
+scale_log "reseat_miracast"
 reseat_miracast || true
 if [[ "$cast_live" -eq 1 && -x "$CTL" ]]; then
-  sleep 1.0
+  sleep 0.5
   scale_log "eDP/primary ensure-capture after scale"
   "$CTL" ensure-capture 4 >>"$SCALE_LOG" 2>&1 || true
   sleep 1.5
