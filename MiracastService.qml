@@ -19,6 +19,12 @@ Item {
   property bool onlyExpandFocusedDisplay: false
   property string streamMode: "1280x720p30"  // e.g. 1920x1080p30
   property var streamModes: []
+  // RENDER ENGINE preference: dmabuf | vaapi | cpu
+  property string captureEncode: "dmabuf"
+  // Resolved while streaming (from status / latency): dmabuf | pipe
+  property string capturePath: ""
+  property string encoder: ""
+  property bool captureFallback: false
 
   property bool ready: false
   property bool running: false
@@ -46,10 +52,16 @@ Item {
   readonly property string ctl: pluginDir !== "" ? (pluginDir + "/bin/miracast-ctl") : "miracast-ctl"
   // Background status polls must NOT count as busy — they run every 2s while
   // streaming and would grey out Miracast action buttons via enabled:!busy.
-  readonly property bool busy: doctorProcess.running || scanProcess.running || startProcess.running || stopProcess.running || firewallProcess.running || modeProcess.running || positionProcess.running || streamModeProcess.running
+  readonly property bool busy: doctorProcess.running || scanProcess.running || startProcess.running || stopProcess.running || firewallProcess.running || modeProcess.running || positionProcess.running || streamModeProcess.running || captureEncodeProcess.running
   readonly property bool active: Model.miracastIsActive(phase)
   readonly property bool connecting: phase === "connecting" || phase === "dhcp" || phase === "rtsp" || phase === "scanning"
   readonly property bool streaming: phase === "streaming"
+  // Pill highlight: resolved path while streaming, else saved preference.
+  readonly property string captureEncodeActive: {
+    if (streaming && (capturePath !== "" || encoder !== ""))
+      return Model.miracastCaptureEncodeActive(capturePath, encoder, captureEncode)
+    return captureEncode
+  }
 
   onStreamingChanged: {
     if (streaming && _awaitingPositionRecover) {
@@ -171,6 +183,25 @@ Item {
         return String(streamModes[i].label || value)
     }
     return value
+  }
+
+  function captureEncodeLabel(id) {
+    return Model.miracastCaptureEncodeLabel(id)
+  }
+
+  function setCaptureEncode(value) {
+    var next = String(value || "")
+    if (next !== "dmabuf" && next !== "vaapi" && next !== "cpu") return
+    if (captureEncodeProcess.running || stopProcess.running) return
+    if (next === captureEncode && !active) return
+    captureEncode = next
+    lastError = ""
+    if (active)
+      actionStatus = "Switching RENDER ENGINE to " + captureEncodeLabel(next) + "…"
+    else
+      actionStatus = "RENDER ENGINE: " + captureEncodeLabel(next)
+    captureEncodeProcess.command = [ctl, "set-capture-encode", next]
+    captureEncodeProcess.running = true
   }
 
   function setStreamMode(nextMode) {
@@ -504,6 +535,16 @@ Item {
           if (data.streamMode) root.streamMode = String(data.streamMode)
           if (data.streamModes && data.streamModes.length)
             root.streamModes = data.streamModes
+          if (data.captureEncode) root.captureEncode = String(data.captureEncode)
+          if (data.capturePath) root.capturePath = String(data.capturePath)
+          else if (!root.streaming) root.capturePath = ""
+          if (data.encoder) root.encoder = String(data.encoder)
+          else if (!root.streaming) root.encoder = ""
+          root.captureFallback = data.captureFallback === true
+          if (root.captureFallback && root.streaming
+              && String(root.actionStatus).indexOf("RENDER ENGINE") < 0)
+            root.actionStatus = "RENDER ENGINE fell back to "
+                + root.captureEncodeLabel(root.captureEncodeActive)
           if (data.peer) root.persistPeer(data.peer, data.peerName || root.lastPeerName)
           else if (data.peerName) root.lastPeerName = String(data.peerName)
           if (data.monitor) root.castMonitor = String(data.monitor)
@@ -574,6 +615,38 @@ Item {
           pendingRestartTimer.restart()
         } else {
           root.actionStatus = "Stopped"
+        }
+        root.refresh()
+      }
+    }
+  }
+
+  Process {
+    id: captureEncodeProcess
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        try {
+          var data = JSON.parse(String(text || "{}"))
+          if (data.ok === false) {
+            root.lastError = String(data.error || "Failed to set RENDER ENGINE")
+            root.actionStatus = ""
+          } else {
+            if (data.captureEncode) root.captureEncode = String(data.captureEncode)
+            if (data.capturePath) root.capturePath = String(data.capturePath)
+            if (data.encoder) root.encoder = String(data.encoder)
+            root.captureFallback = data.captureFallback === true
+            var label = root.captureEncodeLabel(root.captureEncode)
+            if (root.captureFallback)
+              root.actionStatus = "RENDER ENGINE fell back to "
+                  + root.captureEncodeLabel(root.captureEncodeActive)
+            else if (data.restarted)
+              root.actionStatus = "RENDER ENGINE: " + label
+            else
+              root.actionStatus = "RENDER ENGINE saved (" + label + ")"
+          }
+        } catch (e) {
+          root.actionStatus = "RENDER ENGINE updated"
         }
         root.refresh()
       }

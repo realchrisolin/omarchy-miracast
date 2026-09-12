@@ -236,6 +236,40 @@ function miracastConnectionSummary(phase, peerName, peerMac, mode) {
   return ""
 }
 
+/** RENDER ENGINE preference / pill ids. */
+function miracastCaptureEncodeValues() {
+  return ["dmabuf", "vaapi", "cpu"]
+}
+
+function miracastCaptureEncodeLabel(value) {
+  var v = String(value || "")
+  if (v === "dmabuf") return "GPU · DMA-BUF"
+  if (v === "vaapi") return "GPU · VAAPI"
+  if (v === "cpu") return "CPU"
+  return v
+}
+
+/**
+ * Active RENDER ENGINE pill while streaming: map resolved capturePath/encoder
+ * to dmabuf|vaapi|cpu. Idle UIs should use the preference instead.
+ */
+function miracastCaptureEncodeActive(capturePath, encoder, preference) {
+  var path = String(capturePath || "").toLowerCase()
+  var enc = String(encoder || "").toLowerCase()
+  if (path === "dmabuf") return "dmabuf"
+  if (enc === "libx264" || enc === "x264" || enc === "software" || enc === "sw")
+    return "cpu"
+  if (path === "pipe") {
+    if (enc.indexOf("vaapi") >= 0 || enc.indexOf("qsv") >= 0 || enc === "vaapi" || enc === "qsv")
+      return "vaapi"
+    if (enc) return "cpu"
+    return "vaapi"
+  }
+  var pref = String(preference || "dmabuf")
+  if (pref === "dmabuf" || pref === "vaapi" || pref === "cpu") return pref
+  return "dmabuf"
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
     clampBrightness: clampBrightness,
@@ -253,6 +287,9 @@ if (typeof module !== "undefined") {
     miracastPeerTitle: miracastPeerTitle,
     miracastPeerSubtitle: miracastPeerSubtitle,
     miracastBarGlyph: miracastBarGlyph,
-    miracastConnectionSummary: miracastConnectionSummary
+    miracastConnectionSummary: miracastConnectionSummary,
+    miracastCaptureEncodeValues: miracastCaptureEncodeValues,
+    miracastCaptureEncodeLabel: miracastCaptureEncodeLabel,
+    miracastCaptureEncodeActive: miracastCaptureEncodeActive
   }
 }

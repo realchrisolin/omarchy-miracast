@@ -89,6 +89,7 @@ Override in `~/.config/omarchy-miracast/settings.json` (merged with
 | `videoEncoder` | `auto` | `auto` → VAAPI, else QSV, else `libx264` |
 | *(env)* `FLUXCAST_WFD_CAPTURE_ENCODE` | `auto` (Omarchy) / `pipe` (upstream) | `auto`/`vaapi` = wf-recorder DMA-BUF encode (incl. scaled outputs); `pipe` = raw→ffmpeg hwupload |
 | *(env)* `FLUXCAST_WFD_DMABUF_ALLOW_SCALED` | allow (default) | `0`/`false` = force pipe when Hyprland scale ≠ 1 |
+| `captureEncode` | `dmabuf` | RENDER ENGINE: `dmabuf` (GPU·DMA-BUF) / `vaapi` (GPU·VAAPI) / `cpu` |
 | *(env)* `FLUXCAST_WFD_VAAPI_QP` | `18` | DMA CQP quantizer (lower = sharper / more bitrate) |
 | `sinkScales` | `{}` | Per-sink Extend scale, keyed by MAC |
 | `onlyExpandFocusedDisplay` | `false` | Display panel: `false` expands all outputs; `true` = accordion (focused only) |
@@ -102,9 +103,29 @@ controls). To restore single-row accordion behavior:
 "onlyExpandFocusedDisplay": true
 ```
 
-While connected, **CAST MODE**, **EXTEND POSITION**, and **STREAM MODE** live
-under the Miracast display row (with **SCALE**). Scan / doctor / firewall /
-Stop stay under the **MIRACAST** section.
+While connected, **CAST MODE**, **EXTEND POSITION**, **STREAM MODE**, and
+**RENDER ENGINE** live under the Miracast display row (with **SCALE**). Scan /
+doctor / firewall / Stop stay under the **MIRACAST** section.
+
+### RENDER ENGINE
+
+Shown only after the Miracast display exists (connected session). Default is
+**GPU · DMA-BUF**. Pills:
+
+| Pill | `captureEncode` | Path |
+|------|-----------------|------|
+| GPU · DMA-BUF | `dmabuf` | `wf-recorder` VAAPI DMA-BUF + CQP |
+| GPU · VAAPI | `vaapi` | raw pipe → `hwupload` → `h264_vaapi` |
+| CPU | `cpu` | raw pipe → `libx264` |
+
+Preference is stored in `settings.json` and `$XDG_STATE_HOME/omarchy-miracast/capture-encode`
+so a live session can SIGUSR1-rebind without restarting FluxCast. If a GPU path
+fails, FluxCast falls back toward CPU; the **active** pill follows the resolved
+path (`capturePath` / `encoder` in `miracast-ctl status`), not only the preference.
+
+```bash
+miracast-ctl set-capture-encode dmabuf|vaapi|cpu
+```
 
 ## Virtual output lifecycle (eDP safety)
 

@@ -38,10 +38,12 @@ Panel {
   //                  = display row index).
   //   "monitorScale" - scale pills for one display; selectedIndex = pill index,
   //                  scaleFocusMonitor names the target output.
-  //   "miracastMode" / "miracastPos" / "miracastStream" / "miracast" / "miracastPeers"
+  //   "miracastMode" / "miracastPos" / "miracastStream" / "miracastEncode"
+  //   / "miracast" / "miracastPeers"
   //   "textsize"   - global shell/GTK/terminal text size (not per-display).
   readonly property var miracastModeValues: ["mirror", "extend"]
   readonly property var miracastPosValues: ["left", "right", "above", "below"]
+  readonly property var miracastEncodeValues: Model.miracastCaptureEncodeValues()
   readonly property var miracastStreamModeIds: {
     var out = []
     var modes = (miracast && miracast.streamModes) ? miracast.streamModes : []
@@ -112,6 +114,7 @@ Panel {
       list.push("miracastMode")
       if (miracast && miracast.mode === "extend") list.push("miracastPos")
       if (miracastStreamModeIds.length > 0) list.push("miracastStream")
+      list.push("miracastEncode")
     }
     list.push("miracast")
     if (miracast && miracast.peers && miracast.peers.length > 0) list.push("miracastPeers")
@@ -130,6 +133,7 @@ Panel {
     if (section === "miracastMode") return miracastModeValues.length
     if (section === "miracastPos") return miracastPosValues.length
     if (section === "miracastStream") return miracastStreamModeIds.length
+    if (section === "miracastEncode") return miracastEncodeValues.length
     if (section === "miracast") return 0    // action row sentinel at -1
     if (section === "miracastPeers")
       return (miracast && miracast.peers) ? miracast.peers.length : 0
@@ -141,7 +145,7 @@ Panel {
     // miracast actions are one control row.
     return section === "textsize" || section === "monitorBrightness" || section === "monitorScale"
       || section === "miracast" || section === "miracastMode" || section === "miracastPos"
-      || section === "miracastStream"
+      || section === "miracastStream" || section === "miracastEncode"
   }
 
   function sectionFirstIndex(section) {
@@ -149,6 +153,8 @@ Panel {
     if (section === "miracastMode") return Math.max(0, miracastModeValues.indexOf(miracast.mode))
     if (section === "miracastPos") return Math.max(0, miracastPosValues.indexOf(miracast.extendPosition))
     if (section === "miracastStream") return Math.max(0, miracastStreamModeIds.indexOf(miracast.streamMode))
+    if (section === "miracastEncode")
+      return Math.max(0, miracastEncodeValues.indexOf(miracast.captureEncodeActive))
     if (section === "monitorScale") return Math.max(0, activeScaleIndexFor(displayByName(scaleFocusMonitor)))
     return 0
   }
@@ -370,6 +376,13 @@ Panel {
       if (streamNext < 0) streamNext = 0
       if (streamNext > miracastStreamModeIds.length - 1) streamNext = miracastStreamModeIds.length - 1
       selectedIndex = streamNext
+      return
+    }
+    if (focusSection === "miracastEncode") {
+      var encodeNext = selectedIndex + delta
+      if (encodeNext < 0) encodeNext = 0
+      if (encodeNext > miracastEncodeValues.length - 1) encodeNext = miracastEncodeValues.length - 1
+      selectedIndex = encodeNext
     }
   }
 
@@ -404,6 +417,10 @@ Panel {
     }
     if (focusSection === "miracastStream" && selectedIndex >= 0 && selectedIndex < miracastStreamModeIds.length) {
       miracast.setStreamMode(miracastStreamModeIds[selectedIndex])
+      return
+    }
+    if (focusSection === "miracastEncode" && selectedIndex >= 0 && selectedIndex < miracastEncodeValues.length) {
+      miracast.setCaptureEncode(miracastEncodeValues[selectedIndex])
       return
     }
     if (focusSection === "monitors" && selectedIndex >= 0 && selectedIndex < displays.length) {
@@ -979,7 +996,7 @@ Panel {
           else if (root.focusSection === "textsize") root.adjustTextSize(dx)
           else if (root.focusSection === "monitors" || root.focusSection === "monitorScale"
                    || root.focusSection === "miracastMode" || root.focusSection === "miracastPos"
-                   || root.focusSection === "miracastStream")
+                   || root.focusSection === "miracastStream" || root.focusSection === "miracastEncode")
             root.moveCursorH(dx)
         }
       }
@@ -1487,6 +1504,32 @@ Panel {
     }
   }
 
+  component MiracastEncodePill: Button {
+    id: encodePill
+    required property string encodeValue
+    required property int encodeIndex
+
+    text: miracast.captureEncodeLabel(encodeValue)
+    fontSize: Style.font.caption
+    foreground: root.bar.foreground
+    fontFamily: root.bar.fontFamily
+    horizontalPadding: Style.spacing.sm
+    verticalPadding: Style.spacing.controlPaddingY
+    bordered: true
+
+    active: miracast.captureEncodeActive === encodeValue
+    hasCursor: root.cursorActive && root.focusSection === "miracastEncode" && root.selectedIndex === encodeIndex
+    enabled: !miracast.busy
+
+    onClicked: miracast.setCaptureEncode(encodeValue)
+    onHovered: function(isHovered) {
+      if (!isHovered || root.reflowingText) return
+      root.cursorActive = true
+      root.focusSection = "miracastEncode"
+      root.selectedIndex = encodePill.encodeIndex
+    }
+  }
+
   component MonitorRow: Column {
     id: monitorRow
     required property var display
@@ -1835,6 +1878,42 @@ Panel {
               modeId: modelData
               modeIndex: index
               width: miracastStreamRow.cellWidth
+            }
+          }
+        }
+      }
+
+      Column {
+        visible: !!(monitorRow.display && monitorRow.display.miracast)
+                 && root.showMiracastSessionControls
+        width: parent.width
+        spacing: monitorRow.settingsLabelGap
+
+        Text {
+          text: "RENDER ENGINE"
+          color: Qt.darker(root.bar.foreground, 1.25)
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+        }
+
+        Grid {
+          id: miracastEncodeRow
+          width: parent.width
+          columns: root.miracastEncodeValues.length
+          spacing: Style.spacing.xs
+          readonly property real cellWidth: columns > 0
+            ? (width - spacing * (columns - 1)) / columns
+            : 0
+
+          Repeater {
+            model: root.miracastEncodeValues
+            MiracastEncodePill {
+              required property string modelData
+              required property int index
+              encodeValue: modelData
+              encodeIndex: index
+              width: miracastEncodeRow.cellWidth
             }
           }
         }

@@ -22,6 +22,8 @@ CAPTURE_GEOM_FILE="$STATE_DIR/capture.geometry"
 # Touched while capture is intentionally paused (lock / position move). FluxCast
 # must not auto-rebind over this; ensure-capture clears it.
 CAPTURE_PAUSED_FILE="$STATE_DIR/capture.paused"
+# RENDER METHOD preference for FluxCast (dmabuf|vaapi|cpu); live-updated on pill change.
+CAPTURE_ENCODE_FILE="$STATE_DIR/capture-encode"
 # Per-device Extend scales live in settings.json → sinkScales: { "MAC": 2 }
 
 # Headless capture cannot include the hardware cursor plane — force software
@@ -138,6 +140,8 @@ defaults = {
     "extendResolution": "1280x720",
     # auto | vaapi | qsv | software — FluxCast reads FLUXCAST_WFD_ENCODER.
     "videoEncoder": "auto",
+    # RENDER METHOD: dmabuf (GPU·DMA-BUF) | vaapi (GPU·VAAPI pipe) | cpu (libx264).
+    "captureEncode": "dmabuf",
     # Preferred Miracast stream mode id, e.g. "1280x720p30".
     "streamMode": "1280x720p30",
     # Display panel: false = expand all outputs; true = accordion (focused only).
@@ -1574,6 +1578,168 @@ cmd_get_stream_mode() {
   echo '{}' | attach_stream_mode_fields
 }
 
+write_capture_encode_file() {
+  local value="${1:-dmabuf}"
+  case "$value" in
+    dmabuf|vaapi|cpu) ;;
+    *) value="dmabuf" ;;
+  esac
+  mkdir -p "$STATE_DIR"
+  printf '%s\n' "$value" >"$CAPTURE_ENCODE_FILE"
+}
+
+read_capture_encode_pref() {
+  python3 -c 'import json,sys
+try:
+  v=str(json.load(open(sys.argv[1])).get("captureEncode") or "dmabuf").strip().lower()
+except Exception:
+  v="dmabuf"
+print(v if v in ("dmabuf","vaapi","cpu") else "dmabuf")' "$SETTINGS_FILE" 2>/dev/null || echo dmabuf
+}
+
+# Merge preference + latest resolved capture_encode latency event into status
+# JSON (stdin→stdout). Must use python3 -c so the JSON pipe stays on stdin
+# (a heredoc would steal it — same rule as attach_stream_mode_fields).
+attach_capture_encode_fields() {
+  python3 -c '
+import json, re, sys
+pref_path, settings_path, lat_path, log_path = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+try:
+    data = json.loads(sys.stdin.read() or "{}")
+except Exception:
+    data = {}
+if not isinstance(data, dict):
+    data = {}
+pref = "dmabuf"
+try:
+    with open(pref_path, encoding="utf-8") as fh:
+        raw = fh.read().strip().lower()
+    if raw in ("dmabuf", "vaapi", "cpu"):
+        pref = raw
+except OSError:
+    try:
+        pref = str(json.load(open(settings_path)).get("captureEncode") or "dmabuf").strip().lower()
+        if pref not in ("dmabuf", "vaapi", "cpu"):
+            pref = "dmabuf"
+    except Exception:
+        pref = "dmabuf"
+data["captureEncode"] = pref
+# Only surface resolved path while a cast is live — stale latency.jsonl must
+# not light the wrong RENDER ENGINE pill when idle.
+live = bool(data.get("running")) or str(data.get("phase") or "") in (
+    "connecting", "dhcp", "rtsp", "streaming",
+)
+if live:
+    capture_path = data.get("capturePath")
+    encoder = data.get("encoder")
+    fallback = data.get("captureFallback")
+    try:
+        with open(lat_path, encoding="utf-8") as fh:
+            lines = fh.readlines()
+        for line in reversed(lines):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except Exception:
+                continue
+            if ev.get("event") != "capture_encode":
+                continue
+            capture_path = ev.get("capture_path") or capture_path
+            encoder = ev.get("encoder") or encoder
+            if "fallback" in ev:
+                fallback = bool(ev.get("fallback"))
+            break
+    except OSError:
+        pass
+    # Fallback: scrape latest Video encoder line (covers pre-latency FluxCast).
+    if not capture_path or not encoder:
+        try:
+            with open(log_path, encoding="utf-8", errors="ignore") as fh:
+                chunk = fh.read()
+            for line in reversed(chunk.splitlines()):
+                if "Video encoder" not in line:
+                    continue
+                low = line.lower()
+                if "dma-buf" in low or "dmabuf" in low:
+                    capture_path = capture_path or "dmabuf"
+                    encoder = encoder or "h264_vaapi"
+                elif "libx264" in low:
+                    capture_path = capture_path or "pipe"
+                    encoder = encoder or "libx264"
+                elif "h264_vaapi" in low or "vaapi" in low:
+                    capture_path = capture_path or "pipe"
+                    encoder = encoder or "h264_vaapi"
+                elif "h264_qsv" in low or "qsv" in low:
+                    capture_path = capture_path or "pipe"
+                    encoder = encoder or "h264_qsv"
+                break
+        except OSError:
+            pass
+    if capture_path:
+        data["capturePath"] = capture_path
+    if encoder:
+        data["encoder"] = encoder
+    if fallback is not None:
+        data["captureFallback"] = bool(fallback)
+else:
+    data.pop("capturePath", None)
+    data.pop("encoder", None)
+    data.pop("captureFallback", None)
+print(json.dumps(data, separators=(",", ":")))
+' "$CAPTURE_ENCODE_FILE" "$SETTINGS_FILE" "$LAT_FILE" "$LOG_FILE"
+}
+
+cmd_set_capture_encode() {
+  local value="${1:-}"
+  case "$value" in
+    dmabuf|vaapi|cpu) ;;
+    *)
+      emit '{"ok":false,"error":"captureEncode must be dmabuf, vaapi, or cpu"}'
+      return 1
+      ;;
+  esac
+  # write_settings prints the full settings object — discard so QML sees one JSON.
+  write_settings "captureEncode=$value" >/dev/null
+  write_capture_encode_file "$value"
+  local restarted="false" healthy="false" info=""
+  if is_running; then
+    info="$(restart_extend_capture)"
+    # info like restarted=true healthy=true pid=...
+    [[ "$info" == *restarted=true* ]] && restarted="true"
+    [[ "$info" == *healthy=true* ]] && healthy="true"
+  fi
+  python3 -c '
+import json, sys
+value, restarted, healthy, lat_path = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+out = {"ok": True, "captureEncode": value, "restarted": restarted == "true", "captureHealthy": healthy == "true"}
+try:
+    with open(lat_path, encoding="utf-8") as fh:
+        lines = fh.readlines()
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except Exception:
+            continue
+        if ev.get("event") != "capture_encode":
+            continue
+        if ev.get("capture_path"):
+            out["capturePath"] = ev["capture_path"]
+        if ev.get("encoder"):
+            out["encoder"] = ev["encoder"]
+        if "fallback" in ev:
+            out["captureFallback"] = bool(ev.get("fallback"))
+        break
+except OSError:
+    pass
+print(json.dumps(out, separators=(",", ":")))
+' "$value" "$restarted" "$healthy" "$LAT_FILE"
+}
+
 cmd_set_stream_mode() {
   local mode_id="${1:-}"
   if [[ -z "$mode_id" ]]; then
@@ -1734,7 +1900,7 @@ cmd_status() {
   if is_running; then
     local pid
     pid="$(cat "$PID_FILE")"
-    python3 - "$STATUS_FILE" "$pid" "$settings" "$link_up" <<'PY' | enrich_peer_name | attach_stream_mode_fields
+    python3 - "$STATUS_FILE" "$pid" "$settings" "$link_up" <<'PY' | enrich_peer_name | attach_stream_mode_fields | attach_capture_encode_fields
 import json, sys
 path, pid, settings_raw, link_up = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 try:
@@ -1760,7 +1926,7 @@ print(json.dumps(data, separators=(",", ":")))
 PY
     return 0
   fi
-  python3 - "$STATUS_FILE" "$settings" "$link_up" <<'PY' | enrich_peer_name | attach_stream_mode_fields
+  python3 - "$STATUS_FILE" "$settings" "$link_up" <<'PY' | enrich_peer_name | attach_stream_mode_fields | attach_capture_encode_fields
 import json, sys
 path, settings_raw, link_up = sys.argv[1], sys.argv[2], sys.argv[3]
 try:
@@ -1787,6 +1953,10 @@ data["extendPosition"] = pos
 data["onlyExpandFocusedDisplay"] = bool(settings.get("onlyExpandFocusedDisplay", False))
 data.setdefault("peer", settings.get("lastPeerMac") or "")
 data.setdefault("peerName", settings.get("lastPeerName") or "")
+# Idle: drop resolved path so UI shows preference only.
+data.pop("capturePath", None)
+data.pop("encoder", None)
+data.pop("captureFallback", None)
 print(json.dumps(data, separators=(",", ":")))
 PY
 }
@@ -1984,24 +2154,32 @@ if m:
   # GPU encode policy for FluxCast (see src/wfd/hw_encode.py). Prefer VAAPI/QSV
   # when present; power bias still prefers GPU but trims bitrate on battery /
   # power-saver. Override with settings videoEncoder or FLUXCAST_WFD_ENCODER.
-  local video_encoder
+  local video_encoder capture_encode
   video_encoder="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("videoEncoder","auto"))' "$settings")"
   [[ -n "$video_encoder" ]] || video_encoder="auto"
+  capture_encode="$(python3 -c 'import json,sys
+s=json.loads(sys.argv[1]); v=str(s.get("captureEncode") or "dmabuf").strip().lower()
+print(v if v in ("dmabuf","vaapi","cpu") else "dmabuf")' "$settings")"
+  write_capture_encode_file "$capture_encode"
+  # Map RENDER METHOD → FluxCast encoder env (preference file is authoritative).
+  case "$capture_encode" in
+    cpu) video_encoder="libx264" ;;
+    vaapi) video_encoder="vaapi" ;;
+    dmabuf) [[ "$video_encoder" == "libx264" || "$video_encoder" == "software" ]] && video_encoder="auto" ;;
+  esac
 
   (
     cd "$root"
     export PYTHONUNBUFFERED=1
     export PATH="/usr/bin:/bin:$PATH"
     export FLUXCAST_WFD_ENCODER="$video_encoder"
-    # Prefer wf-recorder h264_vaapi + DMA-BUF (encode on GPU) when VAAPI/QSV is
-    # requested; ffmpeg only remuxes. Falls back to raw pipe + hwupload.
-    # Force the old path with FLUXCAST_WFD_CAPTURE_ENCODE=pipe.
-    # Prefer wf-recorder VAAPI+DMA-BUF when GPU encode is selected. The path
-    # uses tv-range scale_vaapi, no -r/fps filter, bf=0, constrained_baseline.
-    # Force pipe with FLUXCAST_WFD_CAPTURE_ENCODE=pipe if DMA misbehaves.
-    case "$video_encoder" in
-      auto|vaapi|qsv) export FLUXCAST_WFD_CAPTURE_ENCODE="${FLUXCAST_WFD_CAPTURE_ENCODE:-auto}" ;;
-      *) export FLUXCAST_WFD_CAPTURE_ENCODE="${FLUXCAST_WFD_CAPTURE_ENCODE:-pipe}" ;;
+    export FLUXCAST_WFD_CAPTURE_ENCODE_FILE="$CAPTURE_ENCODE_FILE"
+    export FLUXCAST_WFD_CAPTURE_ENCODE_PREF="$capture_encode"
+    # Legacy CAPTURE_ENCODE still set for older FluxCast checkouts.
+    case "$capture_encode" in
+      dmabuf) export FLUXCAST_WFD_CAPTURE_ENCODE=vaapi ;;
+      vaapi) export FLUXCAST_WFD_CAPTURE_ENCODE=pipe ;;
+      cpu) export FLUXCAST_WFD_CAPTURE_ENCODE=pipe ;;
     esac
     # Scaled outputs use DMA-BUF by default (proven at integer scale 2 with
     # tv-range CQP). Deny with FLUXCAST_WFD_DMABUF_ALLOW_SCALED=0 if needed.
@@ -2127,6 +2305,7 @@ Commands:
   set-mode mirror|extend
   get-stream-mode
   set-stream-mode <id>   # e.g. 1280x720p30 / 1920x1080p60
+  set-capture-encode dmabuf|vaapi|cpu   # RENDER METHOD preference
   get-extend-position
   set-extend-position right|left|above|below
   restart-capture [quick]
@@ -2238,6 +2417,7 @@ main() {
     set-mode|set_mode) cmd_set_mode "$@" ;;
     get-stream-mode|get_stream_mode) cmd_get_stream_mode "$@" ;;
     set-stream-mode|set_stream_mode) cmd_set_stream_mode "$@" ;;
+    set-capture-encode|set_capture_encode) cmd_set_capture_encode "$@" ;;
     get-extend-position|get_extend_position) cmd_get_extend_position "$@" ;;
     set-extend-position|set_extend_position) cmd_set_extend_position "$@" ;;
     restart-capture|restart_capture) cmd_restart_capture "$@" ;;
