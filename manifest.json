@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "colin.monitor",
   "name": "Display",
-  "version": "1.2.6",
+  "version": "1.2.10",
   "author": "realchrisolin",
   "license": "MIT",
   "description": "Brightness, text size, scale, displays, and Miracast / Wi\u2011Fi Display mirroring.",

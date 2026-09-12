@@ -15,6 +15,8 @@ Item {
   property string castMonitor: ""
   property string mode: "mirror"   // mirror | extend
   property string extendPosition: "right"  // right | left | above | below
+  // Display panel expansion: false = expand all outputs; true = focused only.
+  property bool onlyExpandFocusedDisplay: false
   property string streamMode: "1280x720p30"  // e.g. 1920x1080p30
   property var streamModes: []
 
@@ -497,6 +499,8 @@ Item {
             root.extendPosition = String(data.extendPosition)
           else if (data.extendPosition && root.mode !== "extend")
             root.extendPosition = String(data.extendPosition)
+          if (data.onlyExpandFocusedDisplay !== undefined)
+            root.onlyExpandFocusedDisplay = data.onlyExpandFocusedDisplay === true
           if (data.streamMode) root.streamMode = String(data.streamMode)
           if (data.streamModes && data.streamModes.length)
             root.streamModes = data.streamModes

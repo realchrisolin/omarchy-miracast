@@ -56,8 +56,11 @@ Panel {
   property string focusSection: "monitors"
   property int selectedIndex: 0
   property bool cursorActive: false
-  // Accordion: at most one display shows nested brightness/scale controls.
-  property string expandedMonitor: ""
+  // Which display rows show nested controls (brightness/scale/cast). Default
+  // expands all; settings onlyExpandFocusedDisplay restores accordion mode.
+  property var expandedMonitors: []
+  property var knownDisplayNames: []
+  readonly property bool onlyExpandFocusedDisplay: !!(miracast && miracast.onlyExpandFocusedDisplay)
   // Which monitor's scale-pill row currently has keyboard focus.
   property string scaleFocusMonitor: ""
   // After open, wait for a fresh monitor-state read before expanding — otherwise
@@ -172,13 +175,34 @@ Panel {
   }
 
   function isExpanded(name) {
-    return root.expandedMonitor !== "" && root.expandedMonitor === String(name || "")
+    var target = String(name || "")
+    if (target === "") return false
+    var list = root.expandedMonitors || []
+    for (var i = 0; i < list.length; i++) {
+      if (String(list[i]) === target) return true
+    }
+    return false
   }
 
   function toggleExpanded(name) {
     var target = String(name || "")
     if (target === "") return
-    root.expandedMonitor = root.expandedMonitor === target ? "" : target
+    if (root.onlyExpandFocusedDisplay) {
+      root.expandedMonitors = root.isExpanded(target) ? [] : [target]
+      return
+    }
+    var next = []
+    var found = false
+    var list = root.expandedMonitors || []
+    for (var i = 0; i < list.length; i++) {
+      if (String(list[i]) === target) {
+        found = true
+        continue
+      }
+      next.push(list[i])
+    }
+    if (!found) next.push(target)
+    root.expandedMonitors = next
   }
 
   function selectFocusedDisplayRow() {
@@ -193,54 +217,74 @@ Panel {
     }
   }
 
-  // preferFocus: expand focused when nothing usable is expanded.
-  // forceFocus: always expand the currently focused output (open / focus change).
+  function enabledDisplayNames() {
+    var names = []
+    for (var i = 0; i < displays.length; i++) {
+      if (displays[i] && displays[i].enabled && displays[i].name)
+        names.push(String(displays[i].name))
+    }
+    return names
+  }
+
+  // preferFocus: expand something when nothing usable is expanded.
+  // forceFocus: panel open / focus change — reset to mode default.
   function ensureExpandedMonitor(preferFocus, forceFocus) {
     if (!displays || displays.length === 0) {
-      root.expandedMonitor = ""
+      root.expandedMonitors = []
+      root.knownDisplayNames = []
       return
     }
-    if (forceFocus) {
-      var forced = root.focusedMonitor
-      if (forced !== "" && displayByName(forced)) {
-        root.expandedMonitor = forced
-        return
-      }
-      for (var k = 0; k < displays.length; k++) {
-        if (displays[k] && displays[k].focused) {
-          root.expandedMonitor = displays[k].name
+    var enabled = root.enabledDisplayNames()
+
+    if (root.onlyExpandFocusedDisplay) {
+      var pick = ""
+      if (forceFocus || preferFocus || root.expandedMonitors.length === 0) {
+        var forced = root.focusedMonitor
+        if (forced !== "" && displayByName(forced)) pick = forced
+        if (pick === "") {
+          for (var k = 0; k < displays.length; k++) {
+            if (displays[k] && displays[k].focused) {
+              pick = String(displays[k].name)
+              break
+            }
+          }
+        }
+        if (pick === "" && enabled.length > 0) pick = enabled[0]
+        root.expandedMonitors = pick !== "" ? [pick] : []
+      } else {
+        // Keep single expansion if that output still exists; else re-pick.
+        var cur = root.expandedMonitors.length === 1 ? String(root.expandedMonitors[0]) : ""
+        if (cur === "" || !displayByName(cur)) {
+          ensureExpandedMonitor(true, true)
           return
         }
       }
-    }
-    if (root.expandedMonitor !== "") {
-      for (var i = 0; i < displays.length; i++) {
-        if (displays[i] && displays[i].name === root.expandedMonitor) return
-      }
-      // Previously expanded output disappeared — fall through and pick again.
-    } else if (!preferFocus) {
-      // User collapsed the accordion; don't force it back open on refresh.
+      root.knownDisplayNames = enabled.slice()
       return
     }
-    // Auto-expand the focused output (fallback: first enabled display).
-    var focus = root.focusedMonitor
-    if (focus !== "" && displayByName(focus)) {
-      root.expandedMonitor = focus
+
+    // Expand-all mode (default): open expands every enabled output; refresh
+    // keeps user collapses and auto-expands newly appeared displays.
+    if (forceFocus) {
+      root.expandedMonitors = enabled.slice()
+      root.knownDisplayNames = enabled.slice()
       return
     }
-    for (var j = 0; j < displays.length; j++) {
-      if (displays[j] && displays[j].focused) {
-        root.expandedMonitor = displays[j].name
-        return
+    var next = []
+    var known = root.knownDisplayNames || []
+    for (var i = 0; i < enabled.length; i++) {
+      var name = enabled[i]
+      var isNew = true
+      for (var j = 0; j < known.length; j++) {
+        if (String(known[j]) === name) { isNew = false; break }
       }
+      if (isNew || root.isExpanded(name))
+        next.push(name)
     }
-    for (var n = 0; n < displays.length; n++) {
-      if (displays[n] && displays[n].enabled) {
-        root.expandedMonitor = displays[n].name
-        return
-      }
-    }
-    root.expandedMonitor = displays[0] ? displays[0].name : ""
+    if (next.length === 0 && preferFocus)
+      next = enabled.slice()
+    root.expandedMonitors = next
+    root.knownDisplayNames = enabled.slice()
   }
 
   function moveCursor(delta) {
@@ -755,12 +799,15 @@ Panel {
     }
   }
   onFocusedMonitorChanged: {
-    // While the panel is open, keep the accordion on the focused output
-    // (e.g. opened from the Miracast display after state catches up).
-    if (root.opened)
-      ensureExpandedMonitor(true, true)
-    else if (root.expandedMonitor === "" || !displayByName(root.expandedMonitor))
+    if (root.opened) {
+      // Accordion mode follows focus; expand-all only picks up new outputs.
+      if (root.onlyExpandFocusedDisplay)
+        ensureExpandedMonitor(true, true)
+      else
+        ensureExpandedMonitor(false, false)
+    } else if ((root.expandedMonitors || []).length === 0) {
       ensureExpandedMonitor(true)
+    }
   }
   onVisibleSectionsChanged: clampCursor()
 
@@ -1067,6 +1114,13 @@ Panel {
               }
             }
 
+            // Extra air between DISPLAYS and MIRACAST (beyond column spacing).
+            Item {
+              visible: root.showDisplaysSection
+              width: parent.width
+              height: Style.space(8)
+            }
+
             Item {
               width: parent.width
               implicitHeight: Math.max(miracastHeader.implicitHeight, miracastPhase.implicitHeight)
@@ -1139,114 +1193,6 @@ Panel {
               font.family: root.bar.fontFamily
               font.pixelSize: Style.font.caption
               wrapMode: Text.WordWrap
-            }
-
-            // Flat subsection stack: label immediately above each control row.
-            Column {
-              visible: root.showMiracastSessionControls
-              width: parent.width
-              spacing: Style.space(4)
-
-              DenseSectionLabel {
-                text: "CAST MODE"
-                foreground: root.bar.foreground
-                fontFamily: root.bar.fontFamily
-              }
-
-              Grid {
-                id: miracastModeRow
-                width: parent.width
-                columns: root.miracastModeValues.length
-                spacing: Style.spacing.xs
-                readonly property real cellWidth: root.miracastModeValues.length > 0
-                  ? (width - spacing * (columns - 1)) / columns
-                  : 0
-
-                Repeater {
-                  model: root.miracastModeValues
-                  MiracastModePill {
-                    required property string modelData
-                    required property int index
-                    modeValue: modelData
-                    modeIndex: index
-                    width: miracastModeRow.cellWidth
-                  }
-                }
-              }
-
-              DenseSectionLabel {
-                visible: miracast.mode === "extend"
-                text: "EXTEND POSITION"
-                foreground: root.bar.foreground
-                fontFamily: root.bar.fontFamily
-              }
-
-              Text {
-                visible: miracast.mode === "extend" && miracast.positionWarning !== ""
-                width: parent.width
-                text: miracast.positionWarning
-                color: root.bar.urgent || root.bar.foreground
-                font.family: root.bar.fontFamily
-                font.pixelSize: Style.font.caption
-                wrapMode: Text.WordWrap
-
-                PanelToolTip {
-                  visible: parent.visible
-                  delay: 0
-                  text: miracast.positionWarning
-                }
-              }
-
-              Grid {
-                id: miracastPosRow
-                visible: miracast.mode === "extend"
-                width: parent.width
-                columns: root.miracastPosValues.length
-                spacing: Style.spacing.xs
-                readonly property real cellWidth: root.miracastPosValues.length > 0
-                  ? (width - spacing * (columns - 1)) / columns
-                  : 0
-
-                Repeater {
-                  model: root.miracastPosValues
-                  MiracastPosPill {
-                    required property string modelData
-                    required property int index
-                    posValue: modelData
-                    posIndex: index
-                    width: miracastPosRow.cellWidth
-                  }
-                }
-              }
-
-              DenseSectionLabel {
-                visible: root.miracastStreamModeIds.length > 0
-                text: "STREAM MODE"
-                foreground: root.bar.foreground
-                fontFamily: root.bar.fontFamily
-              }
-
-              Grid {
-                id: miracastStreamRow
-                visible: root.miracastStreamModeIds.length > 0
-                width: parent.width
-                columns: Math.min(root.miracastStreamModeIds.length, 4)
-                spacing: Style.spacing.xs
-                readonly property real cellWidth: columns > 0
-                  ? (width - spacing * (columns - 1)) / columns
-                  : 0
-
-                Repeater {
-                  model: root.miracastStreamModeIds
-                  MiracastStreamModePill {
-                    required property string modelData
-                    required property int index
-                    modeId: modelData
-                    modeIndex: index
-                    width: miracastStreamRow.cellWidth
-                  }
-                }
-              }
             }
 
             CursorSurface {
@@ -1551,6 +1497,10 @@ Panel {
     readonly property bool expanded: display && root.isExpanded(display.name)
     readonly property var scaleValues: root.scaleValuesFor(display)
     readonly property bool showBrightness: display && display.brightnessAvailable === true && display.enabled
+    // Shared rhythm for nested settings (eDP brightness/scale and Miracast cast controls).
+    readonly property int settingsSectionGap: Style.space(5)  // between BRIGHTNESS / SCALE / CAST MODE…
+    readonly property int settingsLabelGap: Style.space(3)    // between label and its control
+    readonly property int settingsControlPad: Style.space(2) // chrome padding inside outlined controls
 
     width: parent ? parent.width : 0
     spacing: Style.space(4)
@@ -1653,13 +1603,13 @@ Panel {
       visible: monitorRow.expanded && monitorRow.display && monitorRow.display.enabled
       width: parent.width - Style.space(18)
       x: Style.space(18)
-      spacing: Style.space(6)
+      spacing: monitorRow.settingsSectionGap
 
       // ---- Brightness (only when this output has a controllable backlight/DDC) ----
       Column {
         visible: monitorRow.showBrightness
         width: parent.width
-        spacing: Style.space(4)
+        spacing: monitorRow.settingsLabelGap
 
         Item {
           width: parent.width
@@ -1667,7 +1617,7 @@ Panel {
 
           Text {
             id: bLabel
-            text: "Brightness"
+            text: "BRIGHTNESS"
             color: Qt.darker(root.bar.foreground, 1.25)
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.caption
@@ -1690,7 +1640,8 @@ Panel {
         CursorSurface {
           id: nestedBrightnessRow
           width: parent.width
-          height: nestedBrightness.implicitHeight + Style.spacing.controlGap
+          // controlGap (~8) was the bulk of the empty band under the slider on eDP.
+          height: nestedBrightness.implicitHeight + monitorRow.settingsControlPad
           hasCursor: root.cursorActive && root.focusSection === "monitorBrightness" && root.selectedIndex === monitorRow.rowIndex
           onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(nestedBrightnessRow)
           foreground: root.bar.foreground
@@ -1727,10 +1678,10 @@ Panel {
       // ---- Scale ----
       Column {
         width: parent.width
-        spacing: Style.space(4)
+        spacing: monitorRow.settingsLabelGap
 
         Text {
-          text: "Scale"
+          text: "SCALE"
           color: Qt.darker(root.bar.foreground, 1.25)
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.caption
@@ -1755,6 +1706,135 @@ Panel {
               scaleValue: modelData
               scaleIndex: index
               width: nestedScaleRow.cellWidth
+            }
+          }
+        }
+      }
+
+      // ---- Miracast session controls (Miracast display row only) ----
+      // Same structure as BRIGHTNESS/SCALE: each block is labelGap internally,
+      // blocks are separated by settingsSectionGap from the parent Column.
+      Column {
+        visible: !!(monitorRow.display && monitorRow.display.miracast)
+                 && root.showMiracastSessionControls
+        width: parent.width
+        spacing: monitorRow.settingsLabelGap
+
+        Text {
+          text: "CAST MODE"
+          color: Qt.darker(root.bar.foreground, 1.25)
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+        }
+
+        Grid {
+          id: miracastModeRow
+          width: parent.width
+          columns: root.miracastModeValues.length
+          spacing: Style.spacing.xs
+          readonly property real cellWidth: root.miracastModeValues.length > 0
+            ? (width - spacing * (columns - 1)) / columns
+            : 0
+
+          Repeater {
+            model: root.miracastModeValues
+            MiracastModePill {
+              required property string modelData
+              required property int index
+              modeValue: modelData
+              modeIndex: index
+              width: miracastModeRow.cellWidth
+            }
+          }
+        }
+      }
+
+      Column {
+        visible: !!(monitorRow.display && monitorRow.display.miracast)
+                 && root.showMiracastSessionControls
+                 && miracast.mode === "extend"
+        width: parent.width
+        spacing: monitorRow.settingsLabelGap
+
+        Text {
+          text: "EXTEND POSITION"
+          color: Qt.darker(root.bar.foreground, 1.25)
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+        }
+
+        Text {
+          visible: miracast.positionWarning !== ""
+          width: parent.width
+          text: miracast.positionWarning
+          color: root.bar.urgent || root.bar.foreground
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          wrapMode: Text.WordWrap
+
+          PanelToolTip {
+            visible: parent.visible
+            delay: 0
+            text: miracast.positionWarning
+          }
+        }
+
+        Grid {
+          id: miracastPosRow
+          width: parent.width
+          columns: root.miracastPosValues.length
+          spacing: Style.spacing.xs
+          readonly property real cellWidth: root.miracastPosValues.length > 0
+            ? (width - spacing * (columns - 1)) / columns
+            : 0
+
+          Repeater {
+            model: root.miracastPosValues
+            MiracastPosPill {
+              required property string modelData
+              required property int index
+              posValue: modelData
+              posIndex: index
+              width: miracastPosRow.cellWidth
+            }
+          }
+        }
+      }
+
+      Column {
+        visible: !!(monitorRow.display && monitorRow.display.miracast)
+                 && root.showMiracastSessionControls
+                 && root.miracastStreamModeIds.length > 0
+        width: parent.width
+        spacing: monitorRow.settingsLabelGap
+
+        Text {
+          text: "STREAM MODE"
+          color: Qt.darker(root.bar.foreground, 1.25)
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+        }
+
+        Grid {
+          id: miracastStreamRow
+          width: parent.width
+          columns: Math.min(root.miracastStreamModeIds.length, 4)
+          spacing: Style.spacing.xs
+          readonly property real cellWidth: columns > 0
+            ? (width - spacing * (columns - 1)) / columns
+            : 0
+
+          Repeater {
+            model: root.miracastStreamModeIds
+            MiracastStreamModePill {
+              required property string modelData
+              required property int index
+              modeId: modelData
+              modeIndex: index
+              width: miracastStreamRow.cellWidth
             }
           }
         }
