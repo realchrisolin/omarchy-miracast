@@ -1829,8 +1829,9 @@ if m:
     export PYTHONUNBUFFERED=1
     export PATH="/usr/bin:/bin:$PATH"
     export FLUXCAST_WFD_ENCODER="$video_encoder"
-    # Prefer damage-aware wf-recorder (omit -D) for quieter Hyprland capture.
-    export FLUXCAST_WFD_WF_RECORDER_DAMAGE=1
+    # Do not force damage-aware capture (omit -D). On virtual Extend outputs,
+    # damage tracking can wake the CPU more than continuous -D and raised
+    # battery draw. Opt in with FLUXCAST_WFD_WF_RECORDER_DAMAGE=1 if desired.
     export FLUXCAST_WFD_MODE_STATE="$MODE_STATE_FILE"
     python3 -u src/main.py \
       --protocol wfd \

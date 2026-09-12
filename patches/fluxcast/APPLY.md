@@ -2,8 +2,8 @@
 
 These files extend [FluxCast](https://github.com/IlyaP358/fluxcast) for the
 Omarchy Display Miracast panel. Upstream FluxCast defaults stay non-breaking
-(`libx264`, `wf-recorder -D`). Omarchy opts into GPU encode and quieter
-capture via environment variables set by `miracast-ctl`.
+(`libx264`, `wf-recorder -D`). Omarchy opts into GPU encode via environment
+variables set by `miracast-ctl`; damage-aware capture remains opt-in.
 
 | File | Purpose |
 |------|---------|
@@ -54,10 +54,14 @@ export FLUXCAST_ROOT=/path/to/fluxcast
 `miracast-ctl` exports (when casting):
 
 - `FLUXCAST_WFD_ENCODER` from settings `videoEncoder` (default `auto` → VAAPI/QSV when available)
-- `FLUXCAST_WFD_WF_RECORDER_DAMAGE=1` (omit `wf-recorder -D` for quieter Hyprland capture)
 - `FLUXCAST_WFD_MODE_STATE` for stream-mode pills in the Display panel
 
+Optional (not set by default — continuous `wf-recorder -D` is preferred on
+virtual Extend outputs for fewer wakeups / lower battery draw):
+
+- `FLUXCAST_WFD_WF_RECORDER_DAMAGE=1` (omit `wf-recorder -D` for damage-aware capture)
+
 Without these patches the panel still works against stock FluxCast, but you
-lose GPU encode opt-in wiring, damage-aware capture, live **STREAM MODE**
+lose GPU encode opt-in wiring, optional damage-aware capture, live **STREAM MODE**
 capability discovery, and safe eDP scale capture rebind (`ensure-capture` /
 SIGUSR1).
