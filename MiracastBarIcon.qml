@@ -17,6 +17,9 @@ Item {
   property bool multiDisplay: false
   property string fontFamily: Style.font.family
   property bool debugBounds: false
+  // Extra optical nudge for the wifi overlay (pixels). Hero size often needs
+  // a small positive value so the arcs sit lower in the monitor glass.
+  property real wifiVerticalNudge: 0
 
   readonly property bool connecting: phase === "connecting" || phase === "dhcp" || phase === "rtsp" || phase === "scanning"
   readonly property bool streaming: phase === "streaming"
@@ -28,7 +31,7 @@ Item {
   // Chin/stand sits below the glass; larger wifi arcs are bottom-heavy so lift
   // a bit more. +0.025 unit right/up from the previous center.
   readonly property real glassOffsetX: renderedSize * 0.025
-  readonly property real glassOffsetY: -(renderedSize * 0.115)
+  readonly property real glassOffsetY: -(renderedSize * 0.115) + wifiVerticalNudge
 
   // Wifi fills most of the glass; keep a little margin for the bezel.
   readonly property int wifiSize: Math.max(1, Math.round(renderedSize * 0.54))
