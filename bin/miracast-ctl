@@ -299,32 +299,73 @@ hypr_set_monitor_geometry() {
 }
 
 fluxcast_pid() {
+  # Prefer any live FluxCast WFD python (cmdline match). Fall back to walking
+  # descendants of cast.pid — the wrapper may be a subshell one or more levels
+  # above python, so a single PPid hop is not enough.
   local wrap_pid=""
-  [[ -f "$PID_FILE" ]] || return 0
-  wrap_pid="$(cat "$PID_FILE" 2>/dev/null || true)"
-  [[ -n "$wrap_pid" ]] || return 0
-  python3 - "$wrap_pid" <<'PY'
+  [[ -f "$PID_FILE" ]] && wrap_pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+  python3 - "${wrap_pid:-}" <<'PY'
 import os, sys
-wrap = int(sys.argv[1])
+
+def cmdline(pid: str) -> str:
+    try:
+        return open(f"/proc/{pid}/cmdline", "rb").read().replace(b"\0", b" ").decode(errors="ignore")
+    except OSError:
+        return ""
+
+def ppid_of(pid: str):
+    try:
+        return int(open(f"/proc/{pid}/status").read().split("PPid:")[1].split()[0])
+    except (OSError, IndexError, ValueError):
+        return None
+
+def is_fluxcast(pid: str, cmd: str) -> bool:
+    # Require a real python interpreter — never match agent/shell wrappers that
+    # merely mention src/main.py in their argv text.
+    try:
+        exe = os.path.basename(os.path.realpath(f"/proc/{pid}/exe"))
+    except OSError:
+        return False
+    if "python" not in exe:
+        return False
+    return "src/main.py" in cmd and "--protocol" in cmd and "wfd" in cmd
+
+# 1) Global cmdline scan — authoritative while a cast is up.
 for pid in os.listdir("/proc"):
     if not pid.isdigit():
         continue
-    try:
-        if int(open(f"/proc/{pid}/status").read().split("PPid:")[1].split()[0]) != wrap:
-            continue
-        cmd = open(f"/proc/{pid}/cmdline", "rb").read().replace(b"\0", b" ").decode(errors="ignore")
-    except OSError:
-        continue
-    if "src/main.py" in cmd and "wfd" in cmd:
+    cmd = cmdline(pid)
+    if is_fluxcast(pid, cmd):
         print(pid)
-        break
-else:
-    try:
-        cmd = open(f"/proc/{wrap}/cmdline", "rb").read().replace(b"\0", b" ").decode(errors="ignore")
-        if "src/main.py" in cmd:
-            print(wrap)
-    except OSError:
-        pass
+        raise SystemExit
+
+wrap = (sys.argv[1] or "").strip()
+if not wrap.isdigit():
+    raise SystemExit
+
+# 2) Walk descendants of the wrapper recorded in cast.pid.
+root = int(wrap)
+children: dict[int, list[int]] = {}
+for pid in os.listdir("/proc"):
+    if not pid.isdigit():
+        continue
+    parent = ppid_of(pid)
+    if parent is None:
+        continue
+    children.setdefault(parent, []).append(int(pid))
+
+stack = [root]
+seen = {root}
+while stack:
+    cur = stack.pop()
+    cmd = cmdline(str(cur))
+    if is_fluxcast(str(cur), cmd):
+        print(cur)
+        raise SystemExit
+    for kid in children.get(cur, []):
+        if kid not in seen:
+            seen.add(kid)
+            stack.append(kid)
 PY
 }
 

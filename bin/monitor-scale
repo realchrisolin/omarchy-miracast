@@ -51,8 +51,47 @@ clean_scale() {
 new_scale="$(clean_scale "$requested" "$width" "$height")"
 new_gdk_scale="$(awk -v scale="$new_scale" 'BEGIN { printf "%d", int(scale + 0.5) }')"
 
+SCALE_LOG="$STATE_DIR/logs/scale.log"
+mkdir -p "$STATE_DIR/logs"
+scale_log() { printf '%s %s\n' "$(date -Iseconds)" "$*" >>"$SCALE_LOG"; }
+
 tracked=""
 [[ -f "$TRACKED_FILE" ]] && tracked="$(cat "$TRACKED_FILE" 2>/dev/null || true)"
+# Fall back to the live cast monitor from status.json when headless.name is empty.
+if [[ -z "$tracked" && -f "$STATE_DIR/status.json" ]]; then
+  tracked="$(python3 -c 'import json,sys
+try:
+  s=json.load(open(sys.argv[1]))
+  m=str(s.get("monitor") or "")
+  phase=str(s.get("phase") or "")
+  if phase in ("streaming","rtsp","connecting","dhcp") and m and not m.startswith(("eDP","LVDS","DSI")):
+    print(m)
+except Exception:
+  pass
+' "$STATE_DIR/status.json" 2>/dev/null || true)"
+fi
+
+cast_live=0
+# Match real FluxCast python only (not shells that mention main.py in argv).
+if python3 - <<'PY'
+import os
+for pid in os.listdir("/proc"):
+    if not pid.isdigit():
+        continue
+    try:
+        exe = os.path.basename(os.path.realpath(f"/proc/{pid}/exe"))
+        cmd = open(f"/proc/{pid}/cmdline", "rb").read().replace(b"\0", b" ").decode(errors="ignore")
+    except OSError:
+        continue
+    if "python" in exe and "src/main.py" in cmd and "--protocol" in cmd and "wfd" in cmd:
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+then
+  cast_live=1
+fi
+
+scale_log "begin name=$name requested=$requested tracked=${tracked:-none} cast_live=$cast_live"
 
 persist_monitors_lua() {
   local scale="$1" gdk="$2"
@@ -153,19 +192,21 @@ print(m["name"] if m else "")
 rebind_miracast_geometry() {
   local mode="$1" pos="$2" scale="$3"
   [[ -n "$tracked" ]] || return 0
-  focus_primary_monitor
+  focus_primary_monitor || true
   if [[ -x "$CTL" ]]; then
-    "$CTL" pause-capture >/dev/null || true
+    scale_log "rebind pause-capture"
+    "$CTL" pause-capture >>"$SCALE_LOG" 2>&1 || true
   fi
   sleep 0.2
-  apply_monitor_with_remap "$tracked" "$mode" "$pos" "$scale"
+  apply_monitor_with_remap "$tracked" "$mode" "$pos" "$scale" || true
   sleep 0.45
   if [[ -x "$CTL" ]]; then
-    "$CTL" ensure-capture 2 >/dev/null || true
+    scale_log "rebind ensure-capture"
+    "$CTL" ensure-capture 3 >>"$SCALE_LOG" 2>&1 || true
     # Second pass after layer remap / damage settles — catches near-term
     # "Failed to copy frame" deaths that pass the first health window.
     sleep 1.5
-    "$CTL" ensure-capture 2 >/dev/null || true
+    "$CTL" ensure-capture 3 >>"$SCALE_LOG" 2>&1 || true
   fi
 }
 
@@ -298,7 +339,8 @@ PY
     pos="${rest%%|*}"
     scale="${rest#*|}"
     [[ "$scale" == "$rest" || -z "$scale" ]] && scale="$new_scale"
-    rebind_miracast_geometry "$mode" "$pos" "$scale"
+    rebind_miracast_geometry "$mode" "$pos" "$scale" || true
+    scale_log "done virtual name=$name scale=$new_scale"
     printf '%s\n' "$new_scale"
     exit 0
   fi
@@ -309,22 +351,29 @@ fi
 # Nudge+restore so Omarchy background/bar layer surfaces remount at the new
 # logical size (scale-only leaves X/Y unchanged and skips ScreenMoveRemap).
 #
-# When Miracast Extend is live, detach capture BEFORE remapping the primary:
+# When any Miracast cast is live, detach capture BEFORE remapping the primary:
 # eDP nudge/scale under an active wf-recorder on the adjacent output causes
 # "Failed to copy frame" and leaves FluxCast wedged with a hollow RTSP session.
-if [[ -n "$tracked" && -x "$CTL" ]]; then
-  focus_primary_monitor
-  "$CTL" pause-capture >/dev/null || true
+# Gate on cast_live (FluxCast python), not only headless.name — that file can
+# be missing while streaming, and set -e must not skip ensure-capture.
+if [[ "$cast_live" -eq 1 && -x "$CTL" ]]; then
+  focus_primary_monitor || true
+  scale_log "eDP/primary pause-capture before scale"
+  "$CTL" pause-capture >>"$SCALE_LOG" 2>&1 || true
   sleep 0.2
 fi
-apply_monitor_with_remap "$name" "${width}x${height}@${refresh}" "${x}x${y}" "$new_scale"
-persist_monitors_lua "$new_scale" "$new_gdk_scale"
+apply_monitor_with_remap "$name" "${width}x${height}@${refresh}" "${x}x${y}" "$new_scale" || true
+persist_monitors_lua "$new_scale" "$new_gdk_scale" || true
 # Primary logical size may have changed — keep Miracast glued to the edge
 # (rebind pauses again, applies cast geometry, ensure-capture with retries).
-reseat_miracast
-if [[ -n "$tracked" && -x "$CTL" ]]; then
+reseat_miracast || true
+if [[ "$cast_live" -eq 1 && -x "$CTL" ]]; then
   sleep 1.0
-  "$CTL" ensure-capture 3 >/dev/null || true
+  scale_log "eDP/primary ensure-capture after scale"
+  "$CTL" ensure-capture 4 >>"$SCALE_LOG" 2>&1 || true
+  sleep 1.5
+  "$CTL" ensure-capture 3 >>"$SCALE_LOG" 2>&1 || true
 fi
+scale_log "done name=$name scale=$new_scale cast_live=$cast_live tracked=${tracked:-none}"
 
 printf '%s\n' "$new_scale"
