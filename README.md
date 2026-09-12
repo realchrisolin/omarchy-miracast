@@ -87,6 +87,7 @@ Override in `~/.config/omarchy-miracast/settings.json` (merged with
 | `extendRefresh` | `30` | Preferred virtual output Hz (keep aligned with stream) |
 | `bitrate` | `4M` | Trimmed further on battery / power-saver |
 | `videoEncoder` | `auto` | `auto` → VAAPI, else QSV, else `libx264` |
+| *(env)* `FLUXCAST_WFD_CAPTURE_ENCODE` | `auto` (Omarchy) / `pipe` (upstream) | `auto`/`vaapi` = wf-recorder DMA-BUF encode; `pipe` = raw→ffmpeg hwupload |
 | `sinkScales` | `{}` | Per-sink Extend scale, keyed by MAC |
 | `onlyExpandFocusedDisplay` | `false` | Display panel: `false` expands all outputs; `true` = accordion (focused only) |
 
@@ -102,6 +103,13 @@ controls). To restore single-row accordion behavior:
 While connected, **CAST MODE**, **EXTEND POSITION**, and **STREAM MODE** live
 under the Miracast display row (with **SCALE**). Scan / doctor / firewall /
 Stop stay under the **MIRACAST** section.
+
+## Virtual output lifecycle (eDP safety)
+
+Miracast **must not** call `hyprctl output remove` / `monitor,disable` during
+connect or disconnect — those calls have frozen the primary display for
+30–90s. Stop leaves the virtual output in place; the next Extend session
+**reuses** it. Orphan cleanup is never automatic on the hot path.
 
 ## Cast modes
 

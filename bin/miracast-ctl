@@ -133,7 +133,7 @@ defaults = {
     "lastPeerMac": "",
     "lastPeerName": "",
     "fps": "20",
-    "bitrate": "4M",
+    "bitrate": "8M",
     "outputRes": "1280x720",
     "extendResolution": "1280x720",
     # auto | vaapi | qsv | software — FluxCast reads FLUXCAST_WFD_ENCODER.
@@ -993,37 +993,40 @@ else:
   print(int(m.get("width") or 1920), int(m.get("height") or 1080), m.get("scale") or 1)
 ' "$old")"
 
-  # Remove parked / previous session virtual output (safe path — not on Stop).
-  if [[ -f "$PARKED_FILE" ]]; then
-    local parked=""
-    parked="$(tr -d '\n' <"$PARKED_FILE" 2>/dev/null || true)"
-    rm -f "$PARKED_FILE"
-    if [[ -n "$parked" ]]; then
-      disconnect_log "connect-time remove parked name=$parked"
-      remove_virtual_output_safe "$parked"
-    fi
-  fi
-  if [[ -n "$old" ]]; then
-    disconnect_log "connect-time remove previous name=$old"
-    remove_virtual_output_safe "$old"
-  fi
-  rm -f "$HEADLESS_FILE" "$CAPTURE_GEOM_FILE"
-
+  # NEVER destroy virtual outputs here (eDP freeze). Reuse parked/previous if
+  # Hyprland still has them; only create when nothing reusable exists.
   desired="$(sanitize_extend_output_name "$peer_name" "$peer_mac")"
-  headless="$(unique_extend_output_name "$desired" "")"
+  headless=""
+  local parked="" reuse=""
+  if [[ -f "$PARKED_FILE" ]]; then
+    parked="$(tr -d '\n' <"$PARKED_FILE" 2>/dev/null || true)"
+  fi
+  for reuse in "$parked" "$old" "$desired"; do
+    [[ -n "$reuse" ]] || continue
+    if hypr_has_monitor "$reuse"; then
+      headless="$reuse"
+      disconnect_log "connect-time reuse existing virtual output name=$headless"
+      break
+    fi
+  done
+  rm -f "$PARKED_FILE" "$HEADLESS_FILE" "$CAPTURE_GEOM_FILE"
+
   if [[ -z "$headless" ]]; then
-    echo ""
-    return 1
-  fi
-  # Named headless: shows as the Miracast device in the Display panel.
-  if ! hyprctl output create headless "$headless" >/dev/null; then
-    echo ""
-    return 1
-  fi
-  # Confirm it exists under the requested name.
-  if ! hyprctl -j monitors 2>/dev/null | python3 -c 'import json,sys; name=sys.argv[1]; ms=json.load(sys.stdin); raise SystemExit(0 if any(m.get("name")==name for m in ms) else 1)' "$headless"; then
-    echo ""
-    return 1
+    headless="$(unique_extend_output_name "$desired" "")"
+    if [[ -z "$headless" ]]; then
+      echo ""
+      return 1
+    fi
+    # Named headless: shows as the Miracast device in the Display panel.
+    if ! timeout 3 hyprctl output create headless "$headless" >/dev/null 2>&1; then
+      echo ""
+      return 1
+    fi
+    if ! hypr_has_monitor "$headless"; then
+      echo ""
+      return 1
+    fi
+    disconnect_log "connect-time created virtual output name=$headless"
   fi
 
   # Track before geometry so placement uses this output's size/scale.
@@ -1225,29 +1228,30 @@ disconnect_log() {
   printf '%s %s\n' "$(date -Iseconds 2>/dev/null || date)" "$*" >>"$LOG_DIR/disconnect.log"
 }
 
-# Remove a virtual output with settle time. Call on *connect*, never on Stop —
-# disconnect.log shows eDP freezes for seconds–minutes on `output remove`.
+# HARD RULE: never call `hyprctl output remove` / `monitor,disable` for Miracast
+# virtual outputs on connect or disconnect — both freeze eDP (disconnect.log
+# 14:12:29 deferred remove; 14:53:03 connect-time remove). Reuse the headless.
 remove_virtual_output_safe() {
   local name="${1:-}"
-  [[ -n "$name" ]] || return 0
-  pause_extend_capture >/dev/null || true
-  wait_capture_senders_gone 40 || true
-  sleep 1.5
-  wait_capture_senders_gone 20 || true
-  # Prefer disable first (hides from UI); remove if still present.
-  timeout 2 hyprctl keyword monitor "${name},disable" >/dev/null 2>&1 || true
-  sleep 0.5
-  timeout 2 hyprctl output remove "$name" >/dev/null 2>&1 || true
-  sleep 0.5
-  if timeout 1 hyprctl -j monitors 2>/dev/null | grep -q "\"name\": \"$name\""; then
-    timeout 2 hyprctl output remove "$name" >/dev/null 2>&1 || true
-  fi
+  disconnect_log "REFUSED hyprctl destroy for virtual output name=${name:-none} (eDP safety)"
+  return 0
+}
+
+# True if Hyprland currently has a monitor with this name.
+hypr_has_monitor() {
+  local name="${1:-}"
+  [[ -n "$name" ]] || return 1
+  timeout 2 hyprctl -j monitors 2>/dev/null | python3 -c '
+import json,sys
+name=sys.argv[1]
+ms=json.load(sys.stdin)
+raise SystemExit(0 if any(str(m.get("name") or "")==name for m in ms) else 1)
+' "$name" 2>/dev/null
 }
 
 cleanup_extend_monitor() {
-  # Never call `hyprctl output remove` here. Deferred remove still froze eDP
-  # ~3s after Stop (disconnect.log 14:12:29). Park + disable instead; remove
-  # on the next ensure_extend_monitor / connect.
+  # Stop path: detach capture + migrate windows only. Leave the Hyprland
+  # virtual output untouched (no park/disable/remove).
   local lock="$STATE_DIR/cleanup.lock"
   local name="" primary=""
   mkdir -p "$STATE_DIR"
@@ -1261,7 +1265,7 @@ cleanup_extend_monitor() {
 
     pause_extend_capture >/dev/null || true
     wait_capture_senders_gone 50 || true
-    sleep 0.8
+    sleep 0.5
     wait_capture_senders_gone 20 || true
 
     if [[ -n "$name" ]]; then
@@ -1271,16 +1275,11 @@ cleanup_extend_monitor() {
         hypr_try dispatch "hl.dsp.focus({ monitor = \"${primary}\" })"
       fi
       restore_software_cursors
-      # Park off-screen then disable — no output remove on the Stop path.
-      timeout 2 hyprctl eval \
-        "hl.monitor({ output = \"${name}\", mode = \"1280x720@30\", position = \"8192x0\", scale = 1 })" \
-        >/dev/null 2>&1 || true
-      sleep 0.3
-      timeout 2 hyprctl keyword monitor "${name},disable" >/dev/null 2>&1 || true
+      # Remember for reuse on next connect — do not touch Hyprland geometry.
       printf '%s\n' "$name" >"$PARKED_FILE"
       rm -f "$HEADLESS_FILE" "$CAPTURE_GEOM_FILE" \
         "$STATE_DIR/pending-remove.name" "$STATE_DIR/pending-remove.primary"
-      disconnect_log "cleanup parked+disabled name=$name (remove on next connect)"
+      disconnect_log "cleanup done name=$name (headless left in place for reuse; no hyprctl destroy)"
     else
       restore_software_cursors
       rm -f "$CAPTURE_GEOM_FILE"
@@ -1994,6 +1993,16 @@ if m:
     export PYTHONUNBUFFERED=1
     export PATH="/usr/bin:/bin:$PATH"
     export FLUXCAST_WFD_ENCODER="$video_encoder"
+    # Prefer wf-recorder h264_vaapi + DMA-BUF (encode on GPU) when VAAPI/QSV is
+    # requested; ffmpeg only remuxes. Falls back to raw pipe + hwupload.
+    # Force the old path with FLUXCAST_WFD_CAPTURE_ENCODE=pipe.
+    # Prefer wf-recorder VAAPI+DMA-BUF when GPU encode is selected. The path
+    # uses tv-range scale_vaapi, no -r/fps filter, bf=0, constrained_baseline.
+    # Force pipe with FLUXCAST_WFD_CAPTURE_ENCODE=pipe if DMA misbehaves.
+    case "$video_encoder" in
+      auto|vaapi|qsv) export FLUXCAST_WFD_CAPTURE_ENCODE="${FLUXCAST_WFD_CAPTURE_ENCODE:-auto}" ;;
+      *) export FLUXCAST_WFD_CAPTURE_ENCODE="${FLUXCAST_WFD_CAPTURE_ENCODE:-pipe}" ;;
+    esac
     # Do not force damage-aware capture (omit -D). On virtual Extend outputs,
     # damage tracking can wake the CPU more than continuous -D and raised
     # battery draw. Opt in with FLUXCAST_WFD_WF_RECORDER_DAMAGE=1 if desired.
