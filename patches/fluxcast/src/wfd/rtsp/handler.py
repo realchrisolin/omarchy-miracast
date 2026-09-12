@@ -525,18 +525,10 @@ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
         """Send RTSP GET_PARAMETER (M16) on the existing TCP connection."""
         if not self._keepalive_active:
             return
-        media = self.media
-        # Only stop the chain if processes have already EXITED.
-        # If media is None (portal dialog still open), keep sending keepalives.
-        # media.restarting may be set by an external capture rebind (e.g. SIGUSR1);
-        # stock FluxCast never sets it. Keep the keepalive chain alive across that window.
-        if (
-            media is not None
-            and not getattr(media, "restarting", False)
-            and media.processes
-            and not all(p.poll() is None for p in media.processes)
-        ):
-            return
+        # Always keep the M16 chain alive for the RTSP session. Capture may
+        # briefly die during eDP scale / ensure-capture / SIGUSR1 rebind; if we
+        # stop rescheduling on dead sender PIDs the sink TEARDOWNs on session
+        # timeout even after capture recovers. M16 does not require RTP.
         try:
             # Some sinks return 454 if Session includes ";timeout=30" on M16 —
             # they expect a bare session id. Without successful keepalives they
@@ -571,6 +563,19 @@ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
 
         if states and all(proc.poll() is None for proc in media.processes):
             self._unhealthy_probe_streak = 0
+            # Hyprland reload can leave senders alive while the capture output
+            # has been reshuffled — TV goes black though PIDs still look fine.
+            if getattr(media, "capture_geometry_drifted", lambda: False)():
+                print(
+                    "[FluxCast WFD Media] Capture output geometry changed; "
+                    "rebinding desktop capture"
+                )
+                try:
+                    media.restart_video()
+                except Exception as exc:  # noqa: BLE001 — keep probe chain alive
+                    print(f"[FluxCast WFD Media] Capture rebind after geometry drift failed: {exc}")
+                self._schedule_probe(2.0)
+                return
             current = _netdev_tx_bytes(media.tx_interface)
             delta = None
             if media.tx_baseline is not None and current is not None:

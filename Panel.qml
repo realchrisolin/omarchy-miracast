@@ -568,6 +568,23 @@ Panel {
     if (!name) return
     if (enabled && root.enabledDisplayCount <= 1) return
 
+    // Disabling a live Miracast Extend output with hyprctl while wf-recorder
+    // still holds screencopy has frozen eDP hard (power-cycle). Tear the cast
+    // down through miracast-ctl stop instead of raw monitor,disable.
+    if (enabled) {
+      var disp = null
+      for (var i = 0; i < displays.length; i++) {
+        if (displays[i] && displays[i].name === name) {
+          disp = displays[i]
+          break
+        }
+      }
+      if (disp && disp.miracast && miracast && miracast.active) {
+        miracast.stopCast()
+        return
+      }
+    }
+
     actionProc.command = ["hyprctl", "keyword", "monitor", name + (enabled ? ",disable" : ",preferred,auto,auto")]
     if (!actionProc.running) actionProc.running = true
   }
