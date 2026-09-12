@@ -34,6 +34,11 @@ Item {
   property string _pendingRestartPeer: ""
   property string _pendingRestartAfterStreamMode: ""
 
+  // Session lock: hyprlock/session-lock freezes wlroots screencopy; wf-recorder
+  // dies or feeds stale frames while RTSP stays up. Pause on lock, ensure on unlock.
+  property bool _sessionLocked: false
+  property bool _pausedForLock: false
+
   readonly property string ctl: pluginDir !== "" ? (pluginDir + "/bin/miracast-ctl") : "miracast-ctl"
   // Background status polls must NOT count as busy — they run every 2s while
   // streaming and would grey out Miracast action buttons via enabled:!busy.
@@ -242,6 +247,9 @@ Item {
 
   function stopCast() {
     if (stopProcess.running) return
+    _pausedForLock = false
+    _sessionLocked = false
+    resumeLockTimer.stop()
     actionStatus = "Stopping…"
     stopProcess.command = [ctl, "stop"]
     stopProcess.running = true
@@ -252,11 +260,89 @@ Item {
     else startCast(lastPeerMac)
   }
 
+  function pauseCaptureForLock() {
+    if (!streaming && !running) return
+    if (pauseLockProcess.running) return
+    _pausedForLock = true
+    actionStatus = "Paused capture for screen lock"
+    pauseLockProcess.command = [ctl, "pause-capture"]
+    pauseLockProcess.running = true
+  }
+
+  function resumeCaptureAfterLock() {
+    // Always try ensure when unlocking during an active cast — senders may
+    // have died even if we never successfully paused.
+    if (!streaming && !running && !_pausedForLock) return
+    resumeLockTimer.restart()
+  }
+
   Timer {
     interval: connecting || streaming ? 2000 : 5000
     running: true
     repeat: true
     onTriggered: root.refresh()
+  }
+
+  // Poll compositor session-lock state while casting (or while paused for lock).
+  Timer {
+    interval: 1200
+    running: root.streaming || root.running || root._pausedForLock
+    repeat: true
+    onTriggered: {
+      if (!lockProbe.running) lockProbe.running = true
+    }
+  }
+
+  Timer {
+    id: resumeLockTimer
+    interval: 900
+    repeat: false
+    onTriggered: {
+      if (ensureLockProcess.running) return
+      actionStatus = "Resuming capture after unlock…"
+      ensureLockProcess.command = [ctl, "ensure-capture"]
+      ensureLockProcess.running = true
+      root._pausedForLock = false
+    }
+  }
+
+  Process {
+    id: lockProbe
+    command: ["omarchy-hyprland-session-locked"]
+    onExited: function(exitCode) {
+      // 0 = locked, 1 = unlocked, 2 = undetermined
+      if (exitCode === 2) return
+      var locked = exitCode === 0
+      if (locked === root._sessionLocked) return
+      root._sessionLocked = locked
+      if (locked) root.pauseCaptureForLock()
+      else root.resumeCaptureAfterLock()
+    }
+  }
+
+  Process {
+    id: pauseLockProcess
+    stdout: StdioCollector { waitForEnd: true }
+  }
+
+  Process {
+    id: ensureLockProcess
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        try {
+          var data = JSON.parse(String(text || "{}"))
+          if (data.ok === false)
+            root.actionStatus = "Capture resume failed — try Stop/Start"
+          else if (data.captureRestarted)
+            root.actionStatus = "Capture resumed after unlock"
+          else
+            root.actionStatus = ""
+        } catch (e) {
+        }
+        root.refresh()
+      }
+    }
   }
 
   // After a live position move we reconnect; if streaming never returns, revert.
