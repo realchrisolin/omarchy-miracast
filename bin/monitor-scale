@@ -365,6 +365,10 @@ for m in ms:
     [[ "$scale" == "$rest" || -z "$scale" ]] && scale="$new_scale"
     scale_log "virtual apply scale=$scale pos=$pos mode=$mode"
     rebind_miracast_geometry "$mode" "$pos" "$scale" || true
+    # Persist per-device so reconnect restores this scale instead of resetting to 1.
+    if [[ -x "$CTL" ]]; then
+      "$CTL" remember-extend-scale --scale "$scale" >>"$SCALE_LOG" 2>&1 || true
+    fi
     scale_log "done virtual name=$name scale=$scale"
     printf '%s\n' "$scale"
     exit 0

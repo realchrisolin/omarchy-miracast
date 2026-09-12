@@ -12,6 +12,8 @@ PEERS_FILE="$STATE_DIR/peers.json"
 HEADLESS_FILE="$STATE_DIR/headless.name"  # tracked Extend output name (may be peer-named)
 CURSOR_PREV_FILE="$STATE_DIR/cursor-no-hw.prev"
 MODE_STATE_FILE="$STATE_DIR/sink-modes.json"  # sink-advertised CEA/VESA modes from RTSP
+WORKSPACE_PIN_FILE="$STATE_DIR/workspace.pin"  # primary name while 1-10 are pinned to eDP
+# Per-device Extend scales live in settings.json → sinkScales: { "MAC": 2 }
 
 # Headless capture cannot include the hardware cursor plane — force software
 # cursors while Extend is live so the pointer is visible on the Miracast sink.
@@ -217,21 +219,174 @@ print(res)
 PY
 }
 
+# Per-device Extend output scale (keyed by sink MAC) in settings.json sinkScales.
+normalize_peer_mac() {
+  printf '%s' "${1:-}" | tr '[:lower:]-' '[:upper:]:' | tr -d '[:space:]'
+}
+
+# One-time: fold legacy peer-prefs.json / extend-scales.json into settings.sinkScales.
+_migrate_legacy_extend_scales() {
+  python3 - "$SETTINGS_FILE" "$STATE_DIR/peer-prefs.json" "$STATE_DIR/extend-scales.json" <<'PY'
+import json, os, sys
+settings_path, legacy_prefs, legacy_scales = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    settings = json.load(open(settings_path))
+except Exception:
+    settings = {}
+if not isinstance(settings, dict):
+    settings = {}
+scales = settings.get("sinkScales")
+if not isinstance(scales, dict):
+    scales = {}
+
+def ingest(path):
+    try:
+        raw = json.load(open(path))
+    except Exception:
+        return False
+    changed = False
+    if not isinstance(raw, dict):
+        return False
+    for mac, val in raw.items():
+        mac = str(mac or "").strip().upper()
+        if not mac:
+            continue
+        if isinstance(val, dict):
+            val = val.get("scale")
+        if val is None or val == "":
+            continue
+        if mac not in scales:
+            try:
+                num = float(val)
+                scales[mac] = int(num) if num == int(num) else num
+            except Exception:
+                scales[mac] = val
+            changed = True
+    return changed
+
+changed = ingest(legacy_prefs) or ingest(legacy_scales)
+if changed or "sinkScales" not in settings:
+    settings["sinkScales"] = scales
+    tmp = settings_path + ".tmp"
+    os.makedirs(os.path.dirname(settings_path) or ".", exist_ok=True)
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(settings, fh, separators=(",", ":"))
+        fh.write("\n")
+    os.replace(tmp, settings_path)
+for path in (legacy_prefs, legacy_scales):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+PY
+}
+
+extend_scale_get() {
+  local mac default="${2:-}"
+  mac="$(normalize_peer_mac "$1")"
+  [[ -n "$mac" ]] || { printf '%s' "$default"; return 0; }
+  _migrate_legacy_extend_scales 2>/dev/null || true
+  python3 - "$SETTINGS_FILE" "$mac" "$default" <<'PY'
+import json, sys
+path, mac, default = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    settings = json.load(open(path))
+except Exception:
+    settings = {}
+scales = settings.get("sinkScales") if isinstance(settings, dict) else {}
+if not isinstance(scales, dict):
+    scales = {}
+val = scales.get(mac)
+if val is None or val == "":
+    print(default)
+else:
+    print(val)
+PY
+}
+
+extend_scale_set() {
+  local mac value
+  mac="$(normalize_peer_mac "$1")"
+  value="${2:-}"
+  [[ -n "$mac" ]] || return 0
+  _migrate_legacy_extend_scales 2>/dev/null || true
+  mkdir -p "$(dirname "$SETTINGS_FILE")"
+  python3 - "$SETTINGS_FILE" "$mac" "$value" <<'PY'
+import json, os, sys
+path, mac, value = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    settings = json.load(open(path))
+except Exception:
+    settings = {}
+if not isinstance(settings, dict):
+    settings = {}
+scales = settings.get("sinkScales")
+if not isinstance(scales, dict):
+    scales = {}
+if value == "" or str(value).lower() in ("none", "null"):
+    scales.pop(mac, None)
+else:
+    try:
+        num = float(value)
+        scales[mac] = int(num) if num == int(num) else num
+    except Exception:
+        scales[mac] = value
+settings["sinkScales"] = scales
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as fh:
+    json.dump(settings, fh, separators=(",", ":"))
+    fh.write("\n")
+os.replace(tmp, path)
+PY
+}
+
+# Snapshot live Extend scale for a sink MAC.
+remember_extend_scale() {
+  local mac="${1:-}" name="${2:-}" scale=""
+  mac="$(normalize_peer_mac "$mac")"
+  if [[ -z "$mac" ]]; then
+    mac="$(normalize_peer_mac "$(python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get("lastPeerMac") or "")
+except Exception: print("")
+' "$SETTINGS_FILE" 2>/dev/null || true)")"
+  fi
+  [[ -n "$mac" ]] || return 0
+  if [[ -z "$name" && -f "$HEADLESS_FILE" ]]; then
+    name="$(cat "$HEADLESS_FILE" 2>/dev/null || true)"
+  fi
+  if [[ -n "$name" ]]; then
+    scale="$(hyprctl -j monitors 2>/dev/null | python3 -c '
+import json,sys
+name=sys.argv[1]
+try: ms=json.load(sys.stdin)
+except Exception: raise SystemExit
+for m in ms:
+  if str(m.get("name") or "")==name:
+    print(m.get("scale") or "")
+    break
+' "$name" 2>/dev/null || true)"
+  fi
+  [[ -n "$scale" ]] && extend_scale_set "$mac" "$scale"
+}
+
 # Compute placement for the Extend virtual output.
 # Prints: MODE|XxY|SCALE  (mode like 1280x720@60, position like -1200x0, scale like 1.6)
 # Position uses each output's *logical* size so edges stay adjacent after scale changes.
+# Optional $2 = preferred scale (from per-peer prefs on reconnect).
 extend_geometry_parts() {
   local position="${1:-right}"
+  local prefer_scale="${2:-}"
   local tracked=""
   local extend_res
   [[ -f "$HEADLESS_FILE" ]] && tracked="$(cat "$HEADLESS_FILE" 2>/dev/null || true)"
   extend_res="$(extend_resolution)"
-  python3 - "$position" "$tracked" "$extend_res" "$SETTINGS_FILE" <<'PY'
+  python3 - "$position" "$tracked" "$extend_res" "$SETTINGS_FILE" "$prefer_scale" <<'PY'
 import json, subprocess, sys
 pos = sys.argv[1]
 tracked = sys.argv[2] if len(sys.argv) > 2 else ""
 extend_res = sys.argv[3] if len(sys.argv) > 3 else "1280x720"
 settings_path = sys.argv[4] if len(sys.argv) > 4 else ""
+prefer_scale = sys.argv[5].strip() if len(sys.argv) > 5 else ""
 try:
     ew, eh = [int(x) for x in extend_res.split("x", 1)]
 except Exception:
@@ -265,9 +420,16 @@ if virtual is None:
 # Always size the cast surface to extendResolution — matching the laptop's
 # 1080p panel made wf-recorder capture ~2× the pixels ffmpeg then discards.
 hw, hh = ew, eh
-if virtual is not None:
+if prefer_scale:
+    try:
+        vs = float(prefer_scale) or 1.0
+    except Exception:
+        vs = 1.0
+elif virtual is not None:
     vs = float(virtual.get("scale") or 1) or 1.0
 else:
+    vs = 1.0
+if vs <= 0:
     vs = 1.0
 hlw = int(round(hw / vs))
 hlh = int(round(hh / vs))
@@ -744,14 +906,18 @@ else:
 
   # Track before geometry so placement uses this output's size/scale.
   printf '%s\n' "$headless" > "$HEADLESS_FILE"
-  local parts mode pos scale rest
-  parts="$(extend_geometry_parts "$position")"
+  local parts mode pos scale rest saved_scale
+  # Restore per-device Extend scale from the last session with this sink (default 1).
+  saved_scale="$(extend_scale_get "$peer_mac" "")"
+  parts="$(extend_geometry_parts "$position" "$saved_scale")"
   mode="${parts%%|*}"
   rest="${parts#*|}"
   pos="${rest%%|*}"
   scale="${rest#*|}"
-  [[ "$scale" == "$rest" || -z "$scale" ]] && scale="1"
+  [[ "$scale" == "$rest" || -z "$scale" ]] && scale="${saved_scale:-1}"
   hypr_set_monitor_geometry "$headless" "$mode" "$pos" "$scale" >/dev/null 2>&1 || true
+  # Pin 1-10 to eDP and seed special:miracast (one-shot; may move focus briefly).
+  tame_extend_workspaces "$headless" 1
   echo "$headless"
 }
 
@@ -808,12 +974,16 @@ PY
 # Move every workspace off the Miracast virtual output onto the laptop before
 # removing it. Hyprland can stall for tens of seconds if a scaled headless
 # disappears while workspaces/focus still reference it.
+# Move workspaces from one monitor to another.
+# Pass keep_special=1 to leave special:miracast on the cast output (live tame);
+# omit it on disconnect so nothing still references the dying headless.
 migrate_workspaces_from_monitor() {
-  local from="$1" to="$2"
+  local from="$1" to="$2" keep_special="${3:-0}"
   [[ -n "$from" && -n "$to" && "$from" != "$to" ]] || return 0
-  hyprctl -j workspaces 2>/dev/null | python3 - "$from" "$to" <<'PY' 2>/dev/null || true
+  # Hyprland 0.56+ uses Lua dispatchers (legacy moveworkspacetomonitor fails).
+  python3 - "$from" "$to" "$keep_special" <<'PY' 2>/dev/null || true
 import json, subprocess, sys
-src, dst = sys.argv[1], sys.argv[2]
+src, dst, keep = sys.argv[1], sys.argv[2], sys.argv[3]
 try:
     spaces = json.loads(subprocess.check_output(["hyprctl", "-j", "workspaces"], text=True))
 except Exception:
@@ -821,14 +991,90 @@ except Exception:
 for ws in spaces:
     if str(ws.get("monitor") or "") != src:
         continue
-    wid = ws.get("id")
-    if wid is None:
+    name = str(ws.get("name") or "")
+    if keep == "1" and (name == "special:miracast" or name.endswith(":miracast")):
         continue
+    target = name if name else str(ws.get("id") or "")
+    if not target:
+        continue
+    expr = f'hl.dsp.workspace.move({{ workspace = "{target}", monitor = "{dst}" }})'
     subprocess.run(
-        ["hyprctl", "dispatch", "moveworkspacetomonitor", str(wid), dst],
+        ["hyprctl", "dispatch", expr],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
     )
 PY
+}
+
+# Make the Miracast headless a "dumb" output for the Omarchy workspace bar:
+# pin numbered workspaces 1-10 to the laptop so SUPER-N / bar clicks stay on
+# eDP. Do NOT steal focus or yank workspaces back while the user is on the
+# cast display — that interrupted workflow (cursor jumped home every ~1s).
+#
+# Call on create / after scale reseat / on disconnect only — never in a hot loop.
+tame_extend_workspaces() {
+  local cast="${1:-}"
+  local primary
+  local steal_focus="${2:-0}"
+  [[ -n "$cast" ]] || { [[ -f "$HEADLESS_FILE" ]] && cast="$(cat "$HEADLESS_FILE" 2>/dev/null || true)"; }
+  [[ -n "$cast" ]] || return 0
+  primary="$(primary_monitor_name)"
+  [[ -n "$primary" && "$cast" != "$primary" ]] || return 0
+
+  # Pin once per cast (Hyprland 0.56: hl.workspace_rule via eval).
+  if [[ ! -f "$WORKSPACE_PIN_FILE" ]]; then
+    local i
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+      hyprctl eval "hl.workspace_rule({ workspace = \"${i}\", monitor = \"${primary}\" })" >/dev/null 2>&1 || true
+    done
+    hyprctl eval "hl.workspace_rule({ workspace = \"special:miracast\", monitor = \"${cast}\", default = true })" >/dev/null 2>&1 || true
+    printf '%s\n' "$primary" >"$WORKSPACE_PIN_FILE"
+  fi
+
+  # Optional one-shot setup (create path): seed special:miracast on the cast
+  # output, move any numbered workspaces home, then restore the laptop's
+  # previous workspace so the Omarchy bar indicator does not silently drift.
+  # Never do this from the streaming health loop.
+  if [[ "$steal_focus" == "1" ]]; then
+    local prev_ws="1"
+    prev_ws="$(hyprctl -j monitors 2>/dev/null | python3 -c '
+import json, sys
+primary = sys.argv[1]
+try:
+    ms = json.load(sys.stdin)
+except Exception:
+    print("1"); raise SystemExit
+for m in ms:
+    if str(m.get("name") or "") != primary:
+        continue
+    aw = m.get("activeWorkspace") or {}
+    name = str(aw.get("name") or aw.get("id") or "1")
+    # Never restore onto a special workspace — bar shows numbered ids.
+    if name.startswith("special:"):
+        name = "1"
+    print(name)
+    raise SystemExit
+print("1")
+' "$primary" 2>/dev/null || echo 1)"
+
+    # Seed special:miracast on the cast output (may briefly focus the cast).
+    hyprctl dispatch "hl.dsp.focus({ monitor = \"${cast}\" })" >/dev/null 2>&1 || true
+    hyprctl dispatch "hl.dsp.focus({ workspace = \"special:miracast\" })" >/dev/null 2>&1 || true
+    hyprctl dispatch "hl.dsp.workspace.move({ workspace = \"special:miracast\", monitor = \"${cast}\" })" >/dev/null 2>&1 || true
+    migrate_workspaces_from_monitor "$cast" "$primary" 1
+
+    # Restore exact prior eDP workspace — focusmonitor alone leaves Hyprland on
+    # whatever workspace was last active after special:miracast juggling, and
+    # Quickshell's bar indicator can stay stale if we don't re-focus by name.
+    hyprctl dispatch "hl.dsp.focus({ monitor = \"${primary}\" })" >/dev/null 2>&1 || true
+    hyprctl dispatch "hl.dsp.focus({ workspace = \"${prev_ws}\" })" >/dev/null 2>&1 || true
+  fi
+}
+
+# Clear the cast pin marker. Do NOT hyprctl reload — that re-runs monitors.lua
+# while the Miracast headless may still exist and freezes eDP for seconds.
+# Leftover workspace_rule pins (1-10 → eDP) are harmless on a single display.
+unpin_extend_workspaces() {
+  rm -f "$WORKSPACE_PIN_FILE"
 }
 
 cleanup_extend_monitor() {
@@ -848,8 +1094,12 @@ cleanup_extend_monitor() {
 
     if [[ -n "$name" ]]; then
       if [[ -n "$primary" ]]; then
-        hyprctl dispatch focusmonitor "$primary" >/dev/null 2>&1 || true
-        migrate_workspaces_from_monitor "$name" "$primary"
+        hyprctl dispatch "hl.dsp.focus({ monitor = \"${primary}\" })" >/dev/null 2>&1 || true
+        # Move every workspace (including special:miracast) off the cast output
+        # before destroy — Hyprland stalls if focus/workspaces still point at it.
+        migrate_workspaces_from_monitor "$name" "$primary" 0
+        hyprctl dispatch "hl.dsp.focus({ monitor = \"${primary}\" })" >/dev/null 2>&1 || true
+        hyprctl dispatch "hl.dsp.focus({ workspace = \"1\" })" >/dev/null 2>&1 || true
       fi
 
       # Cursor restore before remove — switching cursor mode while a scaled
@@ -861,10 +1111,11 @@ cleanup_extend_monitor() {
       hyprctl eval "hl.monitor({ output = \"${name}\", mode = \"1280x720@60\", position = \"8192x0\", scale = 1 })" >/dev/null 2>&1 || true
       reassert_primary_monitor
       # Let screencopy / seat release the parked output before destroy.
-      sleep 0.15
+      sleep 0.25
 
       hyprctl output remove "$name" >/dev/null 2>&1 || true
       rm -f "$HEADLESS_FILE"
+      unpin_extend_workspaces
 
       # Second pass after the output is gone.
       reassert_primary_monitor
@@ -1451,6 +1702,8 @@ while time.time() < deadline:
     time.sleep(0.15)
 PY
   nmcli connection delete id "FluxCast WFD" 2>/dev/null || true
+  # Remember Extend scale for this device before the output vanishes.
+  remember_extend_scale
   # Brief settle so wf-recorder's screencopy session is gone before we tear
   # down the virtual output (removing it under an active capture freezes eDP).
   sleep 0.2
@@ -1581,8 +1834,9 @@ if m:
       --bitrate "$bitrate" \
       "${audio_args[@]}" \
       --wfd-latency-log "$LAT_FILE" \
-      >>"$LOG_FILE" 2>&1
-    ec=$?
+      2>&1 | stamp_cast_log >>"$LOG_FILE"
+    # Pipeline exit would be the stamp filter's; keep FluxCast's status.
+    ec=${PIPESTATUS[0]}
     # Don't overwrite a more specific failure already recorded by the health watcher.
     current_phase="$(python3 -c 'import json,sys; 
 try: print(json.load(open(sys.argv[1])).get("phase",""))
@@ -1715,6 +1969,9 @@ cmd_ensure_capture() {
   [[ "$info" == *"restarted=true"* ]] && restarted=true
   [[ "$info" == *"healthy=true"* ]] && healthy=true
   pid="$(echo "$info" | sed -n 's/.*pid=\([0-9]*\).*/\1/p')"
+  # Re-assert pins after scale/reseat without stealing the cursor if the user
+  # is working on the cast display (steal_focus=0).
+  tame_extend_workspaces "" 0 >/dev/null 2>&1 || true
   emit "{\"ok\":$healthy,\"captureRestarted\":$restarted,\"captureHealthy\":$healthy,\"fluxPid\":\"$pid\",\"detail\":\"$info\"}"
   [[ "$healthy" == "true" ]]
 }
@@ -1725,6 +1982,39 @@ cmd_pause_capture() {
   count="${info##*=}"
   [[ "$count" =~ ^[0-9]+$ ]] || count=0
   emit "{\"ok\":true,\"paused\":$count}"
+}
+
+# remember-extend-scale [--mac MAC] [--scale N]
+# With no --scale, snapshots the live Extend output scale.
+cmd_remember_extend_scale() {
+  local mac="" scale="" name=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --mac) mac="${2:-}"; shift 2 ;;
+      --scale) scale="${2:-}"; shift 2 ;;
+      --name) name="${2:-}"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  if [[ -z "$mac" ]]; then
+    mac="$(normalize_peer_mac "$(python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get("lastPeerMac") or "")
+except Exception: print("")
+' "$SETTINGS_FILE" 2>/dev/null || true)")"
+  else
+    mac="$(normalize_peer_mac "$mac")"
+  fi
+  if [[ -z "$scale" ]]; then
+    remember_extend_scale "$mac" "$name"
+    mac="$(normalize_peer_mac "${mac:-$(python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get("lastPeerMac") or "")
+except Exception: print("")
+' "$SETTINGS_FILE" 2>/dev/null || true)}")"
+  else
+    [[ -n "$mac" ]] || { emit "{\"ok\":false,\"error\":\"no device mac\"}"; return 1; }
+    extend_scale_set "$mac" "$scale"
+  fi
+  emit "{\"ok\":true,\"mac\":\"$mac\",\"scale\":\"$(extend_scale_get "$mac" "")\"}"
 }
 
 main() {
@@ -1746,6 +2036,7 @@ main() {
     restart-capture|restart_capture) cmd_restart_capture "$@" ;;
     ensure-capture|ensure_capture) cmd_ensure_capture "$@" ;;
     pause-capture|pause_capture) cmd_pause_capture "$@" ;;
+    remember-extend-scale|remember_extend_scale|remember-peer-display|remember_peer_display) cmd_remember_extend_scale "$@" ;;
     -h|--help|help|"") usage; exit 0 ;;
     *) echo "{\"ok\":false,\"error\":\"unknown command\"}" >&2; exit 1 ;;
   esac

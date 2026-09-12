@@ -909,12 +909,16 @@ Panel {
       onActivateRequested: if (root.cursorActive) root.activateCursor()
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
+      // PanelKeyCatcher maps X → deleteRequested (not textKey), same as
+      // Bluetooth/Network "forget" shortcuts. Wire Stop here or X is a no-op.
+      onDeleteRequested: {
+        if (miracast && miracast.active) miracast.stopCast()
+      }
       onTextKey: function(t) {
         if (t === "s" || t === "S") miracast.scanPeers()
         else if (t === "f" || t === "F") miracast.openFirewall()
         else if (t === "d" || t === "D") miracast.runDoctor()
         else if (t === "c" || t === "C") miracast.startCast("")
-        else if (t === "x" || t === "X") miracast.stopCast()
         else if (t === "m" || t === "M") miracast.setMode("mirror")
         else if (t === "e" || t === "E") miracast.setMode("extend")
       }
