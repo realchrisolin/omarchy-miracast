@@ -104,10 +104,10 @@ controls). To restore single-row accordion behavior:
 "onlyExpandFocusedDisplay": true
 ```
 
-While connected, **CAST MODE** (Mirror / Extend) and **EXTEND POSITION**
-(← ↑ ↓ →, Extend only, same row with a vertical separator), **STREAM MODE**,
-and **RENDER ENGINE** live under the Miracast display row (with **SCALE**).
-Scan / doctor / firewall / Stop stay under the **MIRACAST** section.
+While connected, the Miracast display row shows **CAST MODE** / **EXTEND
+POSITION** first (← ↑ ↓ → when Extend), then **SCALE**, **STREAM MODE**, and
+**RENDER ENGINE**. Scan / doctor / firewall / Stop stay under the **MIRACAST**
+section.
 
 With focus on the CAST MODE / EXTEND POSITION row and Extend active, vim
 **hjkl** set position: **h** ← left, **j** ↓ below, **k** ↑ above, **l** → right.

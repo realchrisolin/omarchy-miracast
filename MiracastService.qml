@@ -134,11 +134,12 @@ Item {
     modeProcess.command = [ctl, "set-mode", value]
     modeProcess.running = true
     actionStatus = value === "extend" ? "Mode: Extend (virtual display)" : "Mode: Mirror (copy desktop)"
-    // Mode only applies on the next session — restart if already casting.
+    // Mode is applied at FluxCast start — stop then reconnect after stop finishes
+    // (same path as stream-mode / position). Qt.callLater(start) races async stop.
     if (wasActive && peer !== "") {
       actionStatus = "Switching to " + (value === "extend" ? "Extend" : "Mirror") + "…"
+      _pendingRestartPeer = peer
       stopCast()
-      Qt.callLater(function() { root.startCast(peer) })
     }
   }
 
@@ -456,7 +457,7 @@ Item {
       var mac = peer
       peer = ""
       if (mac === "") return
-      root.actionStatus = "Reconnecting after moving display…"
+      root.actionStatus = "Reconnecting with " + root.modeLabel + "…"
       root.startCast(mac)
       if (!root._suppressPositionRecover) {
         root._awaitingPositionRecover = true
@@ -604,7 +605,7 @@ Item {
         if (root._pendingRestartPeer !== "") {
           var peer = root._pendingRestartPeer
           root._pendingRestartPeer = ""
-          root.actionStatus = "Reconnecting after moving display…"
+          root.actionStatus = "Reconnecting with " + root.modeLabel + "…"
           pendingRestartTimer.peer = peer
           pendingRestartTimer.restart()
         } else if (root._pendingRestartAfterStreamMode !== "") {

@@ -1556,8 +1556,18 @@ Panel {
     readonly property bool expanded: display && root.isExpanded(display.name)
     readonly property var scaleValues: root.scaleValuesFor(display)
     readonly property bool showBrightness: display && display.brightnessAvailable === true && display.enabled
+    // CAST MODE / STREAM / RENDER: Miracast headless row for Extend; laptop row
+    // for Mirror (mirror has no headless display to attach controls to).
+    readonly property bool showMiracastCastControls: {
+      if (!root.showMiracastSessionControls || !monitorRow.display) return false
+      if (monitorRow.display.miracast) return true
+      if (!(miracast && miracast.mode === "mirror")) return false
+      var n = String(monitorRow.display.name || "")
+      if (monitorRow.display.focused) return true
+      return n.indexOf("eDP") === 0 || n.indexOf("LVDS") === 0 || n.indexOf("DSI") === 0
+    }
     // Shared rhythm for nested settings (eDP brightness/scale and Miracast cast controls).
-    readonly property int settingsSectionGap: Style.space(5)  // between BRIGHTNESS / SCALE / CAST MODE…
+    readonly property int settingsSectionGap: Style.space(5)  // between BRIGHTNESS / CAST MODE / SCALE…
     readonly property int settingsLabelGap: Style.space(3)    // between label and its control
     readonly property int settingsControlPad: Style.space(2) // chrome padding inside outlined controls
 
@@ -1734,48 +1744,9 @@ Panel {
         }
       }
 
-      // ---- Scale ----
+      // ---- CAST MODE / POSITION (before SCALE; on eDP when Mirror, Miracast when Extend) ----
       Column {
-        width: parent.width
-        spacing: monitorRow.settingsLabelGap
-
-        Text {
-          text: "SCALE"
-          color: Qt.darker(root.bar.foreground, 1.25)
-          font.family: root.bar.fontFamily
-          font.pixelSize: Style.font.caption
-          font.bold: true
-        }
-
-        Grid {
-          id: nestedScaleRow
-          width: parent.width
-          columns: Math.max(1, monitorRow.scaleValues.length)
-          spacing: Style.spacing.xs
-          readonly property real cellWidth: columns > 0
-            ? (width - spacing * (columns - 1)) / columns
-            : 0
-
-          Repeater {
-            model: monitorRow.scaleValues
-            ScalePill {
-              required property string modelData
-              required property int index
-              display: monitorRow.display
-              scaleValue: modelData
-              scaleIndex: index
-              width: nestedScaleRow.cellWidth
-            }
-          }
-        }
-      }
-
-      // ---- Miracast session controls (Miracast display row only) ----
-      // Same structure as BRIGHTNESS/SCALE: each block is labelGap internally,
-      // blocks are separated by settingsSectionGap from the parent Column.
-      Column {
-        visible: !!(monitorRow.display && monitorRow.display.miracast)
-                 && root.showMiracastSessionControls
+        visible: monitorRow.showMiracastCastControls
         width: parent.width
         spacing: monitorRow.settingsLabelGap
 
@@ -1785,6 +1756,7 @@ Panel {
           width: parent.width
           spacing: Style.spacing.sm
           readonly property bool showPos: miracast.mode === "extend"
+                                          && !!(monitorRow.display && monitorRow.display.miracast)
           // Equal pill width across both groups (2 mode + 4 arrows when Extend).
           readonly property int pillCount: root.miracastModeValues.length
             + (showPos ? root.miracastPosValues.length : 0)
@@ -1888,9 +1860,45 @@ Panel {
         }
       }
 
+      // ---- Scale (after CAST MODE on Miracast rows) ----
       Column {
-        visible: !!(monitorRow.display && monitorRow.display.miracast)
-                 && root.showMiracastSessionControls
+        width: parent.width
+        spacing: monitorRow.settingsLabelGap
+
+        Text {
+          text: "SCALE"
+          color: Qt.darker(root.bar.foreground, 1.25)
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+        }
+
+        Grid {
+          id: nestedScaleRow
+          width: parent.width
+          columns: Math.max(1, monitorRow.scaleValues.length)
+          spacing: Style.spacing.xs
+          readonly property real cellWidth: columns > 0
+            ? (width - spacing * (columns - 1)) / columns
+            : 0
+
+          Repeater {
+            model: monitorRow.scaleValues
+            ScalePill {
+              required property string modelData
+              required property int index
+              display: monitorRow.display
+              scaleValue: modelData
+              scaleIndex: index
+              width: nestedScaleRow.cellWidth
+            }
+          }
+        }
+      }
+
+      // ---- STREAM MODE / RENDER ENGINE ----
+      Column {
+        visible: monitorRow.showMiracastCastControls
                  && root.miracastStreamModeIds.length > 0
         width: parent.width
         spacing: monitorRow.settingsLabelGap
@@ -1926,8 +1934,7 @@ Panel {
       }
 
       Column {
-        visible: !!(monitorRow.display && monitorRow.display.miracast)
-                 && root.showMiracastSessionControls
+        visible: monitorRow.showMiracastCastControls
         width: parent.width
         spacing: monitorRow.settingsLabelGap
 
