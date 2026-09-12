@@ -21,8 +21,12 @@ variables set by `miracast-ctl`; damage-aware capture remains opt-in.
 **Preferred:** use one FluxCast git checkout and point Miracast at it (no copies):
 
 ```bash
-# settings.json fluxcastRoot, or:
-export FLUXCAST_ROOT=/path/to/fluxcast
+# Prefer env (portable — use $HOME / CODE_OTHER, not /home/<user>/...):
+export FLUXCAST_ROOT="${FLUXCAST_ROOT:-$HOME/code/other/fluxcast}"
+# export CODE_OTHER="$HOME/code/other"   # miracast-ctl uses $CODE_OTHER/fluxcast
+
+# Optional: settings.json "fluxcastRoot" with ~/ or $HOME/...
+# Panel UI settings (onlyExpandFocusedDisplay, extendPosition, …): see ../README.md
 
 # If an AppImage extract still has vendor/.../usr/src/fluxcast, replace that
 # directory with a symlink to the git checkout so paths cannot drift apart.
@@ -32,7 +36,7 @@ export FLUXCAST_ROOT=/path/to/fluxcast
 using the git checkout directly:
 
 ```bash
-export FLUXCAST_ROOT=/path/to/fluxcast
+export FLUXCAST_ROOT="${FLUXCAST_ROOT:-$HOME/code/other/fluxcast}"
 
 cp patches/fluxcast/src/wfd/hw_encode.py          "$FLUXCAST_ROOT/src/wfd/"
 cp patches/fluxcast/src/wfd/mode_state.py         "$FLUXCAST_ROOT/src/wfd/"
@@ -47,7 +51,7 @@ cp patches/fluxcast/src/wfd/rtsp/rtsp_server.py   "$FLUXCAST_ROOT/src/wfd/rtsp/"
 Then:
 
 ```bash
-export FLUXCAST_ROOT=/path/to/fluxcast
+export FLUXCAST_ROOT="${FLUXCAST_ROOT:-$HOME/code/other/fluxcast}"
 ./bin/miracast-ctl doctor
 ```
 

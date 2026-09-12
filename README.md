@@ -58,9 +58,10 @@ Plus a [FluxCast](https://github.com/IlyaP358/fluxcast) source tree (or a fork
 such as `realchrisolin/fluxcast` with the WFD encode / SIGUSR1 work):
 
 ```bash
-# Preferred: point Miracast at your git checkout (settings.json fluxcastRoot)
-# or:
-export FLUXCAST_ROOT=/path/to/fluxcast
+# Preferred: env (portable — use $HOME, not /home/<user>/…):
+export FLUXCAST_ROOT="${FLUXCAST_ROOT:-$HOME/code/other/fluxcast}"
+# Or parent dir: CODE_OTHER=$HOME/code/other → sibling …/fluxcast is discovered.
+# Optional: settings.json "fluxcastRoot" with ~/ or $HOME/...
 ```
 
 If you previously used an AppImage extract under
@@ -72,19 +73,35 @@ you are not already running that checkout (see `patches/fluxcast/APPLY.md`).
 
 ## Settings
 
-Override in `~/.config/omarchy-miracast/settings.json`:
+Override in `~/.config/omarchy-miracast/settings.json` (merged with
+`miracast-ctl` defaults on read):
 
 | Key | Default | Notes |
 |-----|---------|--------|
-| `mode` | `extend` | `mirror` or `extend` |
+| `mode` | `mirror` | `mirror` or `extend` |
 | `extendPosition` | `right` | `left` / `right` / `above` / `below` |
 | `streamMode` | `1280x720p30` | e.g. `1920x1080p30` — drives fps + resolution |
-| `fps` | `30` | Miracast CEA HD is typically 30 or 60 |
-| `outputRes` | `1280x720` | Encoded size |
-| `extendResolution` | `1280x720` | Extend virtual output capture size |
-| `extendRefresh` | `30` | Virtual output Hz (keep aligned with stream) |
+| `fps` | `20` | Fallback when `streamMode` is unset |
+| `outputRes` | `1280x720` | Encoded size (fallback) |
+| `extendResolution` | `1280x720` | Extend virtual output size (fallback) |
+| `extendRefresh` | `30` | Preferred virtual output Hz (keep aligned with stream) |
 | `bitrate` | `4M` | Trimmed further on battery / power-saver |
 | `videoEncoder` | `auto` | `auto` → VAAPI, else QSV, else `libx264` |
+| `sinkScales` | `{}` | Per-sink Extend scale, keyed by MAC |
+| `onlyExpandFocusedDisplay` | `false` | Display panel: `false` expands all outputs; `true` = accordion (focused only) |
+
+### Display panel expansion
+
+By default every enabled display row is expanded (Brightness / Scale / cast
+controls). To restore single-row accordion behavior:
+
+```json
+"onlyExpandFocusedDisplay": true
+```
+
+While connected, **CAST MODE**, **EXTEND POSITION**, and **STREAM MODE** live
+under the Miracast display row (with **SCALE**). Scan / doctor / firewall /
+Stop stay under the **MIRACAST** section.
 
 ## Cast modes
 
