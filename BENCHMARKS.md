@@ -196,6 +196,28 @@ matching `FLUXCAST_WFD_*` env vars via `miracast-ctl`.
 
 ---
 
+## Encode presets: desktop vs movie
+
+| Preset | RC | Bitrate / QP | GOP | Damage | Best for |
+|--------|-----|--------------|-----|--------|----------|
+| **desktop** | CQP | qp 18 | 30 | damage-aware (`1`) | UI / terminals |
+| **movie** | CQP | qp 18, quality 2 | 60 | continuous `-D` (`0`) | Fullscreen video (Intel CBR undershoots ≈3 Mbps → blocky) |
+
+```bash
+miracast-ctl set-cast-preset movie     # apply + restart capture if streaming
+miracast-ctl set-cast-preset desktop
+```
+
+FluxCast reads `FLUXCAST_WFD_VAAPI_RC`, `FLUXCAST_WFD_VAAPI_BITRATE`,
+`FLUXCAST_WFD_VAAPI_QP`, `FLUXCAST_WFD_VAAPI_GOP`, `FLUXCAST_WFD_VAAPI_QUALITY`.
+
+**Intel CBR note (2026-09-13):** with `rc_mode=CBR` and `b=20M`/`28M`, P2P TX
+stayed ~3 Mbps → smooth but blocky on action. Movie preset therefore stays on
+**CQP**. FluxCast also auto-rebinds capture when `buffer pool full` / DTS errors
+spike (recovery, not a cure for scale 1.6 load).
+
+---
+
 ## Recommended defaults (from this data)
 
 | Knob | Recommendation | Why |

@@ -100,6 +100,11 @@ Override in `~/.config/omarchy-miracast/settings.json` (merged with
 | `wfRecorderBin` | unset | Absolute path to a custom `wf-recorder` (e.g. ICC / PR #347). Empty = **PATH** stock. ICC preferred for perf; see [BUILD.md §7](BUILD.md) for Extend terminal typing lag. |
 | `wfRecorderProto` | `auto` | `auto` / `icc` / `wlr`. `auto` upgrades to `icc` when a configured binary advertises ICC. Use `wlr` + stock binary if cast-head terminal keys feel buffered until the pointer moves. |
 | `wfRecorderDamage` | `"1"` | `"1"` = damage-aware (omit `wf-recorder -D`); `"0"` = continuous `-D`. Set by `scripts/recommend-cast-profile.py --apply` or manually. |
+| `castPreset` | `desktop` | `desktop` = CQP qp18 GOP30; `movie` = CQP qp18 GOP60 quality2 (Intel CBR undershoots). `miracast-ctl set-cast-preset desktop\|movie`. |
+| `vaapiRcMode` | `CQP` | `CQP` / `CBR` / `VBR` → `FLUXCAST_WFD_VAAPI_RC` |
+| `vaapiBitrate` | `12M` | Target for CBR/VBR (Intel CBR undershoots; movie preset uses CQP). |
+| `vaapiQp` | `18` | CQP quantizer (lower = sharper) |
+| `vaapiGop` | `30` | GOP length in frames (~1s at 30 fps; movie preset uses 60) |
 | *(env)* `FLUXCAST_WFD_VAAPI_QP` | `18` | DMA CQP quantizer (lower = sharper / more bitrate) |
 | `sinkScales` | `{}` | Per-sink Extend scale, keyed by MAC (overrides default) |
 | `defaultExtendScale` | `1` | Extend scale when a sink has no `sinkScales` entry — **1** is cheapest for Hyprland |
@@ -164,7 +169,11 @@ To score [BENCHMARKS.md](BENCHMARKS.md) results into settings (`captureEncode`,
 ```bash
 ./scripts/recommend-cast-profile.py          # dry-run + docs/benchmarks/recommended.env
 ./scripts/recommend-cast-profile.py --apply  # update settings.json
+miracast-ctl set-cast-preset movie|desktop   # CQP movie vs desktop encode; reconnect if streaming
 ```
+
+See [BENCHMARKS.md](BENCHMARKS.md) for presets and Intel CBR undershoot notes.
+FluxCast auto-rebinds capture on buffer-pool / DTS spikes (RTSP stays up).
 
 While connected, Hyprland **animations** are turned off and restored on stop.
 Borders/gaps stay on so focus rings and the workspace indicator keep working.

@@ -86,6 +86,17 @@ DAMAGE) and apply FluxCast-facing settings:
 Dry-run without writing settings: omit `--apply`. Details in
 [BENCHMARKS.md § Auto-recommend](BENCHMARKS.md).
 
+**Encode presets** (desktop UI vs movie):
+
+```bash
+miracast-ctl set-cast-preset desktop   # CQP qp18 GOP30
+miracast-ctl set-cast-preset movie     # CQP qp18 GOP60 quality2, continuous -D
+# RC/env apply at FluxCast start — reconnect if already streaming
+```
+
+`extendRefresh` follows the stream mode fps (e.g. `1920x1080p30` → 30 Hz head).
+FluxCast auto-rebinds capture on buffer-pool / DTS spikes (20s debounce).
+
 ---
 
 ## Measured performance (same laptop, live Miracast)

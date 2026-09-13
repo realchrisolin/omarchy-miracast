@@ -212,6 +212,15 @@ defaults = {
     "wfRecorderDamage": "1",
     # DMA-BUF CQP quantizer for h264_vaapi (lower = sharper / more bitrate).
     "vaapiQp": 18,
+    # VAAPI GOP length in frames (default = stream fps ≈ 1s). Shorter recovers
+    # faster after buffer-pool drops / DTS glitches on picky sinks.
+    "vaapiGop": 30,
+    # desktop | movie — see apply_cast_preset / set-cast-preset.
+    "castPreset": "desktop",
+    # CQP | CBR | VBR — FluxCast FLUXCAST_WFD_VAAPI_RC
+    "vaapiRcMode": "CQP",
+    # CBR/VBR target (e.g. 12M); ignored for CQP.
+    "vaapiBitrate": "12M",
 }
 try:
     data = json.load(open(path))
@@ -243,6 +252,70 @@ with open(path, "w", encoding="utf-8") as f:
     f.write("\n")
 print(json.dumps(data, separators=(",", ":")))
 PY
+}
+
+# desktop = sharp UI (CQP); movie = steady bitrate for film (CBR).
+apply_cast_preset() {
+  local preset="${1:-desktop}"
+  case "$preset" in
+    desktop|movie) ;;
+    *)
+      echo "{\"ok\":false,\"error\":\"castPreset must be desktop or movie\"}"
+      return 1
+      ;;
+  esac
+  python3 - "$SETTINGS_FILE" "$preset" <<'PY'
+import json, sys
+path, preset = sys.argv[1], sys.argv[2]
+try:
+    data = json.load(open(path))
+except Exception:
+    data = {}
+if not isinstance(data, dict):
+    data = {}
+data["castPreset"] = preset
+if preset == "movie":
+    # Intel h264_vaapi CBR undershoots badly (~3 Mbps vs 20–28M target) →
+    # smooth but blocky. CQP uses bits when scenes need them (peaks OK on
+    # ~72 Mbps P2P PHY). Slightly longer GOP than desktop for film efficiency.
+    data["vaapiRcMode"] = "CQP"
+    data["vaapiQp"] = 18
+    data["vaapiGop"] = 60
+    data["vaapiQuality"] = "2"
+    data["vaapiBitrate"] = str(data.get("vaapiBitrate") or "28M")  # unused for CQP
+    data["wfRecorderDamage"] = "0"  # continuous -D
+else:
+    # Sharp desktop / terminals.
+    data["vaapiRcMode"] = "CQP"
+    data["vaapiQp"] = int(data.get("vaapiQp") or 18)
+    data["vaapiGop"] = 30
+    data["vaapiQuality"] = str(data.get("vaapiQuality") or "4")
+    data["wfRecorderDamage"] = str(data.get("wfRecorderDamage") or "1")
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, separators=(",", ":"))
+    f.write("\n")
+print(json.dumps({"ok": True, "castPreset": preset,
+                  "vaapiRcMode": data.get("vaapiRcMode"),
+                  "vaapiBitrate": data.get("vaapiBitrate"),
+                  "vaapiQp": data.get("vaapiQp"),
+                  "vaapiGop": data.get("vaapiGop"),
+                  "wfRecorderDamage": data.get("wfRecorderDamage")},
+                 separators=(",", ":")))
+PY
+}
+
+cmd_set_cast_preset() {
+  local preset="${1:-}"
+  [[ -n "$preset" ]] || { echo '{"ok":false,"error":"usage: set-cast-preset desktop|movie"}'; return 1; }
+  local out
+  out="$(apply_cast_preset "$preset")" || { echo "$out"; return 1; }
+  # VAAPI RC/bitrate are read from FluxCast's environment at process start.
+  # restart-capture (SIGUSR1) is not enough — tip reconnect if streaming.
+  local phase needs="false"
+  phase="$(python3 -c 'import json;from pathlib import Path;print(json.loads(Path.home().joinpath(".local/state/omarchy-miracast/status.json").read_text()).get("phase",""))' 2>/dev/null || true)"
+  [[ "$phase" == "streaming" ]] && needs="true"
+  python3 -c 'import json,sys; d=json.loads(sys.argv[1]); d["needsReconnect"]=sys.argv[2]=="true"; print(json.dumps(d,separators=(",",":")))' \
+    "$out" "$needs"
 }
 
 peer_name_for() {
@@ -545,22 +618,27 @@ if vs <= 0:
     vs = 1.0
 hlw = int(round(hw / vs))
 hlh = int(round(hh / vs))
-# Match Extend refresh to the Miracast stream rate by default (usually 30).
-# A 60Hz headless while capturing at 30fps overproduces damage/ICC frames,
-# the buffer pool balloons, and the desktop feels laggy. Override with
-# settings.extendRefresh if needed.
+# Match Extend refresh to stream mode fps (streamMode …pN or settings.fps).
+# Faster head vs encode overproduces ICC frames → chop / buffer-pool drops.
 refresh = 30
 try:
     settings = json.load(open(settings_path)) if settings_path else {}
 except Exception:
     settings = {}
 try:
-    want = int(float(settings.get("extendRefresh") or 30))
+    mid = str(settings.get("streamMode") or "")
+    import re as _re
+    m = _re.fullmatch(r"(\d+)x(\d+)p(\d+)", mid)
+    if m:
+        refresh = int(m.group(3))
+    else:
+        refresh = int(float(settings.get("fps") or settings.get("extendRefresh") or 30))
 except Exception:
-    want = 30
-if want >= 60:
-    refresh = 60
-else:
+    try:
+        refresh = int(float(settings.get("extendRefresh") or 30))
+    except Exception:
+        refresh = 30
+if refresh < 1:
     refresh = 30
 
 if pos == "left":
@@ -1995,13 +2073,9 @@ data["streamMode"] = mode_id
 data["outputRes"] = res
 data["extendResolution"] = res
 data["fps"] = str(fps)
-# Headless Hz is for local cursor feel — do not clamp it to stream fps.
-# Keep existing extendRefresh when set; otherwise default 60.
-try:
-    er = int(float(data.get("extendRefresh") or 60))
-except Exception:
-    er = 60
-data["extendRefresh"] = 60 if er >= 60 else 30
+# Keep Extend head refresh matched to the stream mode fps (e.g. 1080p30 → 30).
+# A faster head overproduces ICC frames vs encode and causes chop / pool drops.
+data["extendRefresh"] = int(fps)
 with open(settings_path, "w", encoding="utf-8") as fh:
     json.dump(data, fh, separators=(",", ":"))
     fh.write("\n")
@@ -2897,6 +2971,34 @@ else:
 ' "$settings" "${FLUXCAST_WFD_VAAPI_QP:-}" 2>/dev/null || echo "${FLUXCAST_WFD_VAAPI_QP:-18}")"
     export FLUXCAST_WFD_VAAPI_QP="$_qp"
     echo "[miracast-ctl] VAAPI QP=$FLUXCAST_WFD_VAAPI_QP" >>"$LOG_DIR/cast.log"
+    # GOP frames: settings.vaapiGop → env → 30.
+    _gop="$(python3 -c 'import json,sys
+s=json.loads(sys.argv[1])
+v=s.get("vaapiGop", None)
+if v is not None and str(v).strip()!="":
+  print(str(v).strip())
+else:
+  print((sys.argv[2] if len(sys.argv)>2 else "") or "30")
+' "$settings" "${FLUXCAST_WFD_VAAPI_GOP:-}" 2>/dev/null || echo "${FLUXCAST_WFD_VAAPI_GOP:-30}")"
+    export FLUXCAST_WFD_VAAPI_GOP="$_gop"
+    echo "[miracast-ctl] VAAPI GOP=$FLUXCAST_WFD_VAAPI_GOP" >>"$LOG_DIR/cast.log"
+    # Rate control: settings.vaapiRcMode (CQP|CBR|VBR) + bitrate for non-CQP.
+    _rc="$(python3 -c 'import json,sys
+s=json.loads(sys.argv[1])
+print(str(s.get("vaapiRcMode") or "CQP").strip().upper() or "CQP")
+' "$settings" 2>/dev/null || echo CQP)"
+    export FLUXCAST_WFD_VAAPI_RC="$_rc"
+    _br="$(python3 -c 'import json,sys
+s=json.loads(sys.argv[1])
+print(str(s.get("vaapiBitrate") or "12M").strip() or "12M")
+' "$settings" 2>/dev/null || echo 12M)"
+    export FLUXCAST_WFD_VAAPI_BITRATE="$_br"
+    _qual="$(python3 -c 'import json,sys
+s=json.loads(sys.argv[1])
+print(str(s.get("vaapiQuality") or "4").strip() or "4")
+' "$settings" 2>/dev/null || echo 4)"
+    export FLUXCAST_WFD_VAAPI_QUALITY="$_qual"
+    echo "[miracast-ctl] VAAPI RC=$FLUXCAST_WFD_VAAPI_RC bitrate=$FLUXCAST_WFD_VAAPI_BITRATE quality=$FLUXCAST_WFD_VAAPI_QUALITY preset=$(python3 -c 'import json,sys;print(json.loads(sys.argv[1]).get("castPreset","desktop"))' "$settings" 2>/dev/null || echo desktop)" >>"$LOG_DIR/cast.log"
     # Optional ICC / custom wf-recorder: env or settings.wfRecorderBin only
     # (see resolve_wf_recorder_env). Default = PATH stock binary.
     local _wf_env _wf_bin _wf_proto
@@ -3041,6 +3143,7 @@ Commands:
   get-stream-mode
   set-stream-mode <id>   # e.g. 1280x720p30 / 1920x1080p60
   set-capture-encode dmabuf|vaapi|cpu   # RENDER METHOD preference
+  set-cast-preset desktop|movie   # CQP desktop vs CBR movie encode
   get-extend-position
   set-extend-position right|left|above|below
   restart-capture [quick]
@@ -3153,6 +3256,7 @@ main() {
     get-stream-mode|get_stream_mode) cmd_get_stream_mode "$@" ;;
     set-stream-mode|set_stream_mode) cmd_set_stream_mode "$@" ;;
     set-capture-encode|set_capture_encode) cmd_set_capture_encode "$@" ;;
+    set-cast-preset|set_cast_preset) cmd_set_cast_preset "$@" ;;
     get-extend-position|get_extend_position) cmd_get_extend_position "$@" ;;
     set-extend-position|set_extend_position) cmd_set_extend_position "$@" ;;
     restart-capture|restart_capture) cmd_restart_capture "$@" ;;
