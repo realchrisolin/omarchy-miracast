@@ -244,7 +244,9 @@ PY
 }
 
 # Configured Extend capture resolution (physical pixels wf-recorder sees).
-# Default 1280x720 so we do not capture full laptop 1080p only to downscale in ffmpeg.
+# Prefer streamMode / outputRes so a stale extendResolution (e.g. 1920x1080
+# left behind after switching to 720p) cannot inflate the virtual output —
+# oversized SW-cursor surfaces feel severely laggy.
 extend_resolution() {
   python3 - "$SETTINGS_FILE" <<'PY'
 import json, re, sys
@@ -252,7 +254,15 @@ try:
     data = json.load(open(sys.argv[1]))
 except Exception:
     data = {}
-res = str(data.get("extendResolution") or "1280x720")
+res = ""
+mid = str(data.get("streamMode") or "")
+m = re.fullmatch(r"(\d+)x(\d+)p\d+", mid)
+if m:
+    res = f"{m.group(1)}x{m.group(2)}"
+if not res:
+    res = str(data.get("outputRes") or "")
+if not res:
+    res = str(data.get("extendResolution") or "")
 if not re.fullmatch(r"\d+x\d+", res):
     res = "1280x720"
 print(res)
@@ -1943,7 +1953,13 @@ data["streamMode"] = mode_id
 data["outputRes"] = res
 data["extendResolution"] = res
 data["fps"] = str(fps)
-data["extendRefresh"] = str(30 if fps < 60 else 60)
+# Headless Hz is for local cursor feel — do not clamp it to stream fps.
+# Keep existing extendRefresh when set; otherwise default 60.
+try:
+    er = int(float(data.get("extendRefresh") or 60))
+except Exception:
+    er = 60
+data["extendRefresh"] = 60 if er >= 60 else 30
 with open(settings_path, "w", encoding="utf-8") as fh:
     json.dump(data, fh, separators=(",", ":"))
     fh.write("\n")
