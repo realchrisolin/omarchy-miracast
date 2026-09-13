@@ -86,15 +86,15 @@ after `scale_vaapi` and glitches). ICC (PR #347) builds need `-r` for capture
 cadence; FluxCast detects ICC (`--toplevel` / version) and passes `-r` only then.
 Keep `bf=0` + constrained baseline.
 
-Optional ICC binary: Omarchy `miracast-ctl` auto-exports when
-`~/src/wf-recorder/build/wf-recorder` exists (or `settings.wfRecorderBin` /
-`FLUXCAST_WFD_WF_RECORDER_BIN`). Proto becomes `icc` when the binary advertises
-`--toplevel`. Manual override:
+Optional ICC binary (not the default — stock `PATH` wf-recorder otherwise).
+Set explicitly via `settings.wfRecorderBin` or:
 
 ```bash
 export FLUXCAST_WFD_WF_RECORDER_BIN=/path/to/wf-recorder-icc
-export FLUXCAST_WFD_WF_RECORDER_PROTO=icc   # fail closed if binary is not ICC
+export FLUXCAST_WFD_WF_RECORDER_PROTO=auto   # or icc; bad icc config falls back to PATH
 ```
+
+Omarchy does **not** probe `~/src/...` build trees.
 
 Optional damage-aware (Omarchy `miracast-ctl` defaults this on):
 

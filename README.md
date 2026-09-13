@@ -90,8 +90,8 @@ Override in `~/.config/omarchy-miracast/settings.json` (merged with
 | *(env)* `FLUXCAST_WFD_CAPTURE_ENCODE` | `auto` (Omarchy) / `pipe` (upstream) | `auto`/`vaapi` = wf-recorder DMA-BUF encode (incl. scaled outputs); `pipe` = raw→ffmpeg hwupload |
 | *(env)* `FLUXCAST_WFD_DMABUF_ALLOW_SCALED` | allow (default) | `0`/`false` = force pipe when Hyprland scale ≠ 1 |
 | `captureEncode` | `dmabuf` | RENDER ENGINE: `dmabuf` (GPU·DMA-BUF) / `vaapi` (GPU·VAAPI) / `cpu` |
-| `wfRecorderBin` | unset → auto | Absolute path to `wf-recorder`; if empty, uses `~/src/wf-recorder/build/wf-recorder` when executable |
-| `wfRecorderProto` | `auto` | `auto` / `icc` / `wlr` — `auto` upgrades to `icc` when the binary advertises ICC |
+| `wfRecorderBin` | unset | Absolute path to a custom `wf-recorder` (e.g. ICC / PR #347). Empty = **PATH** stock binary (portable default). |
+| `wfRecorderProto` | `auto` | `auto` / `icc` / `wlr`. `auto` upgrades to `icc` only when a **configured** binary advertises ICC. Bad `icc` config falls back to PATH. |
 | *(env)* `FLUXCAST_WFD_VAAPI_QP` | `18` | DMA CQP quantizer (lower = sharper / more bitrate) |
 | `sinkScales` | `{}` | Per-sink Extend scale, keyed by MAC (overrides default) |
 | `defaultExtendScale` | `1` | Extend scale when a sink has no `sinkScales` entry — **1** is cheapest for Hyprland |
@@ -135,17 +135,20 @@ path (`capturePath` / `encoder` in `miracast-ctl status`), not only the preferen
 changes — lower CPU, cursor still smooth. Force continuous grab with
 `FLUXCAST_WFD_WF_RECORDER_DAMAGE=0`.
 
-**Optional ICC wf-recorder (PR #347):** `miracast-ctl` resolves the binary when
-starting a cast (Display panel included):
+**Optional ICC wf-recorder (PR #347):** not required. Default is the distro
+`wf-recorder` on `PATH` (wlr-screencopy). To opt into a local ICC build until
+upstream ships it, set an absolute path explicitly:
 
-1. `FLUXCAST_WFD_WF_RECORDER_BIN` if already set in the environment  
-2. `settings.json` → `wfRecorderBin`  
-3. Auto: `~/src/wf-recorder/build/wf-recorder` when that path is executable  
+```json
+"wfRecorderBin": "/usr/local/bin/wf-recorder-icc",
+"wfRecorderProto": "auto"
+```
 
-If the chosen binary looks like an ext-image-copy-capture build (`--toplevel` /
-version), it sets `FLUXCAST_WFD_WF_RECORDER_PROTO=icc`. Override with
-`wfRecorderProto` (`auto` / `icc` / `wlr`) or the matching env vars. See FluxCast
-`DOCUMENTATION.md`.
+Or export `FLUXCAST_WFD_WF_RECORDER_BIN` / `FLUXCAST_WFD_WF_RECORDER_PROTO`
+before connect. Env wins over settings. There is **no** automatic probing of
+`~/src/...` build trees. If `wfRecorderProto` is `icc` but the binary is missing
+or not ICC-capable, Miracast falls back to PATH stock and logs a warning.
+See FluxCast `DOCUMENTATION.md`.
 
 While connected, Hyprland **animations** are turned off and restored on stop.
 Borders/gaps stay on so focus rings and the workspace indicator keep working.

@@ -154,10 +154,11 @@ defaults = {
     # Default Hyprland scale for Miracast Extend when sinkScales has no MAC entry.
     # 1 minimizes compositor cost; raise per-sink via the Display panel if needed.
     "defaultExtendScale": 1,
-    # Optional wf-recorder binary (ext-image-copy-capture / PR #347). Empty =
-    # auto-detect ~/src/wf-recorder/build/wf-recorder when executable, else PATH.
+    # Optional absolute path to a custom wf-recorder (e.g. ICC / PR #347).
+    # Empty = use PATH wf-recorder (stock / portable default). No path probing.
     "wfRecorderBin": "",
     # auto | icc | wlr — see resolve_wf_recorder_env. Empty treated as auto.
+    # icc with a missing/non-ICC binary falls back to PATH (fail-soft).
     "wfRecorderProto": "auto",
 }
 try:
@@ -1415,10 +1416,12 @@ PY
 }
 
 # Resolve wf-recorder binary + proto for FluxCast (ICC / PR #347 opt-in).
-# Precedence for BIN: env FLUXCAST_WFD_WF_RECORDER_BIN → settings.wfRecorderBin →
-# ~/src/wf-recorder/build/wf-recorder if executable → else empty (use PATH).
-# Proto: env → settings.wfRecorderProto (default auto); if auto and the chosen
+# Portable default: empty BIN → FluxCast uses PATH (stock distro wf-recorder).
+# Precedence for BIN: env FLUXCAST_WFD_WF_RECORDER_BIN → settings.wfRecorderBin.
+# No filesystem probing of ~/src or other build paths.
+# Proto: env → settings.wfRecorderProto (default auto); if auto and a configured
 # binary advertises --toplevel / ext-copy-capture, upgrade to icc.
+# PROTO=icc without a usable ICC binary: warn on stderr and fall back to PATH.
 # Prints: WF_RECORDER_BIN='…' and WF_RECORDER_PROTO='…' for eval.
 resolve_wf_recorder_env() {
   python3 - "$SETTINGS_FILE" <<'PY'
@@ -1457,19 +1460,36 @@ env_bin = (os.environ.get("FLUXCAST_WFD_WF_RECORDER_BIN") or "").strip()
 env_proto = (os.environ.get("FLUXCAST_WFD_WF_RECORDER_PROTO") or "").strip().lower()
 cfg_bin = str(settings.get("wfRecorderBin") or "").strip()
 cfg_proto = str(settings.get("wfRecorderProto") or "auto").strip().lower() or "auto"
-auto_bin = expand("~/src/wf-recorder/build/wf-recorder")
 
 bin_path = ""
-for cand in (expand(env_bin), expand(cfg_bin), auto_bin):
+for cand in (expand(env_bin), expand(cfg_bin)):
     if is_exec(cand):
         bin_path = cand
         break
 
-proto = env_proto or cfg_proto
-if bin_path and proto in ("", "auto"):
-    proto = "icc" if looks_icc(bin_path) else "auto"
-if not bin_path:
-    proto = env_proto or cfg_proto or "auto"
+proto = env_proto or cfg_proto or "auto"
+warn = ""
+
+if bin_path:
+    is_icc = looks_icc(bin_path)
+    if proto in ("", "auto"):
+        proto = "icc" if is_icc else "auto"
+    elif proto == "icc" and not is_icc:
+        warn = (
+            f"wfRecorderProto=icc but binary is not ICC-capable ({bin_path}); "
+            "falling back to PATH wf-recorder"
+        )
+        bin_path = ""
+        proto = "auto"
+elif proto == "icc":
+    warn = (
+        "wfRecorderProto=icc but no usable wfRecorderBin / "
+        "FLUXCAST_WFD_WF_RECORDER_BIN; falling back to PATH wf-recorder"
+    )
+    proto = "auto"
+
+if warn:
+    print(f"[miracast-ctl] {warn}", file=sys.stderr)
 
 print(f"WF_RECORDER_BIN={sh_quote(bin_path)}")
 print(f"WF_RECORDER_PROTO={sh_quote(proto)}")
@@ -2342,9 +2362,10 @@ print(v if v in ("dmabuf","vaapi","cpu") else "dmabuf")' "$settings")"
     else
       export FLUXCAST_WFD_WF_RECORDER_DAMAGE=1
     fi
-    # ICC / PR #347 wf-recorder: settings + ~/src auto-detect (see resolve_wf_recorder_env).
+    # Optional ICC / custom wf-recorder: env or settings.wfRecorderBin only
+    # (see resolve_wf_recorder_env). Default = PATH stock binary.
     local _wf_env _wf_bin _wf_proto
-    _wf_env="$(resolve_wf_recorder_env)"
+    _wf_env="$(resolve_wf_recorder_env 2>>"$LOG_DIR/cast.log")"
     eval "$_wf_env"
     _wf_bin="${WF_RECORDER_BIN:-}"
     _wf_proto="${WF_RECORDER_PROTO:-auto}"
@@ -2354,6 +2375,7 @@ print(v if v in ("dmabuf","vaapi","cpu") else "dmabuf")' "$settings")"
       echo "[miracast-ctl] wf-recorder BIN=$_wf_bin PROTO=$_wf_proto" >>"$LOG_DIR/cast.log"
     else
       unset FLUXCAST_WFD_WF_RECORDER_BIN FLUXCAST_WFD_WF_RECORDER_PROTO 2>/dev/null || true
+      echo "[miracast-ctl] wf-recorder using PATH (stock default)" >>"$LOG_DIR/cast.log"
     fi
     export FLUXCAST_WFD_MODE_STATE="$MODE_STATE_FILE"
     # When set (file exists), FluxCast must not auto-rebind over an intentional
