@@ -154,6 +154,11 @@ defaults = {
     # Default Hyprland scale for Miracast Extend when sinkScales has no MAC entry.
     # 1 minimizes compositor cost; raise per-sink via the Display panel if needed.
     "defaultExtendScale": 1,
+    # Optional wf-recorder binary (ext-image-copy-capture / PR #347). Empty =
+    # auto-detect ~/src/wf-recorder/build/wf-recorder when executable, else PATH.
+    "wfRecorderBin": "",
+    # auto | icc | wlr — see resolve_wf_recorder_env. Empty treated as auto.
+    "wfRecorderProto": "auto",
 }
 try:
     data = json.load(open(path))
@@ -1409,6 +1414,68 @@ print(json.dumps(data, separators=(",", ":")))
 PY
 }
 
+# Resolve wf-recorder binary + proto for FluxCast (ICC / PR #347 opt-in).
+# Precedence for BIN: env FLUXCAST_WFD_WF_RECORDER_BIN → settings.wfRecorderBin →
+# ~/src/wf-recorder/build/wf-recorder if executable → else empty (use PATH).
+# Proto: env → settings.wfRecorderProto (default auto); if auto and the chosen
+# binary advertises --toplevel / ext-copy-capture, upgrade to icc.
+# Prints: WF_RECORDER_BIN='…' and WF_RECORDER_PROTO='…' for eval.
+resolve_wf_recorder_env() {
+  python3 - "$SETTINGS_FILE" <<'PY'
+import json, os, subprocess, sys
+from pathlib import Path
+
+try:
+    settings = json.load(open(sys.argv[1]))
+except Exception:
+    settings = {}
+if not isinstance(settings, dict):
+    settings = {}
+
+def expand(p: str) -> str:
+    return str(Path(p).expanduser()) if p else ""
+
+def sh_quote(s: str) -> str:
+    return "'" + s.replace("'", "'\"'\"'") + "'"
+
+def is_exec(p: str) -> bool:
+    return bool(p) and os.path.isfile(p) and os.access(p, os.X_OK)
+
+def looks_icc(p: str) -> bool:
+    try:
+        r = subprocess.run([p, "--help"], capture_output=True, text=True, timeout=3.0)
+        blob = ((r.stdout or "") + (r.stderr or "")).lower()
+        if "--toplevel" in blob or "ext-copy-capture" in blob:
+            return True
+        r2 = subprocess.run([p, "--version"], capture_output=True, text=True, timeout=3.0)
+        blob2 = ((r2.stdout or "") + (r2.stderr or "")).lower()
+        return "ext-copy-capture" in blob2
+    except Exception:
+        return False
+
+env_bin = (os.environ.get("FLUXCAST_WFD_WF_RECORDER_BIN") or "").strip()
+env_proto = (os.environ.get("FLUXCAST_WFD_WF_RECORDER_PROTO") or "").strip().lower()
+cfg_bin = str(settings.get("wfRecorderBin") or "").strip()
+cfg_proto = str(settings.get("wfRecorderProto") or "auto").strip().lower() or "auto"
+auto_bin = expand("~/src/wf-recorder/build/wf-recorder")
+
+bin_path = ""
+for cand in (expand(env_bin), expand(cfg_bin), auto_bin):
+    if is_exec(cand):
+        bin_path = cand
+        break
+
+proto = env_proto or cfg_proto
+if bin_path and proto in ("", "auto"):
+    proto = "icc" if looks_icc(bin_path) else "auto"
+if not bin_path:
+    proto = env_proto or cfg_proto or "auto"
+
+print(f"WF_RECORDER_BIN={sh_quote(bin_path)}")
+print(f"WF_RECORDER_PROTO={sh_quote(proto)}")
+PY
+}
+
 resolve_fluxcast_root() {
   if [[ -n "${FLUXCAST_ROOT:-}" && -d "$FLUXCAST_ROOT" ]]; then
     echo "$FLUXCAST_ROOT"
@@ -2266,14 +2333,27 @@ print(v if v in ("dmabuf","vaapi","cpu") else "dmabuf")' "$settings")"
     # Scaled outputs use DMA-BUF by default (proven at integer scale 2 with
     # tv-range CQP). Deny with FLUXCAST_WFD_DMABUF_ALLOW_SCALED=0 if needed.
     export FLUXCAST_WFD_DMABUF_ALLOW_SCALED="${FLUXCAST_WFD_DMABUF_ALLOW_SCALED:-}"
-    # Prefer continuous wf-recorder -D on Extend. Damage-aware (omit -D) with
-    # live UI (e.g. blinking cursors) keeps waking Hyprland harder than a
-    # steady 30fps grab. Only honor DAMAGE=1 if the caller set it explicitly
-    # for this start; clear a stale inherited value otherwise.
-    if [[ "${FLUXCAST_WFD_WF_RECORDER_DAMAGE:-}" =~ ^(1|true|yes|on)$ ]]; then
-      export FLUXCAST_WFD_WF_RECORDER_DAMAGE=1
-    else
+    # Prefer damage-aware capture (omit wf-recorder -D): Hyprland only emits
+    # frames when the Extend output changes — lower CPU than continuous -D,
+    # and cursor motion still looks smooth in practice. Force continuous with
+    # FLUXCAST_WFD_WF_RECORDER_DAMAGE=0.
+    if [[ "${FLUXCAST_WFD_WF_RECORDER_DAMAGE:-1}" =~ ^(0|false|no|off)$ ]]; then
       unset FLUXCAST_WFD_WF_RECORDER_DAMAGE
+    else
+      export FLUXCAST_WFD_WF_RECORDER_DAMAGE=1
+    fi
+    # ICC / PR #347 wf-recorder: settings + ~/src auto-detect (see resolve_wf_recorder_env).
+    local _wf_env _wf_bin _wf_proto
+    _wf_env="$(resolve_wf_recorder_env)"
+    eval "$_wf_env"
+    _wf_bin="${WF_RECORDER_BIN:-}"
+    _wf_proto="${WF_RECORDER_PROTO:-auto}"
+    if [[ -n "$_wf_bin" ]]; then
+      export FLUXCAST_WFD_WF_RECORDER_BIN="$_wf_bin"
+      export FLUXCAST_WFD_WF_RECORDER_PROTO="$_wf_proto"
+      echo "[miracast-ctl] wf-recorder BIN=$_wf_bin PROTO=$_wf_proto" >>"$LOG_DIR/cast.log"
+    else
+      unset FLUXCAST_WFD_WF_RECORDER_BIN FLUXCAST_WFD_WF_RECORDER_PROTO 2>/dev/null || true
     fi
     export FLUXCAST_WFD_MODE_STATE="$MODE_STATE_FILE"
     # When set (file exists), FluxCast must not auto-rebind over an intentional

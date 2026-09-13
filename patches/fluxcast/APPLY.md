@@ -11,7 +11,8 @@ variables set by `miracast-ctl`; damage-aware capture remains opt-in.
 | `src/wfd/mode_state.py` | Persist sink-advertised stream modes for the UI (`FLUXCAST_WFD_MODE_STATE`) |
 | `src/wfd/config.py` | `peer_address` for mode-state JSON |
 | `src/wfd/session.py` | SIGUSR1 capture rebind loop; peer MAC on media config |
-| `src/wfd/media/wlroots.py` | DMA-BUF `h264_vaapi`+CQP path; NV12 pipe fallback; damage-aware opt-in |
+| `src/wfd/media/wlroots.py` | DMA-BUF `h264_vaapi`+CQP path; NV12 pipe fallback; damage-aware opt-in; ICC `-r` when binary supports ext-copy-capture |
+| `src/wfd/wf_recorder.py` | Optional `FLUXCAST_WFD_WF_RECORDER_BIN` / `…_PROTO=icc` for PR #347 builds |
 | `src/wfd/media/pipeline.py` | Desktop `restart_video()` + `restarting` flag |
 | `src/wfd/rtsp/handler.py` | Mode state after negotiation; bare-Session M16; probe grace |
 | `src/wfd/rtsp/rtsp_server.py` | `restart_active_media()` for SIGUSR1 rebind |
@@ -44,6 +45,7 @@ cp patches/fluxcast/src/wfd/config.py             "$FLUXCAST_ROOT/src/wfd/"
 cp patches/fluxcast/src/wfd/session.py            "$FLUXCAST_ROOT/src/wfd/"
 cp patches/fluxcast/src/wfd/media/wlroots.py      "$FLUXCAST_ROOT/src/wfd/media/"
 cp patches/fluxcast/src/wfd/media/pipeline.py     "$FLUXCAST_ROOT/src/wfd/media/"
+cp patches/fluxcast/src/wfd/wf_recorder.py        "$FLUXCAST_ROOT/src/wfd/"
 cp patches/fluxcast/src/wfd/rtsp/handler.py       "$FLUXCAST_ROOT/src/wfd/rtsp/"
 cp patches/fluxcast/src/wfd/rtsp/rtsp_server.py   "$FLUXCAST_ROOT/src/wfd/rtsp/"
 ```
@@ -79,11 +81,22 @@ DMA buffer is still physical mode size). Deny scaled DMA with
 `FLUXCAST_WFD_DMABUF_ALLOW_SCALED=0`. Force the old pipe with
 `FLUXCAST_WFD_CAPTURE_ENCODE=pipe`.
 
-Do **not** pass `wf-recorder -r` on the DMA path (it appends `fps=` after
-`scale_vaapi` and glitches). Keep `bf=0` + constrained baseline.
+Do **not** pass `wf-recorder -r` on the **stock** DMA path (it appends `fps=`
+after `scale_vaapi` and glitches). ICC (PR #347) builds need `-r` for capture
+cadence; FluxCast detects ICC (`--toplevel` / version) and passes `-r` only then.
+Keep `bf=0` + constrained baseline.
 
-Optional (not set by default — continuous `wf-recorder -D` is preferred on
-virtual Extend outputs for fewer wakeups / lower battery draw):
+Optional ICC binary: Omarchy `miracast-ctl` auto-exports when
+`~/src/wf-recorder/build/wf-recorder` exists (or `settings.wfRecorderBin` /
+`FLUXCAST_WFD_WF_RECORDER_BIN`). Proto becomes `icc` when the binary advertises
+`--toplevel`. Manual override:
+
+```bash
+export FLUXCAST_WFD_WF_RECORDER_BIN=/path/to/wf-recorder-icc
+export FLUXCAST_WFD_WF_RECORDER_PROTO=icc   # fail closed if binary is not ICC
+```
+
+Optional damage-aware (Omarchy `miracast-ctl` defaults this on):
 
 - `FLUXCAST_WFD_WF_RECORDER_DAMAGE=1` (omit `wf-recorder -D` for damage-aware capture)
 

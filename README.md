@@ -90,6 +90,8 @@ Override in `~/.config/omarchy-miracast/settings.json` (merged with
 | *(env)* `FLUXCAST_WFD_CAPTURE_ENCODE` | `auto` (Omarchy) / `pipe` (upstream) | `auto`/`vaapi` = wf-recorder DMA-BUF encode (incl. scaled outputs); `pipe` = raw→ffmpeg hwupload |
 | *(env)* `FLUXCAST_WFD_DMABUF_ALLOW_SCALED` | allow (default) | `0`/`false` = force pipe when Hyprland scale ≠ 1 |
 | `captureEncode` | `dmabuf` | RENDER ENGINE: `dmabuf` (GPU·DMA-BUF) / `vaapi` (GPU·VAAPI) / `cpu` |
+| `wfRecorderBin` | unset → auto | Absolute path to `wf-recorder`; if empty, uses `~/src/wf-recorder/build/wf-recorder` when executable |
+| `wfRecorderProto` | `auto` | `auto` / `icc` / `wlr` — `auto` upgrades to `icc` when the binary advertises ICC |
 | *(env)* `FLUXCAST_WFD_VAAPI_QP` | `18` | DMA CQP quantizer (lower = sharper / more bitrate) |
 | `sinkScales` | `{}` | Per-sink Extend scale, keyed by MAC (overrides default) |
 | `defaultExtendScale` | `1` | Extend scale when a sink has no `sinkScales` entry — **1** is cheapest for Hyprland |
@@ -128,10 +130,22 @@ so a live session can SIGUSR1-rebind without restarting FluxCast. If a GPU path
 fails, FluxCast falls back toward CPU; the **active** pill follows the resolved
 path (`capturePath` / `encoder` in `miracast-ctl status`), not only the preference.
 
-**Capture cadence:** Miracast Extend prefers continuous `wf-recorder -D` (default).
-Damage-aware capture (`FLUXCAST_WFD_WF_RECORDER_DAMAGE=1`, omit `-D`) can wake
-Hyprland more with live UI (blinking cursors, etc.). `miracast-ctl start` clears a
-stale inherited DAMAGE env unless you explicitly set it for that start.
+**Capture cadence:** Miracast Extend defaults to **damage-aware** capture
+(omit `wf-recorder -D`) so Hyprland only produces frames when the output
+changes — lower CPU, cursor still smooth. Force continuous grab with
+`FLUXCAST_WFD_WF_RECORDER_DAMAGE=0`.
+
+**Optional ICC wf-recorder (PR #347):** `miracast-ctl` resolves the binary when
+starting a cast (Display panel included):
+
+1. `FLUXCAST_WFD_WF_RECORDER_BIN` if already set in the environment  
+2. `settings.json` → `wfRecorderBin`  
+3. Auto: `~/src/wf-recorder/build/wf-recorder` when that path is executable  
+
+If the chosen binary looks like an ext-image-copy-capture build (`--toplevel` /
+version), it sets `FLUXCAST_WFD_WF_RECORDER_PROTO=icc`. Override with
+`wfRecorderProto` (`auto` / `icc` / `wlr`) or the matching env vars. See FluxCast
+`DOCUMENTATION.md`.
 
 While connected, Hyprland **animations** are turned off and restored on stop.
 Borders/gaps stay on so focus rings and the workspace indicator keep working.
