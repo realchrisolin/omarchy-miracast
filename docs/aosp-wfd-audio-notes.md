@@ -105,8 +105,9 @@ damage-only screen capture starving the mux.
 
 ## FluxCast checklist (inspired by the above)
 
-1. **Capture**: Miracast null-sink **`.monitor`** via Pulse/ffmpeg (not
-   `pipewiresrc`, which can latch onto the mic and cause speaker feedback)
+1. **Capture**: Miracast null-sink **`.monitor`** via `pw-cat --target` (not
+   `ffmpeg -f pulse` / Lavf stream-restore, and not `pipewiresrc`, which can
+   latch onto the mic and cause speaker feedback)
 2. **Negotiate**: LPCM when sink is LPCM-only (AAC gives picture but silent
    speakers on those TVs); `FLUXCAST_WFD_FORCE_AAC=1` escapes to DMA+AAC
 3. **Frame**: accumulate PCM into 1920-byte bodies; prepend `A0 06 00 11`; no

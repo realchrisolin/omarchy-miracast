@@ -11,7 +11,7 @@ variables set by `miracast-ctl`; damage-aware capture remains opt-in.
 | `src/wfd/mode_state.py` | Persist sink-advertised stream modes for the UI (`FLUXCAST_WFD_MODE_STATE`) |
 | `src/wfd/config.py` | `peer_address` for mode-state JSON |
 | `src/wfd/session.py` | SIGUSR1 capture rebind loop; peer MAC on media config |
-| `src/wfd/media/wlroots.py` | DMA-BUF `h264_vaapi`+CQP; ICC `-r`; LPCM path captures **Pulse `*.monitor` via ffmpeg** (not mic/`pipewiresrc`) |
+| `src/wfd/media/wlroots.py` | DMA-BUF `h264_vaapi`+CQP; ICC `-r`; LPCM path captures **`*.monitor` via `pw-cat --target`** (not mic/`pipewiresrc`/`ffmpeg -f pulse`) |
 | `src/wfd/wf_recorder.py` | Optional `FLUXCAST_WFD_WF_RECORDER_BIN` / `…_PROTO=icc` for PR #347 builds |
 | `src/wfd/media/pipeline.py` | Desktop `restart_video()`; stop LPCM muxer + close video/audio fds on restart |
 | `src/drivers/wfd_lpcm_mux.py` | WFD LPCM mux — AOSP PIDs (video `0x1011`, PCR `0x1000`), `0x83` + AU framing |
