@@ -84,14 +84,10 @@ Then we can drop or slim `icc-present-kick`.
 To run the patched compositor you must **restart the Hyprland session** after
 `cmake --install build` (or point UWSM/session at the new binary).
 
-## Upstream PR branch (local)
+## Upstream PR branch
 
-Clone/worktree: `$HOME/src/Hyprland-icc-pr`
-Branch: `fix/icc-screenshare-schedule-every-share`
-Commit: schedule ICC present on every share (matches wlr-screencopy).
+See **[hyprland-icc-pr-handoff.md](hyprland-icc-pr-handoff.md)** for the full
+resume checklist (fork URL, branch, vouch/AI policy, validate/cleanup steps).
 
-**Do not** open the Hyprland PR via AI tooling — Hyprland requires the author to
-be [vouched](https://wiki.hypr.land/Contributing-and-Debugging/), follow the
-[AI policy](https://github.com/hyprwm/.github/blob/main/policies/AI_USAGE.md),
-and open/interact with the PR themselves. Format with `clang-format` before
-pushing from your fork.
+Short version: branch `fix/icc-screenshare-schedule-every-share` is on
+`realchrisolin/Hyprland`; open the PR yourself after vouching.
