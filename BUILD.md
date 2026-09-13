@@ -239,7 +239,7 @@ but silent speakers. The patched FluxCast path negotiates WFD LPCM
 
 | Piece | What to do |
 |-------|------------|
-| **Miracast sink** | `miracast-ctl` creates a PipeWire/Pulse null sink named `miracast` (plus a `pacat` silence feeder so the sink stays alive). |
+| **Miracast sink** | `miracast-ctl` creates a PipeWire/Pulse null sink named `miracast` (plus a `pacat` silence feeder so the sink stays alive). The feeder uses `node.name=omarchy_speaker_tuning.miracast_feeder` so Omarchy’s sound-panel **SOURCES** list (per-app streams — not mics; those are **INPUT**) hides it. |
 | **Route desktop audio** | Set the default output to **Miracast** in Sound settings (or `pactl set-default-sink miracast`). |
 | **Capture** | FluxCast records **`miracast.monitor`** via `pw-cat --target` (not the mic / default source, and not `ffmpeg -f pulse` / Lavf — stream-restore was remapping Lavf onto Speakers.monitor). The route watcher still re-pins if anything drifts. |
 | **Routing** | App streams **follow the default** sink (watcher moves them on/off Miracast). |

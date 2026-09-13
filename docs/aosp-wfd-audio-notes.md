@@ -122,4 +122,7 @@ damage-only screen capture starving the mux.
 - Muxer: `fluxcast` `src/drivers/wfd_lpcm_mux.py` (and the Omarchy patch mirror)
 - Capture + LPCM start: `src/wfd/media/wlroots.py` (`_start_wf_recorder_lpcm`)
 - RTSP negotiate: `src/wfd/rtsp/handler.py` (`negotiated_lpcm`)
-- Sink / silence feeder: Omarchy `miracast-ctl` Miracast null sink
+- Sink / silence feeder: Omarchy `miracast-ctl` Miracast null sink + `pacat`
+  keep-alive (`application.name=miracast-silence`, PipeWire
+  `node.name=omarchy_speaker_tuning.miracast_feeder` so the Omarchy sound
+  panel SOURCES list hides it)
