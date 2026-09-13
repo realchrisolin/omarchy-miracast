@@ -7,6 +7,9 @@ This is still the Display dropdown — not a separate cast icon.
 
 Cloned from first-party `omarchy.monitor`, then extended.
 
+**Local performance PoC** (custom ICC `wf-recorder`, screencopy vs ICC,
+benchmarks, why upstream merges matter): see **[BUILD.md](BUILD.md)**.
+
 ## Features
 
 - Scan / connect / disconnect Miracast sinks from the Display panel
