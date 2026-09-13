@@ -1,0 +1,7 @@
+case	capture	encode	hypr_cpu	wf_cpu	ffmpeg_cpu	tx_kbps	capture_path	encoder	wf_bin_snip
+icc_dmabuf	icc	dmabuf	15.61	0.72	0.06	413.6	dmabuf	h264_vaapi	$HOME/src/wf-recorder/build/wf-recorder -y -r 30 -o Example-Sink_P2P -c h264_vaapi -d /dev/d
+icc_vaapi	icc	vaapi	15.83	1.44	1.94	13028.1	pipe	h264_vaapi	$HOME/src/wf-recorder/build/wf-recorder -y -r 30 -o Example-Sink_P2P -c rawvideo -m nut -x n
+icc_cpu	icc	cpu	17.22	1.72	39.83	5912.0	pipe	libx264	$HOME/src/wf-recorder/build/wf-recorder -y -r 30 -o Example-Sink_P2P -c rawvideo -m nut -x n
+stock_dmabuf	stock	dmabuf	80.83	2.44	0.44	619.8	dmabuf	h264_vaapi	/usr/bin/wf-recorder -y -o Example-Sink_P2P -c h264_vaapi -d /dev/dri/renderD128 -b 0 -F scale_vaa
+stock_vaapi	stock	vaapi	85.16	14.33	5.89	13028.3	pipe	h264_vaapi	/usr/bin/wf-recorder -y -r 30 -o Example-Sink_P2P -c rawvideo -m nut -x nv12 -f /dev/stdout 
+stock_cpu	stock	cpu	86.21	14.11	36.77	5951.7	pipe	libx264	/usr/bin/wf-recorder -y -r 30 -o Example-Sink_P2P -c rawvideo -m nut -x nv12 -f /dev/stdout 

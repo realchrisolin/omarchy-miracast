@@ -8,7 +8,8 @@ This is still the Display dropdown — not a separate cast icon.
 Cloned from first-party `omarchy.monitor`, then extended.
 
 **Local performance PoC** (custom ICC `wf-recorder`, screencopy vs ICC,
-benchmarks, why upstream merges matter): see **[BUILD.md](BUILD.md)**.
+why upstream merges matter): see **[BUILD.md](BUILD.md)**.  
+**Measured CPU / encode matrix** (charts): see **[BENCHMARKS.md](BENCHMARKS.md)**.
 
 ## Features
 

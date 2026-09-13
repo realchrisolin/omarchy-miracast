@@ -78,19 +78,18 @@ outputs. For a live desktop cast this rarely matters.
 
 ## Measured performance (same laptop, live Miracast)
 
-Hardware: Intel i7-1165G7 + iGPU VAAPI. Session: Extend ~1280×720@30, DMA-BUF
-`h264_vaapi` CQP. Samples: ~20s after warmup. CPU = % of **one** core.
+See **[BENCHMARKS.md](BENCHMARKS.md)** for the full capture × RENDER ENGINE
+matrix (ICC/stock × DMA-BUF/VAAPI/CPU), charts, and method notes.
 
-| Capture binary | Hyprland | wf-recorder | Notes |
-|----------------|----------|-------------|--------|
-| ICC (PR #347 + fix), damage-aware | **~15%** | ~0.8% | Target PoC path |
-| ICC, continuous `-D` | **~15%** | ~0.8% | Similar under ICC |
-| Stock 0.6.0, damage-aware | **~83%** | ~2.4% | PATH default |
-| Stock 0.6.0, continuous `-D` | **~81%** | ~2.3% | |
+Headline (DMA-BUF encode, ~18s samples, % of one core):
 
-So: **shipping ICC in distro `wf-recorder` is the large Hyprland win.** FluxCast
-DMA/CQP and Omarchy UI polish matter for quality and UX, but they do not replace
-that protocol change.
+| Capture binary | Hyprland | ffmpeg | Notes |
+|----------------|----------|--------|--------|
+| ICC + DMA-BUF | **~16%** | ~0% | Target PoC path |
+| Stock wlr + DMA-BUF | **~81%** | ~0% | PATH default |
+
+So: **shipping ICC in distro `wf-recorder` is the large Hyprland win.** DMA-BUF
+keeps encode on the iGPU; CPU/`libx264` is a costly fallback (~40% ffmpeg).
 
 ---
 
