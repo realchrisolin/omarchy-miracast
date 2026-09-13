@@ -95,7 +95,8 @@ Override in `~/.config/omarchy-miracast/settings.json` (merged with
 | *(env)* `FLUXCAST_WFD_DMABUF_ALLOW_SCALED` | allow (default) | `0`/`false` = force pipe when Hyprland scale ≠ 1 |
 | `captureEncode` | `dmabuf` | RENDER ENGINE: `dmabuf` (GPU·DMA-BUF) / `vaapi` (GPU·VAAPI) / `cpu` |
 | `audioEnabled` | `true` | Creates a PipeWire/Pulse **Miracast** null sink (selectable in the sound panel) and muxes its `.monitor` into the WFD stream. Does **not** auto-change the default output — pick Miracast in the audio tooltip when you want the TV. `--no-audio` disables. |
-| `extendRefresh` | `60` | Hyprland refresh for the Extend virtual output. Use **60** so the local software cursor feels responsive; capture/stream fps still follow `streamMode` / `-r`. Set `30` only to save compositor CPU. |
+| `extendRefresh` | `60` | Hyprland refresh for the Extend virtual output. Use **60** for local pointer feel; capture/stream fps still follow `streamMode` / `-r`. |
+| `softwareCursors` | `false` | `true` = force SW cursors so the pointer appears on the TV (can feel laggy locally). `false` = HW cursors (snappier local pointer; TV may not show a cursor). On **Intel**, prefer Extend **right** of eDP — left placement hits an i915 HW-cursor edge bug. |
 | `wfRecorderBin` | unset | Absolute path to a custom `wf-recorder` (e.g. ICC / PR #347). Empty = **PATH** stock binary (portable default). |
 | `wfRecorderProto` | `auto` | `auto` / `icc` / `wlr`. `auto` upgrades to `icc` only when a **configured** binary advertises ICC. Bad `icc` config falls back to PATH. |
 | *(env)* `FLUXCAST_WFD_VAAPI_QP` | `18` | DMA CQP quantizer (lower = sharper / more bitrate) |
