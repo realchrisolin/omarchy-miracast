@@ -76,12 +76,23 @@ content change after the first frame unless present-scheduling is patched;
 force continuous with `FLUXCAST_WFD_WF_RECORDER_DAMAGE=0` if typing lags.
 Cadence A/B (CPU + `intel_gpu_top`): [BENCHMARKS.md](BENCHMARKS.md).
 
+**Auto-pick the best measured profile** (ICC vs stock × dmabuf/vaapi/cpu +
+DAMAGE) and apply FluxCast-facing settings:
+
+```bash
+./scripts/recommend-cast-profile.py --apply
+```
+
+Dry-run without writing settings: omit `--apply`. Details in
+[BENCHMARKS.md § Auto-recommend](BENCHMARKS.md).
+
 ---
 
 ## Measured performance (same laptop, live Miracast)
 
 See **[BENCHMARKS.md](BENCHMARKS.md)** for the full capture × RENDER ENGINE
-matrix (ICC/stock × DMA-BUF/VAAPI/CPU), charts, and method notes.
+matrix (ICC/stock × DMA-BUF/VAAPI/CPU), charts, method notes, and
+`scripts/recommend-cast-profile.py` to turn those numbers into settings.
 
 Headline (DMA-BUF encode, ~18s samples, % of one core):
 

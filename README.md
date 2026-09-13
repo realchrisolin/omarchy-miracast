@@ -99,6 +99,7 @@ Override in `~/.config/omarchy-miracast/settings.json` (merged with
 | `softwareCursors` | `true` | Force SW cursors so the pointer appears on the TV (HW cursor plane is not captured). |
 | `wfRecorderBin` | unset | Absolute path to a custom `wf-recorder` (e.g. ICC / PR #347). Empty = **PATH** stock. ICC preferred for perf; see [BUILD.md §7](BUILD.md) for Extend terminal typing lag. |
 | `wfRecorderProto` | `auto` | `auto` / `icc` / `wlr`. `auto` upgrades to `icc` when a configured binary advertises ICC. Use `wlr` + stock binary if cast-head terminal keys feel buffered until the pointer moves. |
+| `wfRecorderDamage` | `"1"` | `"1"` = damage-aware (omit `wf-recorder -D`); `"0"` = continuous `-D`. Set by `scripts/recommend-cast-profile.py --apply` or manually. |
 | *(env)* `FLUXCAST_WFD_VAAPI_QP` | `18` | DMA CQP quantizer (lower = sharper / more bitrate) |
 | `sinkScales` | `{}` | Per-sink Extend scale, keyed by MAC (overrides default) |
 | `defaultExtendScale` | `1` | Extend scale when a sink has no `sinkScales` entry — **1** is cheapest for Hyprland |
@@ -156,6 +157,14 @@ before connect. Env wins over settings. There is **no** automatic probing of
 `~/src/...` build trees. If `wfRecorderProto` is `icc` but the binary is missing
 or not ICC-capable, Miracast falls back to PATH stock and logs a warning.
 See FluxCast `DOCUMENTATION.md`.
+
+To score [BENCHMARKS.md](BENCHMARKS.md) results into settings (`captureEncode`,
+`wfRecorderBin` / `Proto` / `Damage`, `videoEncoder`):
+
+```bash
+./scripts/recommend-cast-profile.py          # dry-run + docs/benchmarks/recommended.env
+./scripts/recommend-cast-profile.py --apply  # update settings.json
+```
 
 While connected, Hyprland **animations** are turned off and restored on stop.
 Borders/gaps stay on so focus rings and the workspace indicator keep working.
