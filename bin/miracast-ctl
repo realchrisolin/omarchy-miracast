@@ -147,6 +147,9 @@ defaults = {
     "videoEncoder": "auto",
     # RENDER METHOD: dmabuf (GPU·DMA-BUF) | vaapi (GPU·VAAPI pipe) | cpu (libx264).
     "captureEncode": "dmabuf",
+    # Mux desktop audio (default sink monitor) into the WFD stream.
+    # Does not create a PipeWire sink — TV plays whatever hits the default output.
+    "audioEnabled": True,
     # Preferred Miracast stream mode id, e.g. "1280x720p30".
     "streamMode": "1280x720p30",
     # Display panel: false = expand all outputs; true = accordion (focused only).
@@ -2230,7 +2233,7 @@ PY
 }
 
 cmd_start() {
-  local peer="" peer_name="" monitor="eDP-1" root="" go_intent="15" fps="" bitrate="" output_res="" with_audio="0" auto_fw="1" mode=""
+  local peer="" peer_name="" monitor="eDP-1" root="" go_intent="15" fps="" bitrate="" output_res="" with_audio="" auto_fw="1" mode=""
   local settings
   settings="$(read_settings)"
   fps="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("fps","30"))' "$settings")"
@@ -2256,6 +2259,7 @@ if m:
       --bitrate) bitrate="$2"; shift 2 ;;
       --output-res) output_res="$2"; shift 2 ;;
       --with-audio) with_audio="1"; shift ;;
+      --no-audio) with_audio="0"; shift ;;
       --no-firewall) auto_fw="0"; shift ;;
       *) shift ;;
     esac
@@ -2315,10 +2319,18 @@ if m:
   [[ "$mode" == "extend" ]] && action_word="Extending"
   write_status "connecting" "Connecting to $label" "peer=$peer" "peerName=$peer_name" "monitor=$monitor" "mode=$mode" >/dev/null
 
+  # Audio default: settings.audioEnabled (true) unless --with-audio / --no-audio.
+  if [[ -z "$with_audio" ]]; then
+    with_audio="$(python3 -c 'import json,sys
+s=json.loads(sys.argv[1])
+v=s.get("audioEnabled", True)
+print("1" if v in (True,1,"1","true","yes","on") else "0")' "$settings")"
+  fi
   local audio_args=(--wfd-no-audio)
   if [[ "$with_audio" == "1" ]]; then
     audio_args=()
   fi
+  echo "[miracast-ctl] WFD audio=$with_audio" >>"$LOG_DIR/cast.log"
 
   # GPU encode policy for FluxCast (see src/wfd/hw_encode.py). Prefer VAAPI/QSV
   # when present; power bias still prefers GPU but trims bitrate on battery /
@@ -2490,7 +2502,7 @@ Commands:
   scan [fluxcast-root]
   start --peer MAC [--peer-name NAME] [--mode mirror|extend] [--monitor NAME]
         [--fluxcast-root DIR] [--go-intent N] [--fps N] [--bitrate RATE]
-        [--output-res WxH] [--with-audio] [--no-firewall]
+        [--output-res WxH] [--with-audio|--no-audio] [--no-firewall]
   status
   stop
   get-mode

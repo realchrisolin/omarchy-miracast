@@ -14,7 +14,8 @@ variables set by `miracast-ctl`; damage-aware capture remains opt-in.
 | `src/wfd/media/wlroots.py` | DMA-BUF `h264_vaapi`+CQP path; NV12 pipe fallback; damage-aware opt-in; ICC `-r` when binary supports ext-copy-capture |
 | `src/wfd/wf_recorder.py` | Optional `FLUXCAST_WFD_WF_RECORDER_BIN` / `…_PROTO=icc` for PR #347 builds |
 | `src/wfd/media/pipeline.py` | Desktop `restart_video()` + `restarting` flag |
-| `src/wfd/rtsp/handler.py` | Mode state after negotiation; bare-Session M16; probe grace |
+| `src/wfd/rtsp/handler.py` | Mode state after negotiation; bare-Session M16; probe grace; LPCM-only sinks try AAC |
+| `src/wfd/probe.py` | Same LPCM→try-AAC negotiation as the live RTSP handler |
 | `src/wfd/rtsp/rtsp_server.py` | `restart_active_media()` for SIGUSR1 rebind |
 
 ## Apply
@@ -46,6 +47,7 @@ cp patches/fluxcast/src/wfd/session.py            "$FLUXCAST_ROOT/src/wfd/"
 cp patches/fluxcast/src/wfd/media/wlroots.py      "$FLUXCAST_ROOT/src/wfd/media/"
 cp patches/fluxcast/src/wfd/media/pipeline.py     "$FLUXCAST_ROOT/src/wfd/media/"
 cp patches/fluxcast/src/wfd/wf_recorder.py        "$FLUXCAST_ROOT/src/wfd/"
+cp patches/fluxcast/src/wfd/probe.py              "$FLUXCAST_ROOT/src/wfd/"
 cp patches/fluxcast/src/wfd/rtsp/handler.py       "$FLUXCAST_ROOT/src/wfd/rtsp/"
 cp patches/fluxcast/src/wfd/rtsp/rtsp_server.py   "$FLUXCAST_ROOT/src/wfd/rtsp/"
 ```
