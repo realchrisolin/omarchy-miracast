@@ -165,6 +165,16 @@ will not compile. Use #352 (or temporarily Arch’s packaging patch).
 # Ctrl+C should exit 0 — no "Too many bits for size_t"
 ```
 
+**FluxCast ICC integration tests** (Layer 4 — binary selection + `-D`/`-r` flags):
+
+```bash
+cd "${FLUXCAST_ROOT:-$HOME/code/other/fluxcast}"
+export FLUXCAST_WFD_WF_RECORDER_BIN="${FLUXCAST_WFD_WF_RECORDER_BIN:-$HOME/src/wf-recorder/build/wf-recorder}"
+python3 -m unittest tests.test_icc_integration -v
+# wf-recorder client Layers 1–3:
+meson test -C ~/src/wf-recorder/build --print-errorlogs
+```
+
 ### 3. This Display + Miracast plugin
 
 ```bash
