@@ -167,6 +167,35 @@ JSON/IGT logs under [`docs/benchmarks/`](docs/benchmarks/).
 
 ---
 
+## Auto-recommend cast profile
+
+Score [`results.tsv`](docs/benchmarks/results.tsv) (and optional
+[`lpcm_damage_ab.tsv`](docs/benchmarks/lpcm_damage_ab.tsv)) and pick the
+lowest-cost **available** capture+encode combo on this machine:
+
+```bash
+# Dry-run: print winner + write docs/benchmarks/recommended.env
+./scripts/recommend-cast-profile.py
+
+# Apply into ~/.config/omarchy-miracast/settings.json (+ state recommended-cast.env)
+./scripts/recommend-cast-profile.py --apply
+```
+
+Heuristics:
+
+1. Prefer **ICC** rows when an ICC-capable `wf-recorder` exists (`--toplevel`);
+   otherwise stock.
+2. Minimize `hypr_cpu + 0.5·wf_cpu + ffmpeg_cpu` (small tie-break favoring
+   **dmabuf** → vaapi → cpu).
+3. Damage-aware (`wfRecorderDamage=1`) when the LPCM A/B shows GPU power/RCS
+   not worse than continuous `-D` by much; else `0`.
+
+`--apply` sets `captureEncode`, `videoEncoder`, `wfRecorderBin`,
+`wfRecorderProto`, and `wfRecorderDamage`. The next Miracast connect exports
+matching `FLUXCAST_WFD_*` env vars via `miracast-ctl`.
+
+---
+
 ## Recommended defaults (from this data)
 
 | Knob | Recommendation | Why |

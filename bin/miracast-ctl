@@ -207,6 +207,9 @@ defaults = {
     # auto | icc | wlr — see resolve_wf_recorder_env. Empty treated as auto.
     # icc with a missing/non-ICC binary falls back to PATH (fail-soft).
     "wfRecorderProto": "auto",
+    # "1" | "0" — omit wf-recorder -D when "1" (damage-aware). From
+    # scripts/recommend-cast-profile.py --apply or manual override.
+    "wfRecorderDamage": "1",
 }
 try:
     data = json.load(open(path))
@@ -2867,14 +2870,18 @@ print(v if v in ("dmabuf","vaapi","cpu") else "dmabuf")' "$settings")"
     # Scaled outputs use DMA-BUF by default (proven at integer scale 2 with
     # tv-range CQP). Deny with FLUXCAST_WFD_DMABUF_ALLOW_SCALED=0 if needed.
     export FLUXCAST_WFD_DMABUF_ALLOW_SCALED="${FLUXCAST_WFD_DMABUF_ALLOW_SCALED:-}"
-    # Prefer damage-aware capture (omit wf-recorder -D): Hyprland only emits
-    # frames when the Extend output changes — lower CPU than continuous -D.
-    # Local cursor smoothness comes from headless refresh (extendRefresh=60),
-    # not from -D. Force continuous with FLUXCAST_WFD_WF_RECORDER_DAMAGE=0.
-    if [[ "${FLUXCAST_WFD_WF_RECORDER_DAMAGE:-1}" =~ ^(0|false|no|off)$ ]]; then
+    # Prefer damage-aware capture (omit wf-recorder -D). Precedence:
+    # FLUXCAST_WFD_WF_RECORDER_DAMAGE env → settings.wfRecorderDamage → "1".
+    # Force continuous with DAMAGE=0 / wfRecorderDamage=0.
+    local _dmg
+    _dmg="$(python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); print(str(s.get("wfRecorderDamage","1")).strip() or "1")' "$settings" 2>/dev/null || echo 1)"
+    _dmg="${FLUXCAST_WFD_WF_RECORDER_DAMAGE:-$_dmg}"
+    if [[ "$_dmg" =~ ^(0|false|no|off)$ ]]; then
       unset FLUXCAST_WFD_WF_RECORDER_DAMAGE
+      echo "[miracast-ctl] wf-recorder damage-aware=off (continuous -D)" >>"$LOG_DIR/cast.log"
     else
       export FLUXCAST_WFD_WF_RECORDER_DAMAGE=1
+      echo "[miracast-ctl] wf-recorder damage-aware=on (omit -D)" >>"$LOG_DIR/cast.log"
     fi
     # Optional ICC / custom wf-recorder: env or settings.wfRecorderBin only
     # (see resolve_wf_recorder_env). Default = PATH stock binary.
