@@ -9,6 +9,8 @@ PID_FILE="$STATE_DIR/cast.pid"
 # PipeWire/Pulse null-sink module id while casting (selectable Miracast output).
 AUDIO_SINK_MODULE_FILE="$STATE_DIR/audio-sink.module"
 AUDIO_SILENCE_PID_FILE="$STATE_DIR/audio-silence.pid"
+AUDIO_ROUTE_PID_FILE="$STATE_DIR/audio-route.pid"
+AUDIO_ROUTE_LAST_DEFAULT_FILE="$STATE_DIR/audio-route.last-default"
 MIRACAST_AUDIO_SINK_NAME="miracast"
 MIRACAST_AUDIO_SINK_DESC="Miracast"
 STATUS_FILE="$STATE_DIR/status.json"
@@ -2192,9 +2194,11 @@ PY
 
 # Create a selectable "Miracast" null sink for the sound panel. WFD captures
 # its .monitor. Does NOT change the default sink — user picks in the audio UI.
+# A route watcher then moves app streams to follow the default (see below).
 ensure_miracast_audio_sink() {
   mkdir -p "$STATE_DIR"
   if pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -qx "$MIRACAST_AUDIO_SINK_NAME"; then
+    start_miracast_audio_route_watcher || true
     echo "$MIRACAST_AUDIO_SINK_NAME"
     return 0
   fi
@@ -2215,14 +2219,22 @@ ensure_miracast_audio_sink() {
       # miracast.monitor never blocks waiting for the first sample (that
       # stalls the video pipe and fills wf-recorder's buffer pool).
       if [[ ! -f "$AUDIO_SILENCE_PID_FILE" ]] || ! kill -0 "$(tr -d '[:space:]' <"$AUDIO_SILENCE_PID_FILE" 2>/dev/null)" 2>/dev/null; then
-        # Output silence into the Miracast sink (argv marker for pkill on teardown).
-        nohup ffmpeg -hide_banner -loglevel error \
-          -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000 \
-          -f pulse "$MIRACAST_AUDIO_SINK_NAME" \
+        # Keep miracast.monitor alive. Use pacat (not ffmpeg/Lavf): Pulse
+        # stream-restore keys on application.name, and Lavf* was shared with
+        # FluxCast's capture — that remapped capture onto Speakers.monitor and
+        # left the TV silent while Speakers still worked on the laptop.
+        nohup pacat --playback \
+          --device="$MIRACAST_AUDIO_SINK_NAME" \
+          --client-name=miracast-silence \
+          --stream-name=miracast-silence \
+          --property=media.role=abstract \
+          --rate=48000 --channels=2 --format=s16le --raw \
+          /dev/zero \
           >/dev/null 2>&1 &
         echo $! >"$AUDIO_SILENCE_PID_FILE"
         echo "[miracast-ctl] started silence feeder pid=$!" >>"$LOG_DIR/cast.log"
       fi
+      start_miracast_audio_route_watcher || true
       echo "$MIRACAST_AUDIO_SINK_NAME"
       return 0
     fi
@@ -2232,7 +2244,332 @@ ensure_miracast_audio_sink() {
   return 1
 }
 
+# Move app sink-inputs from one sink to another. Skips the silence feeder
+# (pacat miracast-silence → miracast) so capture never starves.
+migrate_sink_inputs() {
+  local from_sink="$1" to_sink="$2"
+  [[ -n "$from_sink" && -n "$to_sink" && "$from_sink" != "$to_sink" ]] || return 0
+  pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -qx "$to_sink" || return 0
+
+  local silence_pid=""
+  if [[ -f "$AUDIO_SILENCE_PID_FILE" ]]; then
+    silence_pid="$(tr -d '[:space:]' <"$AUDIO_SILENCE_PID_FILE" 2>/dev/null || true)"
+  fi
+
+  python3 - "$from_sink" "$to_sink" "$silence_pid" <<'PY'
+import subprocess, sys
+
+from_sink, to_sink, silence_pid = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    silence_pid_i = int(silence_pid) if silence_pid else None
+except ValueError:
+    silence_pid_i = None
+
+short = subprocess.check_output(["pactl", "list", "short", "sinks"], text=True, errors="replace")
+idx_to_name = {}
+for row in short.splitlines():
+    parts = row.split()
+    if len(parts) >= 2:
+        idx_to_name[parts[0]] = parts[1]
+
+out = subprocess.check_output(["pactl", "list", "sink-inputs"], text=True, errors="replace")
+moved = []
+for block in out.split("Sink Input #")[1:]:
+    lines = block.splitlines()
+    try:
+        idx = int(lines[0].strip().split()[0])
+    except (ValueError, IndexError):
+        continue
+    sink_idx = None
+    app = ""
+    media = ""
+    proc_pid = None
+    for line in lines:
+        s = line.strip()
+        if s.startswith("Sink:"):
+            sink_idx = s.split(":", 1)[1].strip()
+        elif "application.name" in s and "=" in s:
+            app = s.split("=", 1)[-1].strip().strip('"')
+        elif "media.name" in s and "=" in s:
+            media = s.split("=", 1)[-1].strip().strip('"')
+        elif "application.process.id" in s and "=" in s:
+            try:
+                proc_pid = int(s.split("=", 1)[-1].strip().strip('"'))
+            except ValueError:
+                proc_pid = None
+    if sink_idx is None:
+        continue
+    if silence_pid_i is not None and proc_pid == silence_pid_i:
+        continue
+    if app == "miracast-silence" or media == "miracast-silence":
+        continue
+    if media == "miracast" and "Lavf" in (app or ""):
+        continue
+    if idx_to_name.get(sink_idx) != from_sink:
+        continue
+    r = subprocess.run(
+        ["pactl", "move-sink-input", str(idx), to_sink],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode == 0:
+        moved.append(f"{idx}:{app or media or '?'}")
+print(",".join(moved))
+PY
+}
+
+# When the user changes the default sink in the sound UI, Pulse/PipeWire often
+# leaves existing streams on Miracast (stream-restore). That makes the TV keep
+# playing while the new default also gets audio. Follow the default both ways.
+# Ensure the silence feeder stays on Miracast (Omarchy's set-default moves all
+# application.name streams, including our feeder, when the default changes).
+pin_miracast_silence_feeder() {
+  local silence_pid=""
+  if [[ -f "$AUDIO_SILENCE_PID_FILE" ]]; then
+    silence_pid="$(tr -d '[:space:]' <"$AUDIO_SILENCE_PID_FILE" 2>/dev/null || true)"
+  fi
+  [[ -n "$silence_pid" ]] || return 0
+  kill -0 "$silence_pid" 2>/dev/null || return 0
+
+  python3 - "$MIRACAST_AUDIO_SINK_NAME" "$silence_pid" <<'PY'
+import subprocess, sys
+target, silence_pid = sys.argv[1], sys.argv[2]
+try:
+    silence_pid_i = int(silence_pid)
+except ValueError:
+    raise SystemExit(0)
+short = subprocess.check_output(["pactl", "list", "short", "sinks"], text=True, errors="replace")
+idx_to_name = {row.split()[0]: row.split()[1] for row in short.splitlines() if len(row.split()) >= 2}
+out = subprocess.check_output(["pactl", "list", "sink-inputs"], text=True, errors="replace")
+for block in out.split("Sink Input #")[1:]:
+    lines = block.splitlines()
+    try:
+        idx = int(lines[0].strip().split()[0])
+    except (ValueError, IndexError):
+        continue
+    sink_idx = None
+    proc_pid = None
+    media = ""
+    app = ""
+    for line in lines:
+        s = line.strip()
+        if s.startswith("Sink:"):
+            sink_idx = s.split(":", 1)[1].strip()
+        elif "application.process.id" in s and "=" in s:
+            try:
+                proc_pid = int(s.split("=", 1)[-1].strip().strip('"'))
+            except ValueError:
+                proc_pid = None
+        elif "media.name" in s and "=" in s:
+            media = s.split("=", 1)[-1].strip().strip('"')
+        elif "application.name" in s and "=" in s:
+            app = s.split("=", 1)[-1].strip().strip('"')
+    if (
+        proc_pid != silence_pid_i
+        and app != "miracast-silence"
+        and media != "miracast-silence"
+        and not (media == "miracast" and "Lavf" in app)
+    ):
+        continue
+    if idx_to_name.get(sink_idx or "") == target:
+        raise SystemExit(0)
+    subprocess.run(["pactl", "move-sink-input", str(idx), target], check=False)
+    print(f"re-pinned:{idx}")
+    raise SystemExit(0)
+PY
+}
+
+# FluxCast ffmpeg is started with -i miracast.monitor, but Pulse module-stream-restore
+# keys on application.name=Lavf* and can reconnect the capture to Speakers.monitor.
+# That leaves miracast.monitor hot with app audio while the WFD path stays silent.
+# Always re-pin capture source-outputs onto miracast.monitor while casting.
+pin_miracast_audio_capture() {
+  local monitor="${MIRACAST_AUDIO_SINK_NAME}.monitor"
+  pactl list short sources 2>/dev/null | awk '{print $2}' | grep -qx "$monitor" || return 0
+
+  python3 - "$monitor" <<'PY'
+import subprocess, sys
+
+monitor = sys.argv[1]
+short = subprocess.check_output(["pactl", "list", "short", "sources"], text=True, errors="replace")
+idx_to_name = {}
+for row in short.splitlines():
+    parts = row.split()
+    if len(parts) >= 2:
+        idx_to_name[parts[0]] = parts[1]
+
+out = subprocess.check_output(["pactl", "list", "source-outputs"], text=True, errors="replace")
+moved = []
+for block in out.split("Source Output #")[1:]:
+    lines = block.splitlines()
+    try:
+        idx = int(lines[0].strip().split()[0])
+    except (ValueError, IndexError):
+        continue
+    src_idx = None
+    app = ""
+    media = ""
+    target = ""
+    capture_sink = ""
+    for line in lines:
+        s = line.strip()
+        if s.startswith("Source:"):
+            src_idx = s.split(":", 1)[1].strip()
+        elif "application.name" in s and "=" in s:
+            app = s.split("=", 1)[-1].strip().strip('"')
+        elif "media.name" in s and "=" in s:
+            media = s.split("=", 1)[-1].strip().strip('"')
+        elif "target.object" in s and "=" in s:
+            target = s.split("=", 1)[-1].strip().strip('"')
+        elif "stream.capture.sink" in s and "=" in s:
+            capture_sink = s.split("=", 1)[-1].strip().strip('"')
+    # Match FluxCast capture (pw-cat/parec name, or legacy Lavf record).
+    is_capture = (
+        app == "fluxcast-wfd-capture"
+        or "fluxcast-wfd-capture" in (app or media or "")
+        or (app.startswith("Lavf") and media == "record")
+        or (capture_sink in ("true", "1") and "miracast" in (target or media or "").lower())
+    )
+    if not is_capture:
+        continue
+    if idx_to_name.get(src_idx or "") == monitor:
+        continue
+    r = subprocess.run(
+        ["pactl", "move-source-output", str(idx), monitor],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode == 0:
+        moved.append(f"{idx}:{app or media or '?'}")
+print(",".join(moved))
+PY
+}
+
+sync_miracast_audio_routes() {
+  local def
+  def="$(pactl get-default-sink 2>/dev/null || true)"
+  [[ -n "$def" ]] || return 0
+
+  local last=""
+  if [[ -f "$AUDIO_ROUTE_LAST_DEFAULT_FILE" ]]; then
+    last="$(tr -d '[:space:]' <"$AUDIO_ROUTE_LAST_DEFAULT_FILE" 2>/dev/null || true)"
+  fi
+  printf '%s\n' "$def" >"$AUDIO_ROUTE_LAST_DEFAULT_FILE"
+
+  if [[ "$def" == "$MIRACAST_AUDIO_SINK_NAME" ]]; then
+    # Default is Miracast: always pull app streams onto it (not only when the
+    # default *changes*). Gating on last!=def skipped migrates when last-default
+    # was stale, leaving Brave etc. on speakers while Miracast was selected.
+    local s moved any=""
+    for s in $(pactl list short sinks 2>/dev/null | awk '{print $2}'); do
+      [[ "$s" == "$MIRACAST_AUDIO_SINK_NAME" ]] && continue
+      moved="$(migrate_sink_inputs "$s" "$MIRACAST_AUDIO_SINK_NAME" || true)"
+      if [[ -n "$moved" ]]; then
+        any=1
+        echo "[miracast-ctl] audio route → miracast (from $s): $moved" >>"$LOG_DIR/cast.log"
+      fi
+    done
+    if [[ -z "$any" && "$last" != "$def" ]]; then
+      echo "[miracast-ctl] audio route → miracast: nothing to move" >>"$LOG_DIR/cast.log"
+    fi
+  else
+    # Default is not Miracast: move app streams off Miracast onto the default.
+    local moved
+    moved="$(migrate_sink_inputs "$MIRACAST_AUDIO_SINK_NAME" "$def" || true)"
+    if [[ -n "$moved" || "$last" != "$def" ]]; then
+      echo "[miracast-ctl] audio route miracast → $def: ${moved:-none}" >>"$LOG_DIR/cast.log"
+    fi
+  fi
+
+  # Silence feeder must always stay on Miracast for capture.
+  local pinned
+  pinned="$(pin_miracast_silence_feeder || true)"
+  if [[ -n "$pinned" ]]; then
+    echo "[miracast-ctl] silence feeder $pinned → miracast" >>"$LOG_DIR/cast.log"
+  fi
+  # Capture must always read miracast.monitor (never Speakers.monitor).
+  local cap_pinned
+  cap_pinned="$(pin_miracast_audio_capture || true)"
+  if [[ -n "$cap_pinned" ]]; then
+    echo "[miracast-ctl] audio capture $cap_pinned → miracast.monitor" >>"$LOG_DIR/cast.log"
+  fi
+  return 0
+}
+
+start_miracast_audio_route_watcher() {
+  mkdir -p "$STATE_DIR" "$LOG_DIR"
+  if [[ -f "$AUDIO_ROUTE_PID_FILE" ]]; then
+    local old
+    old="$(tr -d '[:space:]' <"$AUDIO_ROUTE_PID_FILE" 2>/dev/null || true)"
+    if [[ -n "$old" ]] && kill -0 "$old" 2>/dev/null; then
+      return 0
+    fi
+    rm -f "$AUDIO_ROUTE_PID_FILE"
+  fi
+  # Seed last-default and do an immediate sync.
+  pactl get-default-sink 2>/dev/null >"$AUDIO_ROUTE_LAST_DEFAULT_FILE" || true
+  sync_miracast_audio_routes || true
+
+  (
+    # Follow the *default* sink. Do not yank streams off Miracast on every
+    # sink-input event while Speakers is default — that fought the user when
+    # they selected Miracast for an app or as default and WirePlumber moved
+    # streams briefly onto miracast.
+    pactl subscribe 2>/dev/null | while read -r _ev; do
+      case "$_ev" in
+        *\'change\'*on*sink*|*\'new\'*on*sink*|*server*)
+          sync_miracast_audio_routes || true
+          ;;
+        *source-output*)
+          # stream-restore can remap Lavf capture off miracast.monitor at any time.
+          pin_miracast_audio_capture >/dev/null || true
+          ;;
+        *sink-input*)
+          # Only pull toward Miracast if it is already the default.
+          def="$(pactl get-default-sink 2>/dev/null || true)"
+          if [[ "$def" == "$MIRACAST_AUDIO_SINK_NAME" ]]; then
+            sync_miracast_audio_routes || true
+          else
+            pin_miracast_silence_feeder >/dev/null || true
+            pin_miracast_audio_capture >/dev/null || true
+          fi
+          ;;
+      esac
+    done
+  ) >/dev/null 2>&1 &
+  echo $! >"$AUDIO_ROUTE_PID_FILE"
+  echo "[miracast-ctl] audio route watcher pid=$!" >>"$LOG_DIR/cast.log"
+}
+
+stop_miracast_audio_route_watcher() {
+  if [[ -f "$AUDIO_ROUTE_PID_FILE" ]]; then
+    local pid
+    pid="$(tr -d '[:space:]' <"$AUDIO_ROUTE_PID_FILE" 2>/dev/null || true)"
+    rm -f "$AUDIO_ROUTE_PID_FILE" "$AUDIO_ROUTE_LAST_DEFAULT_FILE"
+    if [[ -n "$pid" ]]; then
+      # Kill watcher and its pactl subscribe child group.
+      kill "$pid" 2>/dev/null || true
+      pkill -P "$pid" 2>/dev/null || true
+    fi
+  fi
+}
+
 teardown_miracast_audio_sink() {
+  stop_miracast_audio_route_watcher || true
+
+  # Before removing the null sink, move any remaining app streams to the
+  # current default (or first hardware sink) so audio does not vanish/stick.
+  local dest
+  dest="$(pactl get-default-sink 2>/dev/null || true)"
+  if [[ -z "$dest" || "$dest" == "$MIRACAST_AUDIO_SINK_NAME" ]]; then
+    dest="$(pactl list short sinks 2>/dev/null | awk -v m="$MIRACAST_AUDIO_SINK_NAME" '$2!=m{print $2; exit}')"
+  fi
+  if [[ -n "$dest" && "$dest" != "$MIRACAST_AUDIO_SINK_NAME" ]]; then
+    local moved
+    moved="$(migrate_sink_inputs "$MIRACAST_AUDIO_SINK_NAME" "$dest" || true)"
+    echo "[miracast-ctl] teardown audio migrate → $dest: ${moved:-none}" >>"$LOG_DIR/cast.log" 2>/dev/null || true
+  fi
+
   if [[ -f "$AUDIO_SILENCE_PID_FILE" ]]; then
     local spid
     spid="$(tr -d '[:space:]' <"$AUDIO_SILENCE_PID_FILE" 2>/dev/null || true)"

@@ -227,11 +227,12 @@ but silent speakers. The patched FluxCast path negotiates WFD LPCM
 
 | Piece | What to do |
 |-------|------------|
-| **Miracast sink** | `miracast-ctl` creates a PipeWire/Pulse null sink named `miracast` (plus a silence feeder so the sink stays alive). |
+| **Miracast sink** | `miracast-ctl` creates a PipeWire/Pulse null sink named `miracast` (plus a `pacat` silence feeder so the sink stays alive). |
 | **Route desktop audio** | Set the default output to **Miracast** in Sound settings (or `pactl set-default-sink miracast`). |
-| **Capture** | FluxCast records **`miracast.monitor`** via `ffmpeg -f pulse` (not the mic / default source). |
+| **Capture** | FluxCast records **`miracast.monitor`** via `pw-cat --target` (not the mic / default source, and not `ffmpeg -f pulse` / Lavf — stream-restore was remapping Lavf onto Speakers.monitor). The route watcher still re-pins if anything drifts. |
+| **Routing** | App streams **follow the default** sink (watcher moves them on/off Miracast). |
 | **Volume** | Keep the Miracast sink near **100%** (`pactl set-sink-volume miracast 100%`). A low sink volume is captured as quiet PCM and sounds “faded” on the TV. |
-| **Verify** | In `cast.log`: `Capturing audio : miracast.monitor (Pulse sink monitor via ffmpeg — not mic)` and `negotiating WFD LPCM`. Expect `wf-recorder` **and** an `ffmpeg … miracast.monitor` process while streaming. |
+| **Verify** | In `cast.log`: `Capturing audio : miracast.monitor (sink monitor via pw-cat — not mic)` and `negotiating WFD LPCM`. Expect `wf-recorder` **and** a `pw-cat … --target miracast.monitor` process while streaming. |
 
 Escape hatch (picture-only debug): `FLUXCAST_WFD_FORCE_AAC=1` forces the stable
 DMA+AAC path — often silent on LPCM-only TVs.
