@@ -2223,11 +2223,18 @@ ensure_miracast_audio_sink() {
         # stream-restore keys on application.name, and Lavf* was shared with
         # FluxCast's capture — that remapped capture onto Speakers.monitor and
         # left the TV silent while Speakers still worked on the laptop.
+        #
+        # node.name must start with omarchy_speaker_tuning so Omarchy's audio
+        # panel SOURCES list (per-app streams) hides it — same filter as the
+        # speaker-tuning DSP stream. application.name stays miracast-silence
+        # for our migrate/pin skip logic.
         nohup pacat --playback \
           --device="$MIRACAST_AUDIO_SINK_NAME" \
           --client-name=miracast-silence \
           --stream-name=miracast-silence \
           --property=media.role=abstract \
+          --property=node.name=omarchy_speaker_tuning.miracast_feeder \
+          --property=node.virtual=true \
           --rate=48000 --channels=2 --format=s16le --raw \
           /dev/zero \
           >/dev/null 2>&1 &
