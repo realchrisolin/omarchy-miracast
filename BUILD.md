@@ -102,6 +102,7 @@ keeps encode on the iGPU; CPU/`libx264` is a costly fallback (~40% ffmpeg).
 | SIGINT teardown race on Hyprland | [soreau#1](https://github.com/soreau/wf-recorder/pull/1) | Include in local build |
 | FFmpeg 7.1+/9 `avcodec_get_supported_config` | [ammen99#352](https://github.com/ammen99/wf-recorder/pull/352) | Dual-path patch or Arch `ffmpeg-9` patch |
 | FluxCast DMA-BUF + CQP + BIN/PROTO | Fork branch / patches in this repo | Point `FLUXCAST_ROOT` at patched tree |
+| FluxCast WFD LPCM (`0x83`) mux + Pulse monitor | Same patches (`wfd_lpcm_mux`, wlroots) | Needed for LPCM-only TVs; see §6 |
 | Omarchy Display Miracast UI | This plugin / `feat/display-miracast` | Install plugin; set `wfRecorderBin` |
 
 Until the **wf-recorder** rows are in official packages, every interested user
@@ -217,6 +218,50 @@ grep -E 'wf-recorder BIN|proto=|PATH \\(stock' \
 To A/B stock vs ICC: clear `wfRecorderBin` (or point at `/usr/bin/wf-recorder`),
 reconnect, compare Hyprland CPU.
 
+### 6. Miracast audio (desktop → TV speakers)
+
+No extra *build* step — this is runtime wiring once FluxCast patches above are
+in use. Many cheap dongles advertise **LPCM only**; AAC-in-TS then gives picture
+but silent speakers. The patched FluxCast path negotiates WFD LPCM
+(`stream_type=0x83`) for those sinks.
+
+| Piece | What to do |
+|-------|------------|
+| **Miracast sink** | `miracast-ctl` creates a PipeWire/Pulse null sink named `miracast` (plus a silence feeder so the sink stays alive). |
+| **Route desktop audio** | Set the default output to **Miracast** in Sound settings (or `pactl set-default-sink miracast`). |
+| **Capture** | FluxCast records **`miracast.monitor`** via `ffmpeg -f pulse` (not the mic / default source). |
+| **Volume** | Keep the Miracast sink near **100%** (`pactl set-sink-volume miracast 100%`). A low sink volume is captured as quiet PCM and sounds “faded” on the TV. |
+| **Verify** | In `cast.log`: `Capturing audio : miracast.monitor (Pulse sink monitor via ffmpeg — not mic)` and `negotiating WFD LPCM`. Expect `wf-recorder` **and** an `ffmpeg … miracast.monitor` process while streaming. |
+
+Escape hatch (picture-only debug): `FLUXCAST_WFD_FORCE_AAC=1` forces the stable
+DMA+AAC path — often silent on LPCM-only TVs.
+
+Design notes (AOSP-inspired wire layout, not a build recipe):
+[docs/aosp-wfd-audio-notes.md](docs/aosp-wfd-audio-notes.md),
+[docs/aosp-wfd-architecture.md](docs/aosp-wfd-architecture.md).
+
+### 7. ICC stale presents (fixed via bundled plugin)
+
+**Symptom:** keystrokes / cursor on the Extend head appear late on the TV until
+the pointer moves. `grim` of the head already shows the glyphs — not an IRQ issue.
+
+**Cause:** Hyprland ICC only `scheduleFrame`s on the *first* capture; wlr does it
+every frame. Headless Miracast keeps a stale FB until something forces a present.
+
+**Fix we ship:** `hyprland-plugins/icc-present-kick/` — tick listener that kicks
+pending screenshare presents (no private hooks). `miracast-ctl` loads it when
+`PROTO=icc` and unloads on stop.
+
+```bash
+make -C hyprland-plugins/icc-present-kick
+```
+
+| Mode | Settings | Notes |
+|------|----------|--------|
+| **ICC + kick plugin** | `wfRecorderBin` → ICC build, `wfRecorderProto: icc` | Preferred (GPU) |
+| **Stock wlr** | `/usr/bin/wf-recorder`, `proto: wlr` | Fallback if plugin missing |
+
+
 ---
 
 ## Hard constraints (do not “simplify” these away)
@@ -228,6 +273,8 @@ reconnect, compare Hyprland CPU.
 - Stock DMA path must **not** pass `wf-recorder -r` (breaks VAAPI filter graph).
   ICC builds **should** get `-r` (FluxCast detects ICC and adds it).
 - Software cursors stay on so the pointer is visible in capture.
+- Capture **Miracast sink monitor** audio only — never the default mic source
+  (that loops TV speakers → mic → TV).
 
 ---
 
@@ -254,6 +301,7 @@ Until then, this BUILD guide is the PoC contract.
 |-------|------|
 | Plugin overview / settings | [README.md](README.md) |
 | FluxCast patches | [patches/fluxcast/APPLY.md](patches/fluxcast/APPLY.md) |
+| WFD LPCM / AOSP design notes | [docs/aosp-wfd-audio-notes.md](docs/aosp-wfd-audio-notes.md) |
 | wf-recorder ICC PR | https://github.com/ammen99/wf-recorder/pull/347 |
 | Hyprland SIGINT fix | https://github.com/soreau/wf-recorder/pull/1 |
 | FFmpeg 7.1+/9 dual-path | https://github.com/ammen99/wf-recorder/pull/352 |

@@ -11,12 +11,17 @@ variables set by `miracast-ctl`; damage-aware capture remains opt-in.
 | `src/wfd/mode_state.py` | Persist sink-advertised stream modes for the UI (`FLUXCAST_WFD_MODE_STATE`) |
 | `src/wfd/config.py` | `peer_address` for mode-state JSON |
 | `src/wfd/session.py` | SIGUSR1 capture rebind loop; peer MAC on media config |
-| `src/wfd/media/wlroots.py` | DMA-BUF `h264_vaapi`+CQP path; NV12 pipe fallback; damage-aware opt-in; ICC `-r` when binary supports ext-copy-capture |
+| `src/wfd/media/wlroots.py` | DMA-BUF `h264_vaapi`+CQP; ICC `-r`; LPCM path captures **Pulse `*.monitor` via ffmpeg** (not mic/`pipewiresrc`) |
 | `src/wfd/wf_recorder.py` | Optional `FLUXCAST_WFD_WF_RECORDER_BIN` / `…_PROTO=icc` for PR #347 builds |
-| `src/wfd/media/pipeline.py` | Desktop `restart_video()` + `restarting` flag |
-| `src/wfd/rtsp/handler.py` | Mode state after negotiation; bare-Session M16; probe grace; LPCM-only sinks try AAC |
-| `src/wfd/probe.py` | Same LPCM→try-AAC negotiation as the live RTSP handler |
+| `src/wfd/media/pipeline.py` | Desktop `restart_video()`; stop LPCM muxer + close video/audio fds on restart |
+| `src/drivers/wfd_lpcm_mux.py` | WFD LPCM mux — AOSP PIDs (video `0x1011`, PCR `0x1000`), `0x83` + AU framing |
+| `src/wfd/rtsp/handler.py` | Mode state; M16; LPCM-only → `0x83` mux (`FLUXCAST_WFD_FORCE_AAC=1` escapes) |
+| `src/wfd/probe.py` | Same LPCM negotiation as the live RTSP handler |
 | `src/wfd/rtsp/rtsp_server.py` | `restart_active_media()` for SIGUSR1 rebind |
+
+Runtime audio how-to: plugin [BUILD.md §6](../../BUILD.md).  
+Design notes (AOSP-inspired, not a port): [docs/aosp-wfd-audio-notes.md](../../docs/aosp-wfd-audio-notes.md),
+[docs/aosp-wfd-architecture.md](../../docs/aosp-wfd-architecture.md).
 
 ## Apply
 
@@ -50,6 +55,8 @@ cp patches/fluxcast/src/wfd/wf_recorder.py        "$FLUXCAST_ROOT/src/wfd/"
 cp patches/fluxcast/src/wfd/probe.py              "$FLUXCAST_ROOT/src/wfd/"
 cp patches/fluxcast/src/wfd/rtsp/handler.py       "$FLUXCAST_ROOT/src/wfd/rtsp/"
 cp patches/fluxcast/src/wfd/rtsp/rtsp_server.py   "$FLUXCAST_ROOT/src/wfd/rtsp/"
+mkdir -p "$FLUXCAST_ROOT/src/drivers"
+cp patches/fluxcast/src/drivers/wfd_lpcm_mux.py   "$FLUXCAST_ROOT/src/drivers/"
 ```
 
 Then:

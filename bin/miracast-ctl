@@ -60,6 +60,36 @@ restore_software_cursors() {
   fi
 }
 
+# Bundled Hyprland plugin: kick ICC presents each tick (no private-function hooks).
+# Built at hyprland-plugins/icc-present-kick/; safe no-op if .so missing.
+ICC_KICK_SO="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)/hyprland-plugins/icc-present-kick/icc-present-kick.so"
+ICC_KICK_FLAG="$STATE_DIR/icc-present-kick.loaded"
+
+load_icc_present_kick() {
+  [[ -f "$ICC_KICK_SO" ]] || {
+    echo "[miracast-ctl] icc-present-kick.so missing (make -C hyprland-plugins/icc-present-kick)" >>"$LOG_DIR/cast.log"
+    return 0
+  }
+  # Already loaded?
+  if timeout 2 hyprctl plugin list 2>/dev/null | grep -q 'icc-present-kick'; then
+    printf '1\n' >"$ICC_KICK_FLAG"
+    return 0
+  fi
+  if timeout 3 hyprctl plugin load "$ICC_KICK_SO" >/dev/null 2>&1; then
+    printf '1\n' >"$ICC_KICK_FLAG"
+    echo "[miracast-ctl] loaded icc-present-kick plugin" >>"$LOG_DIR/cast.log"
+  else
+    echo "[miracast-ctl] WARN: failed to load icc-present-kick (ICC typing may lag)" >>"$LOG_DIR/cast.log"
+  fi
+}
+
+unload_icc_present_kick() {
+  [[ -f "$ICC_KICK_FLAG" ]] || return 0
+  rm -f "$ICC_KICK_FLAG"
+  timeout 3 hyprctl plugin unload icc-present-kick >/dev/null 2>&1 || \
+    timeout 3 hyprctl plugin unload "$ICC_KICK_SO" >/dev/null 2>&1 || true
+}
+
 # True if this Hyprland output is our Miracast virtual display (or legacy HEADLESS-*).
 is_virtual_output_name() {
   local name="$1"
@@ -1389,6 +1419,7 @@ cleanup_extend_monitor() {
         hypr_try dispatch "hl.dsp.focus({ monitor = \"${primary}\" })"
       fi
       restore_software_cursors
+      unload_icc_present_kick
       # Remember for reuse on next connect — do not touch Hyprland geometry.
       printf '%s\n' "$name" >"$PARKED_FILE"
       rm -f "$HEADLESS_FILE" "$CAPTURE_GEOM_FILE" \
@@ -1396,6 +1427,7 @@ cleanup_extend_monitor() {
       disconnect_log "cleanup done name=$name (headless left in place for reuse; no hyprctl destroy)"
     else
       restore_software_cursors
+      unload_icc_present_kick
       rm -f "$CAPTURE_GEOM_FILE"
       disconnect_log "cleanup done (no tracked headless)"
     fi
@@ -2510,10 +2542,18 @@ print(v if v in ("dmabuf","vaapi","cpu") else "dmabuf")' "$settings")"
     if [[ -n "$_wf_bin" ]]; then
       export FLUXCAST_WFD_WF_RECORDER_BIN="$_wf_bin"
       export FLUXCAST_WFD_WF_RECORDER_PROTO="$_wf_proto"
-      echo "[miracast-ctl] wf-recorder BIN=$_wf_bin PROTO=$_wf_proto" >>"$LOG_DIR/cast.log"
+      # ICC: skip painting the HW cursor plane into capture (reduces ghosts when
+      # the pointer leaves the Miracast head). SW cursors still appear if enabled.
+      export WF_RECORDER_NO_PAINT_CURSORS="${WF_RECORDER_NO_PAINT_CURSORS:-1}"
+      echo "[miracast-ctl] wf-recorder BIN=$_wf_bin PROTO=$_wf_proto NO_PAINT_CURSORS=$WF_RECORDER_NO_PAINT_CURSORS" >>"$LOG_DIR/cast.log"
+      # ICC needs per-capture presents; load bundled kick plugin (no private hooks).
+      if [[ "$_wf_proto" == "icc" || "$_wf_proto" == "auto" ]]; then
+        load_icc_present_kick
+      fi
     else
       unset FLUXCAST_WFD_WF_RECORDER_BIN FLUXCAST_WFD_WF_RECORDER_PROTO 2>/dev/null || true
       echo "[miracast-ctl] wf-recorder using PATH (stock default)" >>"$LOG_DIR/cast.log"
+      unload_icc_present_kick
     fi
     export FLUXCAST_WFD_MODE_STATE="$MODE_STATE_FILE"
     # When set (file exists), FluxCast must not auto-rebind over an intentional

@@ -13,3 +13,7 @@ __pycache__/
 # Local runtime (lives under XDG on a real install)
 *.log
 .cache/
+
+# Built Hyprland plugins
+hyprland-plugins/**/*.so
+hyprland-plugins/**/*.so.*
