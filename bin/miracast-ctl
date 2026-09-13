@@ -162,6 +162,9 @@ defaults = {
     # Default Hyprland scale for Miracast Extend when sinkScales has no MAC entry.
     # 1 minimizes compositor cost; raise per-sink via the Display panel if needed.
     "defaultExtendScale": 1,
+    # Virtual output refresh (Hz). 60 = smooth local software cursor; 30 = less
+    # Hyprland work but pointer on the Extend monitor feels laggy.
+    "extendRefresh": 60,
     # Optional absolute path to a custom wf-recorder (e.g. ICC / PR #347).
     # Empty = use PATH wf-recorder (stock / portable default). No path probing.
     "wfRecorderBin": "",
@@ -491,24 +494,24 @@ if vs <= 0:
     vs = 1.0
 hlw = int(round(hw / vs))
 hlh = int(round(hh / vs))
-# Cap Extend refresh to the Miracast stream rate. A 60Hz headless while the
-# sink negotiates 720p30 makes Hyprland composite twice as often as needed.
-refresh = 30
+# Headless refresh controls *local* pointer/compositor feel on the Extend
+# output. Keep it at 60Hz by default — a 30Hz virtual monitor makes the
+# software cursor (required for capture) feel severely laggy. Capture still
+# runs at the Miracast stream rate (-r / fps), so RTP cost stays tied to
+# streamMode, not this refresh. Override with settings.extendRefresh (30|60).
+refresh = 60
 try:
     settings = json.load(open(settings_path)) if settings_path else {}
 except Exception:
     settings = {}
 try:
-    want = int(float(settings.get("extendRefresh") or settings.get("fps") or 30))
+    want = int(float(settings.get("extendRefresh") or 60))
 except Exception:
-    want = 30
-if want >= 60:
-    refresh = 60
-elif want >= 30:
+    want = 60
+if want <= 30:
     refresh = 30
 else:
-    # CEA has no 20/24 HD mode on most sinks; keep the virtual output at 30.
-    refresh = 30
+    refresh = 60
 
 if pos == "left":
     x, y = -hlw, max(0, (plh - hlh) // 2)
@@ -969,9 +972,8 @@ apply_extend_position() {
   pos="${rest%%|*}"
   scale="${rest#*|}"
   [[ "$scale" == "$rest" || -z "$scale" ]] && scale="1"
-  # Keep refresh from extend_geometry_parts (stream rate, usually 30). Do NOT
-  # copy the live Hyprland refresh — once the headless is wrongly at 60Hz,
-  # that clobber locks it there and doubles compositor CPU vs a 30fps capture.
+  # Keep refresh from extend_geometry_parts (default 60 for local cursor feel;
+  # capture fps is independent). Do not copy an unrelated live Hyprland rate.
 
   # Same safe order as monitor-scale: leave the cast output, detach capture,
   # move geometry, then *force* rebuild (zombies looked "alive" and skipped rebind).
@@ -2435,9 +2437,9 @@ print(v if v in ("dmabuf","vaapi","cpu") else "dmabuf")' "$settings")"
     # tv-range CQP). Deny with FLUXCAST_WFD_DMABUF_ALLOW_SCALED=0 if needed.
     export FLUXCAST_WFD_DMABUF_ALLOW_SCALED="${FLUXCAST_WFD_DMABUF_ALLOW_SCALED:-}"
     # Prefer damage-aware capture (omit wf-recorder -D): Hyprland only emits
-    # frames when the Extend output changes — lower CPU than continuous -D,
-    # and cursor motion still looks smooth in practice. Force continuous with
-    # FLUXCAST_WFD_WF_RECORDER_DAMAGE=0.
+    # frames when the Extend output changes — lower CPU than continuous -D.
+    # Local cursor smoothness comes from headless refresh (extendRefresh=60),
+    # not from -D. Force continuous with FLUXCAST_WFD_WF_RECORDER_DAMAGE=0.
     if [[ "${FLUXCAST_WFD_WF_RECORDER_DAMAGE:-1}" =~ ^(0|false|no|off)$ ]]; then
       unset FLUXCAST_WFD_WF_RECORDER_DAMAGE
     else
