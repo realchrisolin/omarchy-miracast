@@ -251,11 +251,8 @@ class WlrootsMixin:
             "video/x-h264,stream-format=byte-stream ! "
             "appsink name=sink sync=false max-buffers=4 drop=true"
         )
-        # Prefer PipeWire node name (miracast) over Pulse *.monitor — this host
-        # has no gst pulsesrc plugin.
-        pw_target = audio_monitor.removesuffix(".monitor")
         aud_pipeline = (
-            f"pipewiresrc target-object={pw_target} do-timestamp=true ! "
+            f"pulsesrc device={audio_monitor} do-timestamp=true ! "
             "audioconvert ! audioresample ! "
             "audio/x-raw,format=S16BE,rate=48000,channels=2,"
             "layout=interleaved ! "
