@@ -23,6 +23,12 @@ On each compositor **tick**, if any monitor has an active ICC screenshare
 
 Current: **v0.2.1** (pending-copy kick only; v0.3 full-session kicks caused artifacts).
 
+## Packaging
+
+`icc-present-kick.so` is **tracked in this repo** so Omarchy installs work without
+a local Hyprland SDK rebuild. Rebuild with `make` after Hyprland upgrades if the
+plugin fails to load (ABI mismatch).
+
 ## Build / load
 
 ```bash
