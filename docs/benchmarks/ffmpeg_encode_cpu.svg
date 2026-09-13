@@ -1,35 +1,41 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="920" height="420" viewBox="0 0 920 420">
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="440" viewBox="0 0 980 440">
 <rect width="100%" height="100%" fill="#0d1117"/>
-<text x="460.0" y="28" text-anchor="middle" fill="#e6edf3" font-family="sans-serif" font-size="16" font-weight="700">Encode offload (ffmpeg CPU) — DMA-BUF / VAAPI pipe / libx264</text>
-<line x1="70" y1="350.0" x2="890" y2="350.0" stroke="#30363d" stroke-width="1"/>
+<text x="490.0" y="28" text-anchor="middle" fill="#e6edf3" font-family="sans-serif" font-size="15" font-weight="700">Encode offload (ffmpeg CPU) — DMA-BUF / VAAPI pipe / libx264</text>
+<line x1="70" y1="350.0" x2="950" y2="350.0" stroke="#30363d"/>
 <text x="62" y="354.0" text-anchor="end" fill="#8b949e" font-family="sans-serif" font-size="11">0</text>
-<line x1="70" y1="275.0" x2="890" y2="275.0" stroke="#30363d" stroke-width="1"/>
-<text x="62" y="279.0" text-anchor="end" fill="#8b949e" font-family="sans-serif" font-size="11">11</text>
-<line x1="70" y1="200.0" x2="890" y2="200.0" stroke="#30363d" stroke-width="1"/>
+<line x1="70" y1="275.0" x2="950" y2="275.0" stroke="#30363d"/>
+<text x="62" y="279.0" text-anchor="end" fill="#8b949e" font-family="sans-serif" font-size="11">12</text>
+<line x1="70" y1="200.0" x2="950" y2="200.0" stroke="#30363d"/>
 <text x="62" y="204.0" text-anchor="end" fill="#8b949e" font-family="sans-serif" font-size="11">23</text>
-<line x1="70" y1="125.0" x2="890" y2="125.0" stroke="#30363d" stroke-width="1"/>
-<text x="62" y="129.0" text-anchor="end" fill="#8b949e" font-family="sans-serif" font-size="11">34</text>
-<line x1="70" y1="50.0" x2="890" y2="50.0" stroke="#30363d" stroke-width="1"/>
-<text x="62" y="54.0" text-anchor="end" fill="#8b949e" font-family="sans-serif" font-size="11">46</text>
-<text x="18" y="200.0" fill="#8b949e" font-family="sans-serif" font-size="12" transform="rotate(-90 18,200.0)">ffmpeg % of one core</text>
-<rect x="76.0" y="349.6" width="122.7" height="0.4" fill="#3fb950" rx="2"/>
-<text x="137.3" y="345.6" text-anchor="middle" fill="#e6edf3" font-family="sans-serif" font-size="10">0.1</text>
-<text x="138.3" y="392" text-anchor="middle" fill="#c9d1d9" font-family="sans-serif" font-size="11">icc / dmabuf</text>
-<rect x="212.7" y="337.3" width="122.7" height="12.7" fill="#3fb950" rx="2"/>
-<text x="274.0" y="333.3" text-anchor="middle" fill="#e6edf3" font-family="sans-serif" font-size="10">1.9</text>
-<text x="275.0" y="392" text-anchor="middle" fill="#c9d1d9" font-family="sans-serif" font-size="11">icc / vaapi</text>
-<rect x="349.3" y="89.1" width="122.7" height="260.9" fill="#3fb950" rx="2"/>
-<text x="410.7" y="85.1" text-anchor="middle" fill="#e6edf3" font-family="sans-serif" font-size="10">39.8</text>
-<text x="411.7" y="392" text-anchor="middle" fill="#c9d1d9" font-family="sans-serif" font-size="11">icc / cpu</text>
-<rect x="486.0" y="347.1" width="122.7" height="2.9" fill="#3fb950" rx="2"/>
-<text x="547.3" y="343.1" text-anchor="middle" fill="#e6edf3" font-family="sans-serif" font-size="10">0.4</text>
-<text x="548.3" y="392" text-anchor="middle" fill="#c9d1d9" font-family="sans-serif" font-size="11">stock / dmabuf</text>
-<rect x="622.7" y="311.4" width="122.7" height="38.6" fill="#3fb950" rx="2"/>
-<text x="684.0" y="307.4" text-anchor="middle" fill="#e6edf3" font-family="sans-serif" font-size="10">5.9</text>
-<text x="685.0" y="392" text-anchor="middle" fill="#c9d1d9" font-family="sans-serif" font-size="11">stock / vaapi</text>
-<rect x="759.3" y="109.2" width="122.7" height="240.8" fill="#3fb950" rx="2"/>
-<text x="820.7" y="105.2" text-anchor="middle" fill="#e6edf3" font-family="sans-serif" font-size="10">36.8</text>
-<text x="821.7" y="392" text-anchor="middle" fill="#c9d1d9" font-family="sans-serif" font-size="11">stock / cpu</text>
-<rect x="70" y="402" width="12" height="12" fill="#3fb950" rx="2"/>
-<text x="86" y="412" fill="#c9d1d9" font-family="sans-serif" font-size="11">ffmpeg</text>
+<line x1="70" y1="125.0" x2="950" y2="125.0" stroke="#30363d"/>
+<text x="62" y="129.0" text-anchor="end" fill="#8b949e" font-family="sans-serif" font-size="11">35</text>
+<line x1="70" y1="50.0" x2="950" y2="50.0" stroke="#30363d"/>
+<text x="62" y="54.0" text-anchor="end" fill="#8b949e" font-family="sans-serif" font-size="11">47</text>
+<text x="16" y="200.0" fill="#8b949e" font-family="sans-serif" font-size="12" transform="rotate(-90 16,200.0)">ffmpeg % of one core</text>
+<rect x="77.0" y="349.6" width="130.7" height="0.4" fill="#3fb950" rx="2"/>
+<text x="142.3" y="345.6" text-anchor="middle" fill="#e6edf3" font-family="sans-serif" font-size="10">0.1</text>
+<text x="143.3" y="392" text-anchor="middle" fill="#c9d1d9" font-family="sans-serif" font-size="10">custom ICC</text>
+<text x="143.3" y="406" text-anchor="middle" fill="#8b949e" font-family="sans-serif" font-size="10">DMA-BUF</text>
+<rect x="223.7" y="337.6" width="130.7" height="12.4" fill="#3fb950" rx="2"/>
+<text x="289.0" y="333.6" text-anchor="middle" fill="#e6edf3" font-family="sans-serif" font-size="10">1.9</text>
+<text x="290.0" y="392" text-anchor="middle" fill="#c9d1d9" font-family="sans-serif" font-size="10">custom ICC</text>
+<text x="290.0" y="406" text-anchor="middle" fill="#8b949e" font-family="sans-serif" font-size="10">VAAPI pipe</text>
+<rect x="370.3" y="95.8" width="130.7" height="254.2" fill="#3fb950" rx="2"/>
+<text x="435.7" y="91.8" text-anchor="middle" fill="#e6edf3" font-family="sans-serif" font-size="10">39.8</text>
+<text x="436.7" y="392" text-anchor="middle" fill="#c9d1d9" font-family="sans-serif" font-size="10">custom ICC</text>
+<text x="436.7" y="406" text-anchor="middle" fill="#8b949e" font-family="sans-serif" font-size="10">libx264</text>
+<rect x="517.0" y="347.2" width="130.7" height="2.8" fill="#3fb950" rx="2"/>
+<text x="582.3" y="343.2" text-anchor="middle" fill="#e6edf3" font-family="sans-serif" font-size="10">0.4</text>
+<text x="583.3" y="392" text-anchor="middle" fill="#c9d1d9" font-family="sans-serif" font-size="10">distro 0.6.0</text>
+<text x="583.3" y="406" text-anchor="middle" fill="#8b949e" font-family="sans-serif" font-size="10">DMA-BUF</text>
+<rect x="663.7" y="312.4" width="130.7" height="37.6" fill="#3fb950" rx="2"/>
+<text x="729.0" y="308.4" text-anchor="middle" fill="#e6edf3" font-family="sans-serif" font-size="10">5.9</text>
+<text x="730.0" y="392" text-anchor="middle" fill="#c9d1d9" font-family="sans-serif" font-size="10">distro 0.6.0</text>
+<text x="730.0" y="406" text-anchor="middle" fill="#8b949e" font-family="sans-serif" font-size="10">VAAPI pipe</text>
+<rect x="810.3" y="115.3" width="130.7" height="234.7" fill="#3fb950" rx="2"/>
+<text x="875.7" y="111.3" text-anchor="middle" fill="#e6edf3" font-family="sans-serif" font-size="10">36.8</text>
+<text x="876.7" y="392" text-anchor="middle" fill="#c9d1d9" font-family="sans-serif" font-size="10">distro 0.6.0</text>
+<text x="876.7" y="406" text-anchor="middle" fill="#8b949e" font-family="sans-serif" font-size="10">libx264</text>
+<rect x="70" y="422" width="12" height="12" fill="#3fb950" rx="2"/>
+<text x="86" y="432" fill="#c9d1d9" font-family="sans-serif" font-size="11">ffmpeg</text>
 </svg>

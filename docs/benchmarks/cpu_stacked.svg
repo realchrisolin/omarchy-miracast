@@ -1,41 +1,47 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="920" height="420" viewBox="0 0 920 420">
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="440" viewBox="0 0 980 440">
 <rect width="100%" height="100%" fill="#0d1117"/>
-<text x="460.0" y="28" text-anchor="middle" fill="#e6edf3" font-family="sans-serif" font-size="16" font-weight="700">Stacked host CPU mix (Hyprland + wf-recorder + ffmpeg)</text>
-<line x1="70" y1="350.0" x2="890" y2="350.0" stroke="#30363d"/>
+<text x="490.0" y="28" text-anchor="middle" fill="#e6edf3" font-family="sans-serif" font-size="15" font-weight="700">Stacked host CPU mix (Hyprland + wf-recorder + ffmpeg)</text>
+<line x1="70" y1="350.0" x2="950" y2="350.0" stroke="#30363d"/>
 <text x="62" y="354.0" text-anchor="end" fill="#8b949e" font-family="sans-serif" font-size="11">0</text>
-<line x1="70" y1="275.0" x2="890" y2="275.0" stroke="#30363d"/>
+<line x1="70" y1="275.0" x2="950" y2="275.0" stroke="#30363d"/>
 <text x="62" y="279.0" text-anchor="end" fill="#8b949e" font-family="sans-serif" font-size="11">39</text>
-<line x1="70" y1="200.0" x2="890" y2="200.0" stroke="#30363d"/>
+<line x1="70" y1="200.0" x2="950" y2="200.0" stroke="#30363d"/>
 <text x="62" y="204.0" text-anchor="end" fill="#8b949e" font-family="sans-serif" font-size="11">79</text>
-<line x1="70" y1="125.0" x2="890" y2="125.0" stroke="#30363d"/>
+<line x1="70" y1="125.0" x2="950" y2="125.0" stroke="#30363d"/>
 <text x="62" y="129.0" text-anchor="end" fill="#8b949e" font-family="sans-serif" font-size="11">118</text>
-<line x1="70" y1="50.0" x2="890" y2="50.0" stroke="#30363d"/>
+<line x1="70" y1="50.0" x2="950" y2="50.0" stroke="#30363d"/>
 <text x="62" y="54.0" text-anchor="end" fill="#8b949e" font-family="sans-serif" font-size="11">158</text>
-<rect x="80.0" y="320.3" width="116.7" height="29.7" fill="#4C78A8"/>
-<rect x="80.0" y="318.9" width="116.7" height="1.4" fill="#F58518"/>
-<rect x="80.0" y="318.8" width="116.7" height="0.1" fill="#54A24B"/>
-<text x="138.3" y="392" text-anchor="middle" fill="#c9d1d9" font-family="sans-serif" font-size="11">icc / dmabuf</text>
-<rect x="216.7" y="319.9" width="116.7" height="30.1" fill="#4C78A8"/>
-<rect x="216.7" y="317.1" width="116.7" height="2.7" fill="#F58518"/>
-<rect x="216.7" y="313.4" width="116.7" height="3.7" fill="#54A24B"/>
-<text x="275.0" y="392" text-anchor="middle" fill="#c9d1d9" font-family="sans-serif" font-size="11">icc / vaapi</text>
-<rect x="353.3" y="317.2" width="116.7" height="32.8" fill="#4C78A8"/>
-<rect x="353.3" y="314.0" width="116.7" height="3.3" fill="#F58518"/>
-<rect x="353.3" y="238.2" width="116.7" height="75.8" fill="#54A24B"/>
-<text x="411.7" y="392" text-anchor="middle" fill="#c9d1d9" font-family="sans-serif" font-size="11">icc / cpu</text>
-<rect x="490.0" y="196.2" width="116.7" height="153.8" fill="#4C78A8"/>
-<rect x="490.0" y="191.5" width="116.7" height="4.6" fill="#F58518"/>
-<rect x="490.0" y="190.7" width="116.7" height="0.8" fill="#54A24B"/>
-<text x="548.3" y="392" text-anchor="middle" fill="#c9d1d9" font-family="sans-serif" font-size="11">stock / dmabuf</text>
-<rect x="626.7" y="187.9" width="116.7" height="162.1" fill="#4C78A8"/>
-<rect x="626.7" y="160.7" width="116.7" height="27.3" fill="#F58518"/>
-<rect x="626.7" y="149.5" width="116.7" height="11.2" fill="#54A24B"/>
-<text x="685.0" y="392" text-anchor="middle" fill="#c9d1d9" font-family="sans-serif" font-size="11">stock / vaapi</text>
-<rect x="763.3" y="186.0" width="116.7" height="164.0" fill="#4C78A8"/>
-<rect x="763.3" y="159.1" width="116.7" height="26.9" fill="#F58518"/>
-<rect x="763.3" y="89.1" width="116.7" height="70.0" fill="#54A24B"/>
-<text x="821.7" y="392" text-anchor="middle" fill="#c9d1d9" font-family="sans-serif" font-size="11">stock / cpu</text>
-<rect x="70" y="402" width="12" height="12" fill="#4C78A8"/><text x="86" y="412" fill="#c9d1d9" font-family="sans-serif" font-size="11">Hyprland</text>
-<rect x="170" y="402" width="12" height="12" fill="#F58518"/><text x="186" y="412" fill="#c9d1d9" font-family="sans-serif" font-size="11">wf-recorder</text>
-<rect x="290" y="402" width="12" height="12" fill="#54A24B"/><text x="306" y="412" fill="#c9d1d9" font-family="sans-serif" font-size="11">ffmpeg</text>
+<rect x="80.0" y="320.3" width="126.7" height="29.7" fill="#4C78A8"/>
+<rect x="80.0" y="318.9" width="126.7" height="1.4" fill="#F58518"/>
+<rect x="80.0" y="318.8" width="126.7" height="0.1" fill="#54A24B"/>
+<text x="143.3" y="392" text-anchor="middle" fill="#c9d1d9" font-family="sans-serif" font-size="9">custom ICC</text>
+<text x="143.3" y="406" text-anchor="middle" fill="#8b949e" font-family="sans-serif" font-size="9">DMA-BUF</text>
+<rect x="226.7" y="319.9" width="126.7" height="30.1" fill="#4C78A8"/>
+<rect x="226.7" y="317.1" width="126.7" height="2.7" fill="#F58518"/>
+<rect x="226.7" y="313.4" width="126.7" height="3.7" fill="#54A24B"/>
+<text x="290.0" y="392" text-anchor="middle" fill="#c9d1d9" font-family="sans-serif" font-size="9">custom ICC</text>
+<text x="290.0" y="406" text-anchor="middle" fill="#8b949e" font-family="sans-serif" font-size="9">VAAPI pipe</text>
+<rect x="373.3" y="317.2" width="126.7" height="32.8" fill="#4C78A8"/>
+<rect x="373.3" y="314.0" width="126.7" height="3.3" fill="#F58518"/>
+<rect x="373.3" y="238.2" width="126.7" height="75.8" fill="#54A24B"/>
+<text x="436.7" y="392" text-anchor="middle" fill="#c9d1d9" font-family="sans-serif" font-size="9">custom ICC</text>
+<text x="436.7" y="406" text-anchor="middle" fill="#8b949e" font-family="sans-serif" font-size="9">libx264</text>
+<rect x="520.0" y="196.2" width="126.7" height="153.8" fill="#4C78A8"/>
+<rect x="520.0" y="191.5" width="126.7" height="4.6" fill="#F58518"/>
+<rect x="520.0" y="190.7" width="126.7" height="0.8" fill="#54A24B"/>
+<text x="583.3" y="392" text-anchor="middle" fill="#c9d1d9" font-family="sans-serif" font-size="9">distro 0.6.0</text>
+<text x="583.3" y="406" text-anchor="middle" fill="#8b949e" font-family="sans-serif" font-size="9">DMA-BUF</text>
+<rect x="666.7" y="187.9" width="126.7" height="162.1" fill="#4C78A8"/>
+<rect x="666.7" y="160.7" width="126.7" height="27.3" fill="#F58518"/>
+<rect x="666.7" y="149.5" width="126.7" height="11.2" fill="#54A24B"/>
+<text x="730.0" y="392" text-anchor="middle" fill="#c9d1d9" font-family="sans-serif" font-size="9">distro 0.6.0</text>
+<text x="730.0" y="406" text-anchor="middle" fill="#8b949e" font-family="sans-serif" font-size="9">VAAPI pipe</text>
+<rect x="813.3" y="186.0" width="126.7" height="164.0" fill="#4C78A8"/>
+<rect x="813.3" y="159.1" width="126.7" height="26.9" fill="#F58518"/>
+<rect x="813.3" y="89.1" width="126.7" height="70.0" fill="#54A24B"/>
+<text x="876.7" y="392" text-anchor="middle" fill="#c9d1d9" font-family="sans-serif" font-size="9">distro 0.6.0</text>
+<text x="876.7" y="406" text-anchor="middle" fill="#8b949e" font-family="sans-serif" font-size="9">libx264</text>
+<rect x="70" y="422" width="12" height="12" fill="#4C78A8"/><text x="86" y="432" fill="#c9d1d9" font-family="sans-serif" font-size="11">Hyprland</text>
+<rect x="170" y="422" width="12" height="12" fill="#F58518"/><text x="186" y="432" fill="#c9d1d9" font-family="sans-serif" font-size="11">wf-recorder</text>
+<rect x="290" y="422" width="12" height="12" fill="#54A24B"/><text x="306" y="432" fill="#c9d1d9" font-family="sans-serif" font-size="11">ffmpeg</text>
 </svg>
