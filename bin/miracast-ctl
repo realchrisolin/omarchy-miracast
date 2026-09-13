@@ -8,6 +8,7 @@ LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-miracast/logs"
 PID_FILE="$STATE_DIR/cast.pid"
 # PipeWire/Pulse null-sink module id while casting (selectable Miracast output).
 AUDIO_SINK_MODULE_FILE="$STATE_DIR/audio-sink.module"
+AUDIO_SILENCE_PID_FILE="$STATE_DIR/audio-silence.pid"
 MIRACAST_AUDIO_SINK_NAME="miracast"
 MIRACAST_AUDIO_SINK_DESC="Miracast"
 STATUS_FILE="$STATE_DIR/status.json"
@@ -2178,6 +2179,18 @@ ensure_miracast_audio_sink() {
   for i in 1 2 3 4 5 6 7 8 9 10; do
     if pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -qx "$MIRACAST_AUDIO_SINK_NAME"; then
       echo "[miracast-ctl] audio sink $MIRACAST_AUDIO_SINK_NAME (module $mid)" >>"$LOG_DIR/cast.log"
+      # Keep a silent stream into the sink so ffmpeg's pulse capture of
+      # miracast.monitor never blocks waiting for the first sample (that
+      # stalls the video pipe and fills wf-recorder's buffer pool).
+      if [[ ! -f "$AUDIO_SILENCE_PID_FILE" ]] || ! kill -0 "$(tr -d '[:space:]' <"$AUDIO_SILENCE_PID_FILE" 2>/dev/null)" 2>/dev/null; then
+        # Output silence into the Miracast sink (argv marker for pkill on teardown).
+        nohup ffmpeg -hide_banner -loglevel error \
+          -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000 \
+          -f pulse "$MIRACAST_AUDIO_SINK_NAME" \
+          >/dev/null 2>&1 &
+        echo $! >"$AUDIO_SILENCE_PID_FILE"
+        echo "[miracast-ctl] started silence feeder pid=$!" >>"$LOG_DIR/cast.log"
+      fi
       echo "$MIRACAST_AUDIO_SINK_NAME"
       return 0
     fi
@@ -2188,6 +2201,14 @@ ensure_miracast_audio_sink() {
 }
 
 teardown_miracast_audio_sink() {
+  if [[ -f "$AUDIO_SILENCE_PID_FILE" ]]; then
+    local spid
+    spid="$(tr -d '[:space:]' <"$AUDIO_SILENCE_PID_FILE" 2>/dev/null || true)"
+    rm -f "$AUDIO_SILENCE_PID_FILE"
+    if [[ -n "$spid" ]]; then
+      kill "$spid" 2>/dev/null || true
+    fi
+  fi
   local mid=""
   if [[ -f "$AUDIO_SINK_MODULE_FILE" ]]; then
     mid="$(tr -d '[:space:]' <"$AUDIO_SINK_MODULE_FILE" 2>/dev/null || true)"
@@ -2417,14 +2438,20 @@ print("1" if v in (True,1,"1","true","yes","on") else "0")' "$settings")"
   fi
   local audio_args=(--wfd-no-audio)
   if [[ "$with_audio" == "1" ]]; then
-    local sink_name=""
-    if sink_name="$(ensure_miracast_audio_sink)"; then
-      # Capture the Miracast null-sink monitor so the sound panel can choose
-      # that device as default (we do not auto-switch the default).
-      audio_args=(--wfd-audio-device "${sink_name}.monitor")
+    # Debug/escape hatch: capture default sink monitor instead of Miracast null sink.
+    if [[ "${MIRACAST_USE_DEFAULT_AUDIO_MONITOR:-}" =~ ^(1|true|yes)$ ]]; then
+      teardown_miracast_audio_sink || true
+      audio_args=(--wfd-audio-device "$(pactl get-default-sink).monitor")
     else
-      echo "[miracast-ctl] audio sink missing; falling back to default-sink monitor" >>"$LOG_DIR/cast.log"
-      audio_args=()
+      local sink_name=""
+      if sink_name="$(ensure_miracast_audio_sink)"; then
+        # Capture the Miracast null-sink monitor so the sound panel can choose
+        # that device as default (we do not auto-switch the default).
+        audio_args=(--wfd-audio-device "${sink_name}.monitor")
+      else
+        echo "[miracast-ctl] audio sink missing; falling back to default-sink monitor" >>"$LOG_DIR/cast.log"
+        audio_args=()
+      fi
     fi
   else
     teardown_miracast_audio_sink || true
