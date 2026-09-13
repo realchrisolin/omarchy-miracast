@@ -6,6 +6,10 @@ STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-miracast"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-miracast"
 LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-miracast/logs"
 PID_FILE="$STATE_DIR/cast.pid"
+# PipeWire/Pulse null-sink module id while casting (selectable Miracast output).
+AUDIO_SINK_MODULE_FILE="$STATE_DIR/audio-sink.module"
+MIRACAST_AUDIO_SINK_NAME="miracast"
+MIRACAST_AUDIO_SINK_DESC="Miracast"
 STATUS_FILE="$STATE_DIR/status.json"
 SETTINGS_FILE="$CONFIG_DIR/settings.json"
 PEERS_FILE="$STATE_DIR/peers.json"
@@ -147,8 +151,9 @@ defaults = {
     "videoEncoder": "auto",
     # RENDER METHOD: dmabuf (GPU·DMA-BUF) | vaapi (GPU·VAAPI pipe) | cpu (libx264).
     "captureEncode": "dmabuf",
-    # Mux desktop audio (default sink monitor) into the WFD stream.
-    # Does not create a PipeWire sink — TV plays whatever hits the default output.
+    # Mux audio into the WFD stream. When true, creates a PipeWire/Pulse null
+    # sink named "Miracast" so the sound panel can select it as default; WFD
+    # captures that sink's .monitor. Does not auto-switch the default sink.
     "audioEnabled": True,
     # Preferred Miracast stream mode id, e.g. "1280x720p30".
     "streamMode": "1280x720p30",
@@ -2132,6 +2137,59 @@ print(json.dumps(data, separators=(",", ":")))
 PY
 }
 
+# Create a selectable "Miracast" null sink for the sound panel. WFD captures
+# its .monitor. Does NOT change the default sink — user picks in the audio UI.
+ensure_miracast_audio_sink() {
+  mkdir -p "$STATE_DIR"
+  if pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -qx "$MIRACAST_AUDIO_SINK_NAME"; then
+    echo "$MIRACAST_AUDIO_SINK_NAME"
+    return 0
+  fi
+  local mid
+  mid="$(pactl load-module module-null-sink \
+    "sink_name=$MIRACAST_AUDIO_SINK_NAME" \
+    "sink_properties=device.description=$MIRACAST_AUDIO_SINK_DESC" 2>/dev/null || true)"
+  if [[ -z "$mid" ]]; then
+    echo "[miracast-ctl] failed to create Miracast audio sink" >>"$LOG_DIR/cast.log"
+    return 1
+  fi
+  printf '%s\n' "$mid" >"$AUDIO_SINK_MODULE_FILE"
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    if pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -qx "$MIRACAST_AUDIO_SINK_NAME"; then
+      echo "[miracast-ctl] audio sink $MIRACAST_AUDIO_SINK_NAME (module $mid)" >>"$LOG_DIR/cast.log"
+      echo "$MIRACAST_AUDIO_SINK_NAME"
+      return 0
+    fi
+    sleep 0.1
+  done
+  echo "[miracast-ctl] Miracast audio sink did not appear" >>"$LOG_DIR/cast.log"
+  return 1
+}
+
+teardown_miracast_audio_sink() {
+  local mid=""
+  if [[ -f "$AUDIO_SINK_MODULE_FILE" ]]; then
+    mid="$(tr -d '[:space:]' <"$AUDIO_SINK_MODULE_FILE" 2>/dev/null || true)"
+    rm -f "$AUDIO_SINK_MODULE_FILE"
+  fi
+  if [[ -n "$mid" ]]; then
+    pactl unload-module "$mid" 2>/dev/null || true
+  fi
+  # Best-effort: unload any leftover null sink with our name.
+  if pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -qx "$MIRACAST_AUDIO_SINK_NAME"; then
+    local line mod
+    while read -r line; do
+      mod="${line%%$'\t'*}"
+      mod="${mod%% *}"
+      if printf '%s' "$line" | grep -q "sink_name=$MIRACAST_AUDIO_SINK_NAME"; then
+        pactl unload-module "$mod" 2>/dev/null || true
+      fi
+    done < <(pactl list short modules 2>/dev/null || true)
+  fi
+  echo "[miracast-ctl] Miracast audio sink torn down" >>"$LOG_DIR/cast.log" 2>/dev/null || true
+}
+
 cmd_stop() {
   disconnect_log "cmd_stop begin"
   # Detach screencopy first — killing FluxCast while hypr removes the output
@@ -2223,6 +2281,7 @@ PY
   pkill -f 'ffmpeg.*rtp_mpegts' 2>/dev/null || true
   # Longer settle: DRM/screencopy release after a long cast can take >200ms.
   sleep 1.0
+  teardown_miracast_audio_sink || true
   cleanup_extend_monitor || true
   clear_capture_paused
   local settings peer_name mode
@@ -2328,9 +2387,19 @@ print("1" if v in (True,1,"1","true","yes","on") else "0")' "$settings")"
   fi
   local audio_args=(--wfd-no-audio)
   if [[ "$with_audio" == "1" ]]; then
-    audio_args=()
+    local sink_name=""
+    if sink_name="$(ensure_miracast_audio_sink)"; then
+      # Capture the Miracast null-sink monitor so the sound panel can choose
+      # that device as default (we do not auto-switch the default).
+      audio_args=(--wfd-audio-device "${sink_name}.monitor")
+    else
+      echo "[miracast-ctl] audio sink missing; falling back to default-sink monitor" >>"$LOG_DIR/cast.log"
+      audio_args=()
+    fi
+  else
+    teardown_miracast_audio_sink || true
   fi
-  echo "[miracast-ctl] WFD audio=$with_audio" >>"$LOG_DIR/cast.log"
+  echo "[miracast-ctl] WFD audio=$with_audio args=${audio_args[*]}" >>"$LOG_DIR/cast.log"
 
   # GPU encode policy for FluxCast (see src/wfd/hw_encode.py). Prefer VAAPI/QSV
   # when present; power bias still prefers GPU but trims bitrate on battery /
