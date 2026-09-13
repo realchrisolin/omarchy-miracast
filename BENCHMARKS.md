@@ -34,9 +34,9 @@ Both were measured in the same matrix. The low-Hyprland-CPU rows are the
 1. **Capture binary / protocol** — custom ICC build vs distro wlr-screencopy  
 2. **RENDER ENGINE** — `dmabuf` (GPU DMA-BUF) / `vaapi` (raw pipe → hwupload) / `cpu` (libx264)
 
-GPU busy-% was not instrumented (no `intel_gpu_top` in the environment). Encode
-offload is inferred from **ffmpeg CPU**: near-zero on DMA-BUF means the iGPU is
-doing the heavy encode work.
+Encode offload in the primary matrix is inferred from **ffmpeg CPU**: near-zero
+on DMA-BUF means the iGPU is doing the heavy encode work. A later **LPCM
+cadence A/B** (below) also records Intel GT busy-% via `intel_gpu_top`.
 
 Raw data: [`docs/benchmarks/results.tsv`](docs/benchmarks/results.tsv)
 (column `capture`: `icc` = custom build, `stock` = distro `/usr/bin/wf-recorder`).
@@ -122,9 +122,48 @@ xychart-beta
 | **VAAPI pipe** | iGPU after ffmpeg `hwupload` | ffmpeg a few %; more copies |
 | **CPU** | host cores (`libx264`) | ffmpeg ~35–40% one core |
 
-Without a GPU profiler, treat **low ffmpeg + `encoder=h264_vaapi` + `capturePath=dmabuf`**
-as “GPU encode engaged.” Direct GT busy-% can be added later with
-`intel_gpu_top -J` if desired.
+Treat **low ffmpeg + `encoder=h264_vaapi` + `capturePath=dmabuf`** as “GPU encode
+engaged.” Direct GT busy-% for the LPCM cadence experiment is in the next
+section (`intel_gpu_top`).
+
+---
+
+## LPCM cadence A/B: continuous `-D` vs damage-aware (2026-09-13)
+
+Live **Extend** at **1920×1080p30**, custom ICC `wf-recorder`
+(`fix/hyprland-sigint-teardown` / soreau#1 tip), LPCM path, VAAPI DMA-BUF encode.
+Omarchy sets `FLUXCAST_WFD_WF_RECORDER_DAMAGE=1` by default; FluxCast LPCM now
+honors that flag (omit `-D`). Previously LPCM always forced continuous `-D`.
+
+| Item | Value |
+|------|--------|
+| Date | 2026-09-13 |
+| Host | Same laptop (i7-1165G7 + Intel iGPU) |
+| Binary | `~/src/wf-recorder/build/wf-recorder` `0.6.0-69d36d4` |
+| Stream | `1920x1080p30`, LPCM mux, `-c h264_vaapi` |
+| CPU sample | ~10×1 s `/proc` one-core % |
+| GPU sample | `pkexec intel_gpu_top -l -s 1000 -n 13` (RCS=render, VCS=video/encode) |
+
+| Case | Cadence | Hyprland | wf-recorder | fluxcast | RCS % | VCS % | GPU power W |
+|------|---------|----------|-------------|----------|-------|-------|-------------|
+| **lpcm_continuous_D** | `-D` (forced every tick) | 4.8% | 2.6% | 2.5% | **16.8** | 2.2 | 1.19 |
+| **lpcm_damage_aware** | no `-D` (`DAMAGE=1`) | 7.0% | 3.2% | 2.9% | **16.6** | 1.9 | 0.99 |
+
+Δ (damage-aware − continuous): RCS ≈ **−1%**, VCS **−12%**, GPU power **−17%**;
+CPU did not improve in this window (Hyprland CPU rose — likely more desktop
+activity in the second sample).
+
+### Takeaways
+
+1. **Damage-aware is on for LPCM** when Omarchy exports `DAMAGE=1` — confirm with
+   `ps` (`-y -r 30` without `-D`).
+2. Under a **busy/animating** Extend head, GT render load stays similar; expect a
+   larger drop on a mostly static desktop.
+3. With the Hyprland ICC present-schedule fix, damage-aware typing is usable; if
+   keystrokes lag, force continuous with `FLUXCAST_WFD_WF_RECORDER_DAMAGE=0`.
+
+Raw: [`docs/benchmarks/lpcm_damage_ab.tsv`](docs/benchmarks/lpcm_damage_ab.tsv),
+JSON/IGT logs under [`docs/benchmarks/`](docs/benchmarks/).
 
 ---
 

@@ -1,0 +1,63 @@
+{
+  "label": "baseline_continuous_D",
+  "wf_cmdline": "$HOME/src/wf-recorder/build/wf-recorder -y -D -r 30 -o Example-Sink_P2P -c h264_vaapi -d /dev/dri/renderD128 -b 0 -F scale_vaapi=format=nv12:out_range=tv -p rc_mode=CQP -p qp=18 -p gop_size=60 -p quality=4 -p bf=0 -p profile=constrained_baseline -p framerate=30 -m h264 -f /dev/stdout ",
+  "has_continuous_D": true,
+  "pids": {
+    "Hyprland": 2236451,
+    "fluxcast": 2739585,
+    "wf-recorder": 2995006
+  },
+  "cpu_percent": {
+    "Hyprland": {
+      "n": 10,
+      "mean": 4.8,
+      "median": 5.0,
+      "min": 4.0,
+      "max": 6.0
+    },
+    "fluxcast": {
+      "n": 10,
+      "mean": 2.5,
+      "median": 2.5,
+      "min": 2.0,
+      "max": 3.0
+    },
+    "wf-recorder": {
+      "n": 10,
+      "mean": 2.6,
+      "median": 3.0,
+      "min": 2.0,
+      "max": 3.0
+    }
+  },
+  "gpu": {
+    "gpu_power_w": {
+      "n": 13,
+      "mean": 1.19,
+      "median": 1.09,
+      "min": 0.99,
+      "max": 2.72
+    },
+    "RCS_render_pct": {
+      "n": 13,
+      "mean": 16.76,
+      "median": 15.73,
+      "min": 14.45,
+      "max": 29.01
+    },
+    "BCS_blitter_pct": {
+      "n": 13,
+      "mean": 0.0,
+      "median": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "VCS_video_pct": {
+      "n": 13,
+      "mean": 2.15,
+      "median": 2.03,
+      "min": 1.99,
+      "max": 3.27
+    }
+  }
+}

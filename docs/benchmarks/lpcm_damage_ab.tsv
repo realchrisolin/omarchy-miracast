@@ -1,0 +1,3 @@
+case	cadence	hypr_cpu	wf_cpu	flux_cpu	rcs_pct	vcs_pct	gpu_power_w	has_D	stream	notes
+lpcm_continuous_D	continuous_-D	4.80	2.60	2.50	16.76	2.15	1.19	true	1920x1080p30	ICC LPCM VAAPI DMA; intel_gpu_top via pkexec; ~10s CPU + ~12s GPU
+lpcm_damage_aware	damage_aware	6.99	3.20	2.90	16.61	1.89	0.99	false	1920x1080p30	Same session recipe after reconnect; FLUXCAST_WFD_WF_RECORDER_DAMAGE=1

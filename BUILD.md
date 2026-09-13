@@ -70,9 +70,11 @@ This is the important fork for Hyprland CPU.
 DMA-BUF** once capture is healthy.
 
 **Damage-aware vs continuous (`-D`):** Omarchy defaults to damage-aware (omit
-`-D`). With ICC, Hyprland may still wait for content change after the first
-frame (protocol-allowed); stock wlr is better at “force frames” on idle
-outputs. For a live desktop cast this rarely matters.
+`-D`), including the **LPCM** path (FluxCast honors
+`FLUXCAST_WFD_WF_RECORDER_DAMAGE`). With ICC, Hyprland may still wait for
+content change after the first frame unless present-scheduling is patched;
+force continuous with `FLUXCAST_WFD_WF_RECORDER_DAMAGE=0` if typing lags.
+Cadence A/B (CPU + `intel_gpu_top`): [BENCHMARKS.md](BENCHMARKS.md).
 
 ---
 
