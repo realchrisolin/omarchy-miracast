@@ -210,6 +210,8 @@ defaults = {
     # "1" | "0" — omit wf-recorder -D when "1" (damage-aware). From
     # scripts/recommend-cast-profile.py --apply or manual override.
     "wfRecorderDamage": "1",
+    # DMA-BUF CQP quantizer for h264_vaapi (lower = sharper / more bitrate).
+    "vaapiQp": 18,
 }
 try:
     data = json.load(open(path))
@@ -2873,8 +2875,7 @@ print(v if v in ("dmabuf","vaapi","cpu") else "dmabuf")' "$settings")"
     # Prefer damage-aware capture (omit wf-recorder -D). Precedence:
     # FLUXCAST_WFD_WF_RECORDER_DAMAGE env → settings.wfRecorderDamage → "1".
     # Force continuous with DAMAGE=0 / wfRecorderDamage=0.
-    local _dmg
-    _dmg="$(python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); print(str(s.get("wfRecorderDamage","1")).strip() or "1")' "$settings" 2>/dev/null || echo 1)"
+    _dmg="$(python3 -c 'import json,sys; s=json.loads(sys.argv[1]); print(str(s.get("wfRecorderDamage","1")).strip() or "1")' "$settings" 2>/dev/null || echo 1)"
     _dmg="${FLUXCAST_WFD_WF_RECORDER_DAMAGE:-$_dmg}"
     if [[ "$_dmg" =~ ^(0|false|no|off)$ ]]; then
       unset FLUXCAST_WFD_WF_RECORDER_DAMAGE
@@ -2883,6 +2884,19 @@ print(v if v in ("dmabuf","vaapi","cpu") else "dmabuf")' "$settings")"
       export FLUXCAST_WFD_WF_RECORDER_DAMAGE=1
       echo "[miracast-ctl] wf-recorder damage-aware=on (omit -D)" >>"$LOG_DIR/cast.log"
     fi
+
+    # DMA CQP quantizer: settings.vaapiQp (default 18). `$settings` is JSON text
+    # from read_settings, not a path. Settings win over a stale env value.
+    _qp="$(python3 -c 'import json,sys
+s=json.loads(sys.argv[1])
+v=s.get("vaapiQp", None)
+if v is not None and str(v).strip()!="":
+  print(str(v).strip())
+else:
+  print((sys.argv[2] if len(sys.argv)>2 else "") or "18")
+' "$settings" "${FLUXCAST_WFD_VAAPI_QP:-}" 2>/dev/null || echo "${FLUXCAST_WFD_VAAPI_QP:-18}")"
+    export FLUXCAST_WFD_VAAPI_QP="$_qp"
+    echo "[miracast-ctl] VAAPI QP=$FLUXCAST_WFD_VAAPI_QP" >>"$LOG_DIR/cast.log"
     # Optional ICC / custom wf-recorder: env or settings.wfRecorderBin only
     # (see resolve_wf_recorder_env). Default = PATH stock binary.
     local _wf_env _wf_bin _wf_proto
