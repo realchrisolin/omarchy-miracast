@@ -34,9 +34,10 @@ fi
 PEER="${PEER:?set PEER= or use a prior connected sink in settings.json}"
 PEER_NAME="${PEER_NAME:-Sink}"
 
-# Equipment metadata (display names + hardware). No SSIDs / MACs.
+# Public-safe equipment (for console summary). Full private dump written at end.
 HOST_INFO_JSON="$(python3 "$SCRIPT_DIR/bench_host_info.py" --settings "$SETTINGS" 2>/dev/null || echo '{}')"
-export HOST_INFO_JSON
+HOST_INFO_FULL_JSON="$(python3 "$SCRIPT_DIR/bench_host_info.py" --full --settings "$SETTINGS" 2>/dev/null || echo '{}')"
+export HOST_INFO_JSON HOST_INFO_FULL_JSON
 
 log() { echo "[bench-p2p] $*" >&2; }
 
@@ -186,8 +187,13 @@ run_case() {
   sample_window "$label"
 }
 
-TSV="$OUT_DIR/p2p_channel_ab.tsv"
-JSON="$OUT_DIR/p2p_channel_ab.json"
+TSV="$OUT_DIR/public/p2p_channel_ab.tsv"
+JSON="$OUT_DIR/public/p2p_channel_ab.json"
+PRIVATE_JSON="$OUT_DIR/private/p2p_channel_ab_$(date +%Y%m%d_%H%M%S).json"
+mkdir -p "$OUT_DIR/public" "$OUT_DIR/private"
+# Legacy paths kept as symlinks/copies for older docs links when absent.
+LEGACY_TSV="$OUT_DIR/p2p_channel_ab.tsv"
+LEGACY_JSON="$OUT_DIR/p2p_channel_ab.json"
 printf 'case\tsta_ch\tgo_ch\ttx_kbps\trx_kbps\tsignal_dbm\ttx_bitrate_mbps\tinactive_ms\tauthorized\tphase\tsample_s\thealth_events\n' >"$TSV"
 
 assert_sta || { log "STA not connected"; exit 2; }
@@ -205,33 +211,94 @@ export HOST_INFO_JSON
 log_host_summary
 
 python3 - <<PY
-import json, csv, os
+import json, csv, os, sys
 from pathlib import Path
 from datetime import datetime, timezone
+sys.path.insert(0, "$SCRIPT_DIR")
+from benchmark_privacy import guess_manufacturer, guess_model_hint, sanitize_display_name
+
 tsv = Path("$TSV")
 rows = [r for r in csv.DictReader(tsv.open(), delimiter="\t") if r.get("case") in ("scc", "mcc")]
 equipment = json.loads(os.environ.get("HOST_INFO_JSON") or "{}")
-# Prefer live sink display name from equipment probe; fall back to PEER_NAME.
-sink = equipment.get("sink_display_name") or "$PEER_NAME"
-payload = {
+equipment_full = json.loads(os.environ.get("HOST_INFO_FULL_JSON") or "{}")
+sink_priv = (equipment_full.get("sink") or {})
+sink_name = sink_priv.get("display_name") or equipment.get("sink_display_name") or "$PEER_NAME"
+sink_mac = sink_priv.get("mac") or "$PEER"
+mfr = guess_manufacturer(sink_name)
+model = guess_model_hint(sink_name, mfr)
+ts = datetime.now(timezone.utc).isoformat()
+
+public_payload = {
     "ok": True,
-    "ts": datetime.now(timezone.utc).isoformat(),
+    "ts": ts,
+    "kind": "p2p_channel_ab",
     "mode": "$MODE",
     "sample_s": int("$SAMPLE_S"),
     "settle_s": int("$SETTLE_S"),
-    "sink_display_name": sink,
+    "sink_display_name": sanitize_display_name(sink_name),
+    "sink": {
+        "display_name": sanitize_display_name(sink_name),
+        "manufacturer": mfr,
+        "model_hint": model,
+    },
     "equipment": equipment,
     "notes": (
         "SCC = MIRACAST_SKIP_P2P_CSA=1; MCC = quiet-channel CSA after PLAY. "
         "TX from /sys/class/net/<go>/statistics. "
-        "equipment omits Wi-Fi SSIDs/BSSIDs and MAC addresses."
+        "This public file omits Wi-Fi SSIDs/BSSIDs and MAC addresses."
     ),
     "rows": rows,
 }
-Path("$JSON").write_text(json.dumps(payload, indent=2) + "\n")
-print(json.dumps(payload, indent=2))
+Path("$JSON").write_text(json.dumps(public_payload, indent=2) + "\n")
+Path("$LEGACY_JSON").write_text(json.dumps(public_payload, indent=2) + "\n")
+Path("$LEGACY_TSV").write_text(tsv.read_text())
+
+private_payload = {
+    "stem": Path("$PRIVATE_JSON").stem,
+    "privacy": "private",
+    "kind": "p2p_channel_ab",
+    "ts": ts,
+    "sink": {
+        "display_name": sink_name,
+        "mac": sink_mac,
+        "manufacturer": mfr,
+        "model_hint": model,
+        "p2p_role": sink_priv.get("p2p_role"),
+    },
+    "host": {
+        "cpu": equipment_full.get("cpu") or equipment.get("cpu"),
+        "gpu": equipment_full.get("gpu") or equipment.get("gpu"),
+        "wifi": equipment_full.get("wifi") or equipment.get("wifi"),
+        "kernel": equipment_full.get("kernel") or equipment.get("kernel"),
+        "compositor": equipment_full.get("compositor") or equipment.get("compositor"),
+        "monitors": equipment_full.get("monitors") or equipment.get("monitors"),
+    },
+    "session": {
+        "mode": "$MODE",
+        "stream_mode": sink_priv.get("stream_mode"),
+        "capture_path": sink_priv.get("capture_path"),
+        "encoder": sink_priv.get("encoder"),
+    },
+    "metrics": {
+        "sample_s": int("$SAMPLE_S"),
+        "rows": rows,
+        "sta_channel": rows[0].get("sta_ch") if rows else None,
+        "p2p_channel": rows[-1].get("go_ch") if rows else None,
+        "p2p_tx_kbps": float(rows[-1]["tx_kbps"]) if rows and rows[-1].get("tx_kbps") else None,
+        "radio_mcc": True,
+    },
+    "public_notes": [
+        "P2P SCC vs MCC A/B; sanitized via scripts/sanitize_benchmark_results.py.",
+    ],
+    "notes": ["PRIVATE — do not commit. Contains sink MAC and possibly Wi-Fi SSIDs."],
+}
+Path("$PRIVATE_JSON").write_text(json.dumps(private_payload, indent=2) + "\n")
+print(json.dumps(public_payload, indent=2))
+print(f"[bench-p2p] private dump: $PRIVATE_JSON", file=sys.stderr)
+print("[bench-p2p] next: ./scripts/sanitize_benchmark_results.py", file=sys.stderr)
 PY
 
 log "wrote $TSV"
 log "wrote $JSON"
+log "wrote $PRIVATE_JSON"
 log "DONE (left on MCC streaming)"

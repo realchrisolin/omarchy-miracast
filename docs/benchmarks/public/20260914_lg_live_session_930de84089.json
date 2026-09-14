@@ -1,0 +1,56 @@
+{
+  "id": "20260914_lg_live_session_930de84089",
+  "ts": "2026-09-14T16:09:19+00:00",
+  "kind": "live_session",
+  "sink": {
+    "display_name": "[LG]",
+    "manufacturer": "LG",
+    "model_hint": null,
+    "wfd_role": "P2P-client"
+  },
+  "host": {
+    "cpu": "11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz",
+    "gpu": [
+      "00:02.0 VGA compatible controller [0300]: Intel Corporation TigerLake-LP GT2 [Iris Xe Graphics] [8086:9a49] (rev 01)"
+    ],
+    "wifi": {
+      "pci": [
+        "00:14.3 Network controller [0280]: Intel Corporation Wi-Fi 6 AX201 [8086:a0f0] (rev 20)"
+      ],
+      "driver": "iwlwifi",
+      "sta_channel": "channel 44 (5220 MHz), width: 80 MHz, center1: 5210 MHz"
+    },
+    "kernel": "7.2.3-arch1-3",
+    "compositor": "Hyprland 0.56.2 built from branch master at commit HEAD dirty ()."
+  },
+  "session": {
+    "mode": "extend",
+    "stream_mode": "1920x1080p30",
+    "capture_path": "dmabuf",
+    "encoder": "h264_vaapi",
+    "persist_display": true
+  },
+  "metrics": {
+    "hyprland_pct_one_core": 5.83,
+    "p2p_tx_kbps": 15840.4,
+    "sta_channel": 44,
+    "p2p_channel": 149,
+    "radio_mcc": true,
+    "sample_s": 18,
+    "rcs_busy_pct_approx_median": 34.57,
+    "vcs_busy_pct_approx_median": 2.55
+  },
+  "notes": [
+    "Live 1080p ICC/DMA-BUF spot-check on a second sink; Hyprland stays low under MCC."
+  ],
+  "omitted": [
+    "sink_mac",
+    "wifi_ssid",
+    "wifi_bssid",
+    "mac_addresses",
+    "ip_addresses",
+    "home_paths",
+    "raw_iw"
+  ],
+  "source_private_stem": "live_20260914_120845_lg"
+}

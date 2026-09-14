@@ -131,16 +131,30 @@ def _monitors() -> list[dict[str, Any]]:
     return out
 
 
-def _sink_display_name(settings_path: Optional[Path] = None) -> Optional[str]:
-    path = settings_path or Path(
+def _settings_path(settings_path: Optional[Path] = None) -> Path:
+    return settings_path or Path(
         os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")
     ) / "omarchy-miracast" / "settings.json"
+
+
+def _status_path() -> Path:
+    return Path(
+        os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")
+    ) / "omarchy-miracast" / "status.json"
+
+
+def _load_json(path: Path) -> dict[str, Any]:
     if not path.is_file():
-        return None
+        return {}
     try:
         data = json.loads(path.read_text())
     except Exception:
-        return None
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _sink_display_name(settings_path: Optional[Path] = None) -> Optional[str]:
+    data = _load_json(_settings_path(settings_path))
     name = data.get("lastPeerName") or None
     if not name:
         return None
@@ -150,20 +164,89 @@ def _sink_display_name(settings_path: Optional[Path] = None) -> Optional[str]:
     return _scrub(str(name))
 
 
-def collect(*, settings: Optional[Path] = None) -> dict[str, Any]:
+def _wifi_info_full(dev: Optional[str] = None) -> dict[str, Any]:
+    """Full Wi-Fi dump for private benches (may include SSID/BSSID/MAC)."""
+    info = _wifi_info()
+    dev = dev or info.get("iface") or _wifi_netdev()
+    if not dev:
+        return info
+    link = _run(["iw", "dev", str(dev), "link"])
+    if link:
+        info["sta_link_raw"] = link
+        for line in link.splitlines():
+            line = line.strip()
+            if line.startswith("SSID:"):
+                info["sta_ssid"] = line.split(":", 1)[1].strip()
+            if line.startswith("Connected to "):
+                info["sta_bssid"] = line.split()[2]
+    # Interface MAC (private only).
+    addr = Path(f"/sys/class/net/{dev}/address")
+    if addr.is_file():
+        try:
+            info["iface_mac"] = addr.read_text().strip()
+        except OSError:
+            pass
+    return info
+
+
+def _sink_private(settings_path: Optional[Path] = None) -> dict[str, Any]:
+    settings = _load_json(_settings_path(settings_path))
+    status = _load_json(_status_path())
+    name = (
+        status.get("peerName")
+        or settings.get("lastPeerName")
+        or None
+    )
+    mac = status.get("peer") or settings.get("lastPeerMac") or None
+    out: dict[str, Any] = {
+        "display_name": name,
+        "mac": mac,
+        "p2p_role": status.get("p2pRole"),
+        "p2p_channel": status.get("p2pChannel"),
+        "sta_channel": status.get("staChannel"),
+        "stream_mode": status.get("streamMode"),
+        "capture_path": status.get("capturePath"),
+        "encoder": status.get("encoder"),
+        "mode": status.get("mode") or settings.get("mode"),
+    }
+    return out
+
+
+def collect(*, settings: Optional[Path] = None, full: bool = False) -> dict[str, Any]:
+    """Public-safe equipment by default; ``full=True`` for private benchmark dumps."""
+    if not full:
+        return {
+            "kernel": _scrub(_run(["uname", "-r"]).strip() or os.uname().release),
+            "cpu": _cpu(),
+            "gpu": _gpu(),
+            "wifi": _wifi_info(),
+            "monitors": _monitors(),
+            "compositor": _scrub(
+                (_run(["hyprctl", "version"]).splitlines() or [""])[0]
+            )
+            or None,
+            "sink_display_name": _sink_display_name(settings),
+            "omitted": ["wifi_ssid", "wifi_bssid", "mac_addresses", "ip_addresses"],
+        }
+
+    sink = _sink_private(settings)
     return {
-        "kernel": _scrub(_run(["uname", "-r"]).strip() or os.uname().release),
+        "privacy": "private",
+        "kernel": _run(["uname", "-r"]).strip() or os.uname().release,
         "cpu": _cpu(),
         "gpu": _gpu(),
-        "wifi": _wifi_info(),
+        "wifi": _wifi_info_full(),
         "monitors": _monitors(),
-        "compositor": _scrub(
-            (_run(["hyprctl", "version"]).splitlines() or [""])[0]
-        )
-        or None,
-        "sink_display_name": _sink_display_name(settings),
-        # Explicitly omitted: SSIDs, BSSIDs, MACs, IPs, $HOME paths, username
-        "omitted": ["wifi_ssid", "wifi_bssid", "mac_addresses", "ip_addresses"],
+        "compositor": (_run(["hyprctl", "version"]).splitlines() or [""])[0] or None,
+        "sink": sink,
+        "sink_display_name": sink.get("display_name"),
+        "includes": [
+            "sink_mac",
+            "wifi_ssid",
+            "wifi_bssid",
+            "iface_mac",
+            "raw_iw_link",
+        ],
     }
 
 
@@ -171,13 +254,18 @@ def main(argv: Optional[list[str]] = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--json", action="store_true", help="print JSON (default)")
     p.add_argument(
+        "--full",
+        action="store_true",
+        help="include sink MAC / SSIDs / BSSIDs for private benchmark dumps",
+    )
+    p.add_argument(
         "--settings",
         type=Path,
         default=None,
         help="omarchy-miracast settings.json for sink display name",
     )
     args = p.parse_args(argv)
-    print(json.dumps(collect(settings=args.settings), indent=2))
+    print(json.dumps(collect(settings=args.settings, full=args.full), indent=2))
     return 0
 
 
