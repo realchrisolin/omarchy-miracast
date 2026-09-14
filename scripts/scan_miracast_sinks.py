@@ -107,32 +107,20 @@ def scan_nm(timeout: int) -> list[dict[str, Any]]:
     iface = _parse_string(
         _gdbus_get(NM_DEST, path, "org.freedesktop.NetworkManager.Device", "Interface")
     ) or "p2p-dev"
-    # StartFind(a{sv}). NM wants timeout as signed int "i", not uint32.
-    # Empty options also works; we enforce duration with our own deadline.
-    started = False
-    for opts in (
-        f"{{'timeout': <i {max(1, int(timeout))}>}}",
-        "{}",
-    ):
-        try:
-            _gdbus_call(
-                [
-                    "--dest",
-                    NM_DEST,
-                    "--object-path",
-                    path,
-                    "--method",
-                    "org.freedesktop.NetworkManager.Device.WifiP2P.StartFind",
-                    opts,
-                ],
-                timeout=5.0,
-            )
-            started = True
-            break
-        except Exception:
-            continue
-    if not started:
-        raise RuntimeError("WifiP2P.StartFind failed")
+    # StartFind(a{sv}). gdbus CLI rejects common timeout variant spellings;
+    # empty options works and we enforce duration with our own poll deadline.
+    _gdbus_call(
+        [
+            "--dest",
+            NM_DEST,
+            "--object-path",
+            path,
+            "--method",
+            "org.freedesktop.NetworkManager.Device.WifiP2P.StartFind",
+            "{}",
+        ],
+        timeout=5.0,
+    )
     try:
         # Poll peers every 0.75s; return early once we have WFD peers or any peers late.
         deadline = time.monotonic() + max(1, timeout)
