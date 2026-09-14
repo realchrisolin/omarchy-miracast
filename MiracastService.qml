@@ -760,15 +760,10 @@ Item {
             root._suppressPositionRecover = false
             return
           }
-          // Prefer live capture rebind (keeps Miracast RTSP/P2P). Fall back to
-          // full reconnect only when FluxCast could not restart the pipeline.
+          // Geometry changes black many sinks if we only USR1-rebind capture
+          // while RTSP stays up. Always renegotiate (Persist keeps workspaces).
           if (root._restartAfterPosition && root.lastPeerMac !== "") {
             root._restartAfterPosition = false
-            if (data.captureRestarted === true && data.captureHealthy !== false) {
-              root.actionStatus = "Moved extended display (" + root.extendPositionLabel + ") — connection kept"
-              root.positionWarning = ""
-              return
-            }
             root._pendingRestartPeer = root.lastPeerMac
             root.actionStatus = "Reconnecting after moving display (" + root.extendPositionLabel + ")…"
             root.stopCast(root.preserveDisplayAcrossMonitors)

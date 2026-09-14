@@ -1261,7 +1261,13 @@ except Exception:
   [[ "$ensure_info" == *"healthy=true"* ]] && capture_healthy=true
   flux_pid="$(echo "$ensure_info" | sed -n 's/.*pid=\([0-9]*\).*/\1/p')"
 
-  emit "{\"ok\":true,\"position\":\"$position\",\"applied\":true,\"captureRestarted\":$capture_restarted,\"captureHealthy\":$capture_healthy,\"monitor\":\"$headless\",\"mode\":\"$mode\",\"pos\":\"$pos\",\"fluxPid\":\"$flux_pid\"}"
+  # UI must full-reconnect when streaming: capture-only restart leaves many
+  # TVs (e.g. LG) on a black RTSP session after layout/region changes.
+  local needs_reconnect=false
+  if fluxcast_python_running || is_running; then
+    needs_reconnect=true
+  fi
+  emit "{\"ok\":true,\"position\":\"$position\",\"applied\":true,\"captureRestarted\":$capture_restarted,\"captureHealthy\":$capture_healthy,\"needsReconnect\":$needs_reconnect,\"monitor\":\"$headless\",\"mode\":\"$mode\",\"pos\":\"$pos\",\"fluxPid\":\"$flux_pid\"}"
 }
 
 ensure_extend_monitor() {
