@@ -57,9 +57,10 @@ def _row(pub: dict[str, Any]) -> list[str]:
     metrics = pub.get("metrics") or {}
     wifi = host.get("wifi") or {}
     brand = sink.get("manufacturer") or "—"
-    model = sink.get("model_hint") or "—"
+    model = sink.get("model_code") or sink.get("model_hint") or sink.get("model_name") or "—"
+    if model == "—" and sink.get("product_line"):
+        model = sink.get("product_line")
     if model == "—" and sink.get("display_name") and sink.get("display_name") != brand:
-        # Only show display_name when it adds info beyond the brand.
         disp = str(sink.get("display_name"))
         if disp.strip(" []()_-").lower() != str(brand).lower():
             model = disp

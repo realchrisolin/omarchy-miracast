@@ -257,8 +257,11 @@ Artifacts: `docs/benchmarks/public/p2p_channel_ab.*` (and legacy copies at `docs
 
 ## Crowdsourced device results
 
-Full local runs (sink **name + MAC**, Wi‑Fi SSIDs/BSSIDs, raw `iw`) are written
-under **`docs/benchmarks/private/`** (gitignored). Before opening a PR, sanitize:
+Full local runs (sink **name + MAC**, WPS/P2P peer fields, Wi‑Fi SSIDs/BSSIDs,
+raw `iw`) are written under **`docs/benchmarks/private/`** (gitignored). Device
+identity prefers ``wpa_cli p2p_peer`` (manufacturer / model_name / device_name),
+then RTSP ``sink-modes.json``, then name heuristics — see
+``scripts/fingerprint_miracast_sink.py``. Before opening a PR, sanitize:
 
 ```bash
 ./scripts/record_live_benchmark.py          # while casting (optional stem)
@@ -274,7 +277,7 @@ metrics only — never MACs, SSIDs, BSSIDs, or `$HOME` paths.
 
 | Date | Sink (mfr / model) | Stream | Capture | Hyprland % | P2P TX kbps | STA/P2P ch | Host CPU | Wi‑Fi driver | Kind |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 2026-09-14 | LG / — | 1920x1080p30 | dmabuf/h264_vaapi | 5.83 | 15840.4 | 44/149 | 11th Gen Intel(R) Core(TM) i7-1165G7 @ … | iwlwifi | live_session |
+| 2026-09-14 | LG / SM8600PUA | 1920x1080p30 | dmabuf/h264_vaapi | 5.83 | 15840.4 | 44/149 | 11th Gen Intel(R) Core(TM) i7-1165G7 @ … | iwlwifi | live_session |
 
 Private full dumps (name, MAC, SSIDs) live in `docs/benchmarks/private/` (gitignored). Contributors: run a bench, then `./scripts/sanitize_benchmark_results.py` and PR the updated `docs/benchmarks/public/` files plus this table.
 <!-- crowdsource-benchmarks:end -->

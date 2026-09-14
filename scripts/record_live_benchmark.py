@@ -33,6 +33,7 @@ from benchmark_privacy import (  # noqa: E402
     private_path,
     write_json,
 )
+from fingerprint_miracast_sink import fingerprint_sink, public_identity  # noqa: E402
 
 
 def _run(cmd: list[str], timeout: float = 5.0) -> str:
@@ -120,8 +121,20 @@ def main(argv: Optional[list[str]] = None) -> int:
     host_full = collect_host(full=True)
     sink = host_full.get("sink") or {}
     display = sink.get("display_name") or status.get("peerName")
-    manufacturer = guess_manufacturer(display)
-    model = guess_model_hint(display, manufacturer)
+    mac = sink.get("mac") or status.get("peer")
+    fp = fingerprint_sink(mac, use_wpa=True)
+    ident = fp.get("identity") or {}
+    manufacturer = (
+        ident.get("manufacturer_normalized")
+        or ident.get("manufacturer")
+        or guess_manufacturer(display)
+    )
+    model = (
+        ident.get("model_hint")
+        or ident.get("model_code")
+        or guess_model_hint(display or ident.get("device_name"), manufacturer)
+    )
+    display = ident.get("device_name") or display
 
     ts = datetime.now(timezone.utc).isoformat()
     day = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -134,11 +147,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         "ts": ts,
         "sink": {
             "display_name": display,
-            "mac": sink.get("mac") or status.get("peer"),
+            "mac": mac,
             "manufacturer": manufacturer,
             "model_hint": model,
+            "model_name": ident.get("model_name"),
+            "model_code": ident.get("model_code"),
+            "product_line": ident.get("product_line"),
             "p2p_role": status.get("p2pRole"),
             "wfd_role": status.get("p2pRole"),
+            "fingerprint": fp,
+            "fingerprint_public": public_identity(fp),
         },
         "host": {
             "cpu": host_full.get("cpu"),

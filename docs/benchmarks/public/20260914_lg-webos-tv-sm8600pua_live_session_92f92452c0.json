@@ -1,12 +1,24 @@
 {
-  "id": "20260914_lg_live_session_930de84089",
+  "id": "20260914_lg-webos-tv-sm8600pua_live_session_92f92452c0",
   "ts": "2026-09-14T16:09:19+00:00",
   "kind": "live_session",
   "sink": {
-    "display_name": "[LG]",
+    "display_name": "[LG] webOS TV SM8600PUA",
     "manufacturer": "LG",
-    "model_hint": null,
-    "wfd_role": "P2P-client"
+    "model_hint": "SM8600PUA",
+    "model_name": "webOS TV",
+    "model_code": "SM8600PUA",
+    "product_line": "webOS TV",
+    "device_category": "Display",
+    "cea_mask": "0x000194ff",
+    "vesa_mask": "0x155575df",
+    "wfd_role": "P2P-client",
+    "fingerprint_sources": {
+      "wpa_cli_p2p_peer": true,
+      "sink_modes_json": true,
+      "omarchy_status_settings": true,
+      "oui_lookup": false
+    }
   },
   "host": {
     "cpu": "11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz",

@@ -216,16 +216,20 @@ from pathlib import Path
 from datetime import datetime, timezone
 sys.path.insert(0, "$SCRIPT_DIR")
 from benchmark_privacy import guess_manufacturer, guess_model_hint, sanitize_display_name
+from fingerprint_miracast_sink import fingerprint_sink, public_identity
 
 tsv = Path("$TSV")
 rows = [r for r in csv.DictReader(tsv.open(), delimiter="\t") if r.get("case") in ("scc", "mcc")]
 equipment = json.loads(os.environ.get("HOST_INFO_JSON") or "{}")
 equipment_full = json.loads(os.environ.get("HOST_INFO_FULL_JSON") or "{}")
 sink_priv = (equipment_full.get("sink") or {})
-sink_name = sink_priv.get("display_name") or equipment.get("sink_display_name") or "$PEER_NAME"
 sink_mac = sink_priv.get("mac") or "$PEER"
-mfr = guess_manufacturer(sink_name)
-model = guess_model_hint(sink_name, mfr)
+fp = fingerprint_sink(sink_mac, use_wpa=True)
+ident = fp.get("identity") or {}
+fp_pub = public_identity(fp)
+sink_name = ident.get("device_name") or sink_priv.get("display_name") or equipment.get("sink_display_name") or "$PEER_NAME"
+mfr = ident.get("manufacturer_normalized") or ident.get("manufacturer") or guess_manufacturer(sink_name)
+model = ident.get("model_hint") or ident.get("model_code") or guess_model_hint(sink_name, mfr)
 ts = datetime.now(timezone.utc).isoformat()
 
 public_payload = {
@@ -240,6 +244,12 @@ public_payload = {
         "display_name": sanitize_display_name(sink_name),
         "manufacturer": mfr,
         "model_hint": model,
+        "model_code": ident.get("model_code"),
+        "model_name": ident.get("model_name"),
+        "device_category": (ident.get("primary_device_type") or {}).get("category"),
+        "cea_mask": (fp.get("capabilities") or {}).get("cea_mask"),
+        "vesa_mask": (fp.get("capabilities") or {}).get("vesa_mask"),
+        "fingerprint_sources": fp.get("sources"),
     },
     "equipment": equipment,
     "notes": (
@@ -263,7 +273,12 @@ private_payload = {
         "mac": sink_mac,
         "manufacturer": mfr,
         "model_hint": model,
+        "model_name": ident.get("model_name"),
+        "model_code": ident.get("model_code"),
+        "product_line": ident.get("product_line"),
         "p2p_role": sink_priv.get("p2p_role"),
+        "fingerprint": fp,
+        "fingerprint_public": fp_pub,
     },
     "host": {
         "cpu": equipment_full.get("cpu") or equipment.get("cpu"),

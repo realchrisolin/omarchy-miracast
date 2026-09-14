@@ -50,6 +50,16 @@ class BenchmarkPrivacyTest(unittest.TestCase):
         self.assertEqual(pub["sink"]["manufacturer"], "LG")
         self.assertEqual(pub["metrics"]["hyprland_pct_one_core"], 5.8)
 
+    def test_fingerprint_name_parse(self):
+        from fingerprint_miracast_sink import parse_device_name, parse_wps_primary_device_type
+
+        parsed = parse_device_name("[LG] webOS TV SM8600PUA")
+        self.assertEqual(parsed.get("bracket_brand"), "LG")
+        self.assertEqual(parsed.get("model_code"), "SM8600PUA")
+        self.assertEqual(parsed.get("product_line"), "webOS TV")
+        pri = parse_wps_primary_device_type("7-0050F204-1")
+        self.assertEqual(pri.get("category"), "Display")
+
 
 if __name__ == "__main__":
     unittest.main()

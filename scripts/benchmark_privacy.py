@@ -145,9 +145,21 @@ def sanitize_private_run(private: dict[str, Any]) -> dict[str, Any]:
     host = private.get("host") or {}
     session = private.get("session") or {}
     metrics = private.get("metrics") or {}
-    display = sanitize_display_name(sink.get("display_name") or sink.get("name"))
-    manufacturer = sink.get("manufacturer") or guess_manufacturer(display)
-    model = sink.get("model_hint") or guess_model_hint(display, manufacturer)
+    fp_pub = sink.get("fingerprint_public") or {}
+    display = sanitize_display_name(
+        fp_pub.get("device_name") or sink.get("display_name") or sink.get("name")
+    )
+    manufacturer = (
+        fp_pub.get("manufacturer")
+        or sink.get("manufacturer")
+        or guess_manufacturer(display)
+    )
+    model = (
+        fp_pub.get("model_hint")
+        or sink.get("model_code")
+        or sink.get("model_hint")
+        or guess_model_hint(display, manufacturer)
+    )
 
     wifi = host.get("wifi") or {}
     public_wifi = {
@@ -189,7 +201,14 @@ def sanitize_private_run(private: dict[str, Any]) -> dict[str, Any]:
             "display_name": display,
             "manufacturer": manufacturer,
             "model_hint": model,
+            "model_name": fp_pub.get("model_name") or sink.get("model_name"),
+            "model_code": fp_pub.get("model_code") or sink.get("model_code"),
+            "product_line": fp_pub.get("product_line") or sink.get("product_line"),
+            "device_category": fp_pub.get("device_category"),
+            "cea_mask": fp_pub.get("cea_mask"),
+            "vesa_mask": fp_pub.get("vesa_mask"),
             "wfd_role": sink.get("wfd_role") or sink.get("p2p_role"),
+            "fingerprint_sources": fp_pub.get("sources"),
         },
         "host": {
             "cpu": host.get("cpu"),
