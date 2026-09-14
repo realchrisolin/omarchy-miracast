@@ -1858,6 +1858,52 @@ Panel {
             text: miracast.positionWarning
           }
         }
+
+        // Preserve Extend desktop when switching Miracast sinks (default on).
+        Row {
+          visible: miracast.mode === "extend"
+          width: parent.width
+          spacing: Style.spacing.sm
+
+          Text {
+            text: miracast.preserveDisplayAcrossMonitors ? "󰄬" : "󰄱"
+            color: root.bar.foreground
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.body
+            verticalAlignment: Text.AlignVCenter
+
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              onClicked: miracast.setPreserveDisplayAcrossMonitors(
+                !miracast.preserveDisplayAcrossMonitors)
+            }
+          }
+
+          Text {
+            text: "Preserve display across monitors"
+            color: Qt.darker(root.bar.foreground, 1.15)
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+            verticalAlignment: Text.AlignVCenter
+            width: parent.width - parent.spacing - 28
+            wrapMode: Text.WordWrap
+
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              onClicked: miracast.setPreserveDisplayAcrossMonitors(
+                !miracast.preserveDisplayAcrossMonitors)
+            }
+
+            PanelToolTip {
+              delay: 400
+              text: miracast.preserveDisplayAcrossMonitors
+                ? "On: switching Miracast TVs keeps this Extend desktop and its windows."
+                : "Off: switching TVs migrates windows to the laptop and seeds a fresh Extend desktop."
+            }
+          }
+        }
       }
 
       // ---- Scale (after CAST MODE on Miracast rows) ----

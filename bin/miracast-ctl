@@ -280,6 +280,10 @@ defaults = {
     "streamMode": "1280x720p30",
     # Display panel: false = expand all outputs; true = accordion (focused only).
     "onlyExpandFocusedDisplay": False,
+    # When true (default), switching Miracast sinks keeps the same Extend
+    # headless + workspaces (only retargets P2P/FluxCast). When false, stop
+    # migrates windows to the laptop and the next connect seeds a fresh ext-*.
+    "preserveDisplayAcrossMonitors": True,
     # Default Hyprland scale for Miracast Extend when sinkScales has no MAC entry.
     # 1 minimizes compositor cost; raise per-sink via the Display panel if needed.
     "defaultExtendScale": 1,
@@ -1304,7 +1308,14 @@ else:
   hypr_set_monitor_geometry "$headless" "$mode" "$pos" "$scale" >/dev/null 2>&1 || true
   # Independent desktops: numeric 1-10 stay on the laptop; Extend uses named
   # ext-1..ext-10 (see omarchy-hyprland-workspace-focus).
-  seed_extend_workspaces "$headless" || true
+  # With preserveDisplayAcrossMonitors, keep an already-occupied cast desktop
+  # when switching sinks (reuse the same headless). Still seed empty heads.
+  if [[ "$(preserve_display_across_monitors)" == "1" ]] \
+       && headless_has_occupied_workspaces "$headless"; then
+    disconnect_log "connect-time skip seed (preserve display; occupied workspaces on $headless)"
+  else
+    seed_extend_workspaces "$headless" || true
+  fi
   # Capture not bound yet — fingerprint is recorded on first healthy ensure/rebind.
   echo "$headless"
 }
@@ -1357,6 +1368,36 @@ subprocess.run(
     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, timeout=3,
 )
 PY
+}
+
+# True when settings.preserveDisplayAcrossMonitors is enabled (default true).
+preserve_display_across_monitors() {
+  local settings
+  settings="$(read_settings)"
+  python3 -c 'import json,sys
+s=json.loads(sys.argv[1])
+v=s.get("preserveDisplayAcrossMonitors", True)
+print("1" if v in (True, 1, "1", "true", "yes", "on") else "0")' "$settings" 2>/dev/null || echo 1
+}
+
+# True if the named monitor has any occupied workspace (windows to preserve).
+headless_has_occupied_workspaces() {
+  local mon="${1:-}"
+  [[ -n "$mon" ]] || return 1
+  hyprctl -j workspaces 2>/dev/null | python3 -c '
+import json,sys
+name=sys.argv[1]
+try:
+    spaces=json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+for ws in spaces:
+    if str(ws.get("monitor") or "") != name:
+        continue
+    if int(ws.get("windows") or 0) > 0:
+        raise SystemExit(0)
+raise SystemExit(1)
+' "$mon" 2>/dev/null
 }
 
 # Park named ext-1 on the cast output and move numeric workspaces back to eDP
@@ -1567,8 +1608,17 @@ raise SystemExit(0 if any(str(m.get("name") or "")==name for m in ms) else 1)
 }
 
 cleanup_extend_monitor() {
-  # Stop path: detach capture + migrate windows only. Leave the Hyprland
+  # Stop path: detach capture + optionally migrate windows. Leave the Hyprland
   # virtual output untouched (no park/disable/remove).
+  # Args: [--keep-workspaces] — skip migrate (preserve cast desktop across
+  # peer/mode reconnects when preserveDisplayAcrossMonitors is on).
+  local keep_workspaces=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --keep-workspaces) keep_workspaces=1; shift ;;
+      *) shift ;;
+    esac
+  done
   local lock="$STATE_DIR/cleanup.lock"
   local name="" primary=""
   mkdir -p "$STATE_DIR"
@@ -1578,7 +1628,7 @@ cleanup_extend_monitor() {
       name="$(cat "$HEADLESS_FILE" 2>/dev/null || true)"
     fi
     primary="$(primary_monitor_name)"
-    disconnect_log "cleanup begin name=${name:-none} primary=${primary:-none}"
+    disconnect_log "cleanup begin name=${name:-none} primary=${primary:-none} keep_workspaces=$keep_workspaces"
 
     pause_extend_capture >/dev/null || true
     wait_capture_senders_gone 50 || true
@@ -1588,7 +1638,11 @@ cleanup_extend_monitor() {
     if [[ -n "$name" ]]; then
       if [[ -n "$primary" ]]; then
         hypr_try dispatch "hl.dsp.focus({ monitor = \"${primary}\" })"
-        migrate_workspaces_from_monitor "$name" "$primary"
+        if [[ "$keep_workspaces" == "1" ]]; then
+          disconnect_log "cleanup skip migrate (keep workspaces on $name)"
+        else
+          migrate_workspaces_from_monitor "$name" "$primary"
+        fi
         hypr_try dispatch "hl.dsp.focus({ monitor = \"${primary}\" })"
       fi
       restore_software_cursors
@@ -1921,6 +1975,36 @@ cmd_set_mode() {
   fi
   write_settings "mode=$mode" >/dev/null
   emit "{\"ok\":true,\"mode\":\"$mode\"}"
+}
+
+cmd_set_preserve_display() {
+  local raw="${1:-}"
+  local on=1
+  raw="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
+  case "$raw" in
+    1|true|yes|on) on=1 ;;
+    0|false|no|off) on=0 ;;
+    *)
+      emit '{"ok":false,"error":"preserve-display must be true or false"}'
+      return 1
+      ;;
+  esac
+  # Persist as a real JSON boolean (write_settings stores strings).
+  python3 - "$SETTINGS_FILE" "$on" <<'PY'
+import json, sys
+path, on = sys.argv[1], sys.argv[2] == "1"
+try:
+    data = json.load(open(path))
+except Exception:
+    data = {}
+if not isinstance(data, dict):
+    data = {}
+data["preserveDisplayAcrossMonitors"] = on
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, separators=(",", ":"))
+    f.write("\n")
+print(json.dumps({"ok": True, "preserveDisplayAcrossMonitors": on}, separators=(",", ":")))
+PY
 }
 
 # Merge sink-advertised stream modes + preferred/current into a status object.
@@ -2324,7 +2408,16 @@ pos = settings.get("extendPosition") or data.get("extendPosition") or "right"
 if pos not in ("right", "left", "above", "below"):
     pos = "right"
 data["extendPosition"] = pos
-data["onlyExpandFocusedDisplay"] = bool(settings.get("onlyExpandFocusedDisplay", False))
+def _as_bool(v, default=False):
+    if v is None:
+        return default
+    if isinstance(v, bool):
+        return v
+    return str(v).strip().lower() in ("1", "true", "yes", "on")
+data["onlyExpandFocusedDisplay"] = _as_bool(settings.get("onlyExpandFocusedDisplay"), False)
+data["preserveDisplayAcrossMonitors"] = _as_bool(
+    settings.get("preserveDisplayAcrossMonitors"), True
+)
 data.setdefault("peer", settings.get("lastPeerMac") or "")
 data.setdefault("peerName", settings.get("lastPeerName") or "")
 print(json.dumps(data, separators=(",", ":")))
@@ -2355,7 +2448,16 @@ pos = settings.get("extendPosition") or data.get("extendPosition") or "right"
 if pos not in ("right", "left", "above", "below"):
     pos = "right"
 data["extendPosition"] = pos
-data["onlyExpandFocusedDisplay"] = bool(settings.get("onlyExpandFocusedDisplay", False))
+def _as_bool(v, default=False):
+    if v is None:
+        return default
+    if isinstance(v, bool):
+        return v
+    return str(v).strip().lower() in ("1", "true", "yes", "on")
+data["onlyExpandFocusedDisplay"] = _as_bool(settings.get("onlyExpandFocusedDisplay"), False)
+data["preserveDisplayAcrossMonitors"] = _as_bool(
+    settings.get("preserveDisplayAcrossMonitors"), True
+)
 data.setdefault("peer", settings.get("lastPeerMac") or "")
 data.setdefault("peerName", settings.get("lastPeerName") or "")
 # Idle: drop resolved path so UI shows preference only.
@@ -2782,7 +2884,14 @@ teardown_miracast_audio_sink() {
 }
 
 cmd_stop() {
-  disconnect_log "cmd_stop begin"
+  local keep_workspaces=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --keep-workspaces) keep_workspaces=1; shift ;;
+      *) shift ;;
+    esac
+  done
+  disconnect_log "cmd_stop begin keep_workspaces=$keep_workspaces"
   # Detach screencopy first — killing FluxCast while hypr removes the output
   # mid-capture is the eDP hard-freeze path.
   pause_extend_capture >/dev/null || true
@@ -2873,7 +2982,11 @@ PY
   # Longer settle: DRM/screencopy release after a long cast can take >200ms.
   sleep 1.0
   teardown_miracast_audio_sink || true
-  cleanup_extend_monitor || true
+  if [[ "$keep_workspaces" == "1" ]]; then
+    cleanup_extend_monitor --keep-workspaces || true
+  else
+    cleanup_extend_monitor || true
+  fi
   clear_capture_paused
   local settings peer_name mode
   settings="$(read_settings)"
@@ -2939,7 +3052,13 @@ if m:
   fi
   write_settings "mode=$mode" "lastPeerMac=$peer" "lastPeerName=$peer_name" >/dev/null
 
-  cmd_stop >/dev/null
+  # Peer/mode reconnect: keep the Extend desktop when preserve is on.
+  # Explicit UI Stop does not pass --keep-workspaces (windows return to eDP).
+  if [[ "$(preserve_display_across_monitors)" == "1" ]]; then
+    cmd_stop --keep-workspaces >/dev/null
+  else
+    cmd_stop >/dev/null
+  fi
 
   if [[ "$mode" == "extend" ]]; then
     local headless
@@ -3254,9 +3373,10 @@ Commands:
         [--fluxcast-root DIR] [--go-intent N] [--fps N] [--bitrate RATE]
         [--output-res WxH] [--with-audio|--no-audio] [--no-firewall]
   status
-  stop
+  stop [--keep-workspaces]   # keep-workspaces: leave Extend desktop on headless
   get-mode
   set-mode mirror|extend
+  set-preserve-display true|false   # keep same Extend desktop when switching sinks
   get-stream-mode
   set-stream-mode <id>   # e.g. 1280x720p30 / 1920x1080p60
   set-capture-encode dmabuf|vaapi|cpu   # RENDER METHOD preference
@@ -3391,6 +3511,7 @@ main() {
     stop) cmd_stop "$@" ;;
     get-mode|get_mode) cmd_get_mode "$@" ;;
     set-mode|set_mode) cmd_set_mode "$@" ;;
+    set-preserve-display|set_preserve_display) cmd_set_preserve_display "$@" ;;
     get-stream-mode|get_stream_mode) cmd_get_stream_mode "$@" ;;
     set-stream-mode|set_stream_mode) cmd_set_stream_mode "$@" ;;
     set-capture-encode|set_capture_encode) cmd_set_capture_encode "$@" ;;

@@ -20,6 +20,7 @@ why upstream merges matter): see **[BUILD.md](BUILD.md)**.
 - Safe scale / position changes (pause capture → move → restart)
 - Safer disconnect teardown (workspace migrate, cursor restore, eDP re-assert)
 - Optional VAAPI/QSV encode with OS power-plan throttling (FluxCast `power_plan_N`)
+- **Preserve display across monitors** (default on): switching Miracast sinks keeps the same Extend desktop; off seeds a fresh one
 
 ## Install
 

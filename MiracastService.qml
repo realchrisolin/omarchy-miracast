@@ -17,6 +17,8 @@ Item {
   property string extendPosition: "right"  // right | left | above | below
   // Display panel expansion: false = expand all outputs; true = focused only.
   property bool onlyExpandFocusedDisplay: false
+  // Keep the same Extend headless + workspaces when switching Miracast sinks.
+  property bool preserveDisplayAcrossMonitors: true
   property string streamMode: "1280x720p30"  // e.g. 1920x1080p30
   property var streamModes: []
   // RENDER ENGINE preference: dmabuf | vaapi | cpu
@@ -52,7 +54,7 @@ Item {
   readonly property string ctl: pluginDir !== "" ? (pluginDir + "/bin/miracast-ctl") : "miracast-ctl"
   // Background status polls must NOT count as busy — they run every 2s while
   // streaming and would grey out Miracast action buttons via enabled:!busy.
-  readonly property bool busy: doctorProcess.running || scanProcess.running || startProcess.running || stopProcess.running || firewallProcess.running || modeProcess.running || positionProcess.running || streamModeProcess.running || captureEncodeProcess.running
+  readonly property bool busy: doctorProcess.running || scanProcess.running || startProcess.running || stopProcess.running || firewallProcess.running || modeProcess.running || positionProcess.running || streamModeProcess.running || captureEncodeProcess.running || preserveDisplayProcess.running
   readonly property bool active: Model.miracastIsActive(phase)
   readonly property bool connecting: phase === "connecting" || phase === "dhcp" || phase === "rtsp" || phase === "scanning"
   readonly property bool streaming: phase === "streaming"
@@ -139,8 +141,20 @@ Item {
     if (wasActive && peer !== "") {
       actionStatus = "Switching to " + (value === "extend" ? "Extend" : "Mirror") + "…"
       _pendingRestartPeer = peer
-      stopCast()
+      stopCast(preserveDisplayAcrossMonitors)
     }
+  }
+
+  function setPreserveDisplayAcrossMonitors(enabled) {
+    var on = !!enabled
+    if (on === preserveDisplayAcrossMonitors && !preserveDisplayProcess.running) return
+    preserveDisplayAcrossMonitors = on
+    if (preserveDisplayProcess.running) return
+    preserveDisplayProcess.command = [ctl, "set-preserve-display", on ? "true" : "false"]
+    preserveDisplayProcess.running = true
+    actionStatus = on
+      ? "Preserve display across monitors: on"
+      : "Preserve display across monitors: off"
   }
 
   function positionLabelFor(value) {
@@ -281,13 +295,18 @@ Item {
     startProcess.running = true
   }
 
-  function stopCast() {
+  function stopCast(keepWorkspaces) {
     if (stopProcess.running) return
     _pausedForLock = false
     _sessionLocked = false
     resumeLockTimer.stop()
     actionStatus = "Stopping…"
-    stopProcess.command = [ctl, "stop"]
+    // keepWorkspaces: leave Extend desktop on the headless (peer/mode reconnect
+    // with preserveDisplayAcrossMonitors). Explicit Stop omits the flag.
+    if (keepWorkspaces)
+      stopProcess.command = [ctl, "stop", "--keep-workspaces"]
+    else
+      stopProcess.command = [ctl, "stop"]
     stopProcess.running = true
   }
 
@@ -533,6 +552,8 @@ Item {
             root.extendPosition = String(data.extendPosition)
           if (data.onlyExpandFocusedDisplay !== undefined)
             root.onlyExpandFocusedDisplay = data.onlyExpandFocusedDisplay === true
+          if (data.preserveDisplayAcrossMonitors !== undefined)
+            root.preserveDisplayAcrossMonitors = data.preserveDisplayAcrossMonitors === true
           if (data.streamMode) root.streamMode = String(data.streamMode)
           if (data.streamModes && data.streamModes.length)
             root.streamModes = data.streamModes
@@ -669,7 +690,7 @@ Item {
           }
           if (data.streamMode) root.streamMode = String(data.streamMode)
           if (root._pendingRestartAfterStreamMode !== "") {
-            root.stopCast()
+            root.stopCast(root.preserveDisplayAcrossMonitors)
           } else {
             root.actionStatus = "Stream mode saved (" + root.streamModeLabel(root.streamMode) + ")"
           }
@@ -706,6 +727,26 @@ Item {
   }
 
   Process {
+    id: preserveDisplayProcess
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        try {
+          var data = JSON.parse(String(text || "{}"))
+          if (data.ok === false) {
+            root.lastError = String(data.error || "Failed to set preserve display")
+            return
+          }
+          if (data.preserveDisplayAcrossMonitors !== undefined)
+            root.preserveDisplayAcrossMonitors = data.preserveDisplayAcrossMonitors === true
+        } catch (e) {
+        }
+        root.refresh()
+      }
+    }
+  }
+
+  Process {
     id: positionProcess
     stdout: StdioCollector {
       waitForEnd: true
@@ -730,7 +771,7 @@ Item {
             }
             root._pendingRestartPeer = root.lastPeerMac
             root.actionStatus = "Reconnecting after moving display (" + root.extendPositionLabel + ")…"
-            root.stopCast()
+            root.stopCast(root.preserveDisplayAcrossMonitors)
             return
           }
           root._restartAfterPosition = false
