@@ -143,14 +143,7 @@ def _set_p2p_go_intent(iface: Optional[str], value: int,
     return None
 
 def _reg_class_for_channel(channel: int) -> int:
-    """Map a channel number to a global operating class for P2P OperRegClass.
-
-    81  = 2.4GHz channels 1-13 (WFA / IEEE Annex E)
-    115 = 5GHz UNII-1 36-48
-    118 = 5GHz UNII-2A 52-64
-    121 = 5GHz UNII-2C 100-144
-    125 = 5GHz UNII-3 149-165
-    """
+    """IEEE global operating class for P2P OperRegClass (81/115/118/121/125)."""
     if 1 <= channel <= 13:
         return 81
     if channel in (36, 40, 44, 48):
@@ -169,14 +162,22 @@ def _set_p2p_oper_channel(iface: Optional[str], channel: int,
                           privileged: bool = True) -> bool:
     """Force the operating channel wpa_supplicant picks when we end up as GO.
 
-    Historically this pinned 2.4GHz (reg class 81) for sinks that never
-    associate on 5GHz. It now also accepts non-DFS 5GHz channels so a
-    caller can aim the GO at a quieter UNII-1 / UNII-3 channel. Single-
-    radio SCC may still keep the group on the STA channel - callers should
-    treat this as best-effort and verify the live freq after association.
+    Some WFD sinks only support Wi-Fi Direct on 2.4GHz. Left to its own
+    devices, a driver may still form the group on 5GHz, and a sink like
+    that will simply never associate - GO Negotiation completes normally,
+    but the sink never shows up at the 802.11 level at all. Forcing a
+    2.4GHz channel here works around that.
 
-    Reuses the same P2PDeviceConfig struct as GOIntent; wpa_supplicant
-    merges whichever keys are present.
+    reg_class 81 is the standard worldwide "2.4GHz, 20MHz spacing, channels
+    1-13" global operating class (WFA/IEEE 802.11 Annex E) - the same value
+    Android's own Wi-Fi P2P framework uses. This reuses the same
+    P2PDeviceConfig struct as GOIntent above; wpa_supplicant merges
+    whichever keys are present rather than requiring the whole struct on
+    every call.
+
+    If reg_class is None, it is derived from channel (2.4 or non-DFS 5GHz).
+    privileged defaults True like other P2PDeviceConfig setters; pass False
+    when the caller already has D-Bus access.
     """
     if reg_class is None:
         try:

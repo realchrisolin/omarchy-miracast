@@ -34,25 +34,14 @@ WFD_P2P_SUBNET = "192.168.49"
 _go_dnsmasq_lease_file: Optional[str] = None
 
 
-def _elevate_prefix() -> list[str]:
-    """Always use sudo -n. Session NOPASSWD / keep-alive must cover elevation.
-    Never pkexec — it pops a separate polkit dialog.
-    """
-    return ["sudo", "-n"]
-
-
 def _sudo_run(args: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
-    """Like subprocess.run, but elevated. This whole backend runs as the
+    """Like subprocess.run, but under sudo. This whole backend runs as the
     calling user (main.py is never invoked with sudo itself) - binding a DHCP
     client/server to a raw interface and touching routes both need root.
+    sudo's password prompt goes straight to the controlling terminal, so this
+    stays interactive if the session's cached sudo timestamp has expired.
     """
-    prefix = _elevate_prefix()
-    return subprocess.run(
-        [*prefix, *args],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    return subprocess.run(["sudo", *args], capture_output=True, text=True, timeout=timeout)
 
 
 def get_p2p_role(iface: str) -> str:
@@ -122,8 +111,11 @@ def _run_as_go(iface: str, peer_mac: str, physical_iface: Optional[str] = None,
     print(f"[FluxCast WFD] We are P2P Group Owner; assigning ourselves {gateway_ip}/24 "
           "and serving DHCP to the projector...")
 
-    # Group iface should already be NM-unmanaged (see wpas.py) before we
-    # readdress. Flush/addr only after the sink has associated.
+    # Unlike the client-role path (see configure_ip's comment on why it
+    # skips this), marking the interface unmanaged here protects against
+    # NetworkManager auto-detecting the new P2P interface and activating its
+    # own "shared" mode (self-assign + its own dnsmasq) on it concurrently,
+    # which would conflict with the dnsmasq instance we're about to start.
     mark_unmanaged(iface)
     _sudo_run(["ip", "addr", "flush", "dev", iface], timeout=5.0)
     add = _sudo_run(["ip", "addr", "add", f"{gateway_ip}/24", "dev", iface], timeout=5.0)
@@ -165,7 +157,7 @@ def _run_as_go(iface: str, peer_mac: str, physical_iface: Optional[str] = None,
     # Note that listing an interface explicitly disables --bind-dynamic's
     # usual auto-detection for any *other* interface, so once physical_iface
     # is involved at all, both interfaces need to be named explicitly.
-    dnsmasq_cmd = [*_elevate_prefix(), "dnsmasq", "--no-daemon", "--bind-dynamic",
+    dnsmasq_cmd = ["sudo", "dnsmasq", "--no-daemon", "--bind-dynamic",
                    f"--interface={iface}"]
     if physical_iface:
         dnsmasq_cmd.append(f"--interface={physical_iface}")

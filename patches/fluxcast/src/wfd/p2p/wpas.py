@@ -143,10 +143,7 @@ def _channel_to_freq_mhz(channel: int) -> int:
 def _wpas_connect(iface_path: str, peer_path: str, go_intent: int = 0,
                    wps_method: str = "pbc",
                    frequency_mhz: Optional[int] = None) -> None:
-    # 'frequency' is a hard force (unlike soft OperChannel preference). When
-    # the driver advertises MCC (#channels>=2) and an unused channel slot
-    # exists, wpa_supplicant will try this freq instead of the STA shared
-    # channel. See wpas_p2p_setup_freqs / wpas_p2p_init_go_params.
+    # Optional Connect 'frequency' (MHz) hard-forces GO channel when MCC allows.
     freq_part = ""
     if frequency_mhz is not None:
         freq_part = f"'frequency': <int32 {int(frequency_mhz)}>, "
@@ -183,14 +180,7 @@ def _list_wpas_interfaces() -> set[str]:
 
 def _wait_for_go_peer_associated(data_iface: str, peer_mac: str,
                                   timeout: float = 35.0) -> None:
-    """Block until wpa reports AP-STA-CONNECTED for the sink.
-
-    `_wait_for_group_interface` returns as soon as the virtual iface exists,
-    often during early EAP/WPS. `iw station dump` can show a transient
-    station then too — flushing/readdressing in that window tears the GO
-    down (ENABLED→DISABLED / GROUP-FORMATION-FAILURE). Wait for the real
-    AP-STA-CONNECTED event instead.
-    """
+    """Wait for AP-STA-CONNECTED before IP setup (flush during WPS kills the GO)."""
     print(f"[FluxCast WFD] Waiting for AP-STA-CONNECTED ({peer_mac} on {data_iface})...")
     deadline = time.monotonic() + timeout
     peer = peer_mac.lower().replace("-", ":")
@@ -245,13 +235,11 @@ def _wait_for_group_interface(before: set[str], timeout: float = 40.0) -> str:
         for path in new_paths:
             ifname = _wpas_get_string(path, WPA_IFACE, "Ifname", privileged=True)
             if ifname:
-                # Claim the GO iface from NM immediately (no addr flush yet).
-                # Waiting until after WPS lets NM ignore/tear down foreign groups.
+                # Mark unmanaged before WPS completes so NM does not take the iface.
                 try:
                     mark_unmanaged(ifname)
-                    print(f"[FluxCast WFD] Claimed {ifname} as NM-unmanaged before WPS completes.")
                 except Exception as exc:
-                    print(f"[FluxCast WFD] Warning: could not claim {ifname}: {exc}")
+                    print(f"[FluxCast WFD] Warning: could not mark {ifname} unmanaged: {exc}")
                 return ifname
         time.sleep(0.5)
     raise WFDNotReady(
@@ -291,21 +279,15 @@ def connect_via_wpa_supplicant(interface: Optional[str], peer_mac: str,
     previous_intent = None
     p2p_dev_iface = f"p2p-dev-{physical_iface}" if physical_iface else None
     try:
-        # Do NOT unmanage p2p-dev-* here. On this host it leaves
-        # p2p-dev stuck "unavailable" (HWADDR unknown) until NetworkManager
-        # restarts — which risks Wi-Fi. Claim only the GO data iface below.
-        # Never touch the STA (home Wi-Fi) device.
-
         peer_path = _wait_for_peer(iface_path, peer_mac)
 
         previous_intent = _set_p2p_go_intent(interface, go_intent, privileged=True)
         interfaces_before = _list_wpas_interfaces()
+        print(f"[FluxCast WFD] Connecting to {peer_mac} directly via wpa_supplicant "
+              "(NetworkManager not involved in this step)...")
         if force_freq is not None:
-            print(f"[FluxCast WFD] Connecting to {peer_mac} via wpa_supplicant "
-                  f"with hard frequency={force_freq} MHz (channel {p2p_channel})...")
-        else:
-            print(f"[FluxCast WFD] Connecting to {peer_mac} directly via wpa_supplicant "
-                  "(NetworkManager not involved in this step)...")
+            print(f"[FluxCast WFD] Connect frequency={force_freq} MHz "
+                  f"(channel {p2p_channel})")
         _wpas_connect(
             iface_path, peer_path, go_intent=go_intent, frequency_mhz=force_freq
         )
@@ -325,8 +307,6 @@ def connect_via_wpa_supplicant(interface: Optional[str], peer_mac: str,
                   "picked the channel instead. Pair this with "
                   "--wfd-go-intent 15 if you need the channel forced.")
 
-        # Do not touch addressing until AP-STA-CONNECTED. Early iw station
-        # entries during EAP/WPS are not enough — flushing then kills the GO.
         if role == "P2P-GO":
             _wait_for_go_peer_associated(data_iface, peer_mac)
         mark_unmanaged(data_iface)
@@ -343,7 +323,7 @@ def connect_via_wpa_supplicant(interface: Optional[str], peer_mac: str,
 
         print(f"[FluxCast WFD] {data_iface} is up and IP-configured. "
               "Handing off to the RTSP server.")
-        p2p_dev_iface = None  # keep unmanaged for the live session; release_* remanages
+        p2p_dev_iface = None
         return data_iface
     except Exception:
         if p2p_dev_iface:
@@ -378,13 +358,7 @@ def release_wpa_supplicant_connection(interface: Optional[str], data_iface: str)
         except Exception as exc:
             print(f"[FluxCast WFD] Warning: GroupRemove failed: {exc}")
 
-    physical = None
     if interface:
-        physical = interface
-    elif data_iface.startswith("p2p-") and "-" in data_iface:
-        # p2p-wlp0s20-N → recover parent name best-effort from iw/nm
-        physical = "wlp0s20f3"
-    if physical:
-        mark_managed(f"p2p-dev-{physical}")
+        mark_managed(f"p2p-dev-{interface}")
     if data_iface:
         mark_managed(data_iface)

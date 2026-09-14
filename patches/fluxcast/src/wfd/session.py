@@ -150,16 +150,15 @@ def start_experimental_backend(args) -> None:
                 p2p_channel=getattr(args, "wfd_p2p_channel", None),
             )
         else:
-            # Omarchy / miracast-ctl defaults go-intent 15 so we are GO and can
-            # pin OperChannel. Stock FluxCast still defaults to 0 (TV is GO).
+            # Lower our GO intent before negotiation so the TV becomes the group
+            # owner; most Miracast sinks only start the RTSP session in that role.
             previous_go_intent = _set_p2p_go_intent(
                 args.wfd_interface, getattr(args, "wfd_go_intent", 0)
             )
             p2p_channel = getattr(args, "wfd_p2p_channel", None)
             if p2p_channel is not None:
-                # Best-effort: NM has no wifi-p2p channel property, so set it
-                # on wpa_supplicant before AddAndActivateConnection2. Only
-                # effective when we become GO; SCC may still pin to STA.
+                # NM wifi-p2p has no channel property; set OperChannel on wpa
+                # before AddAndActivateConnection2 (only applies if we are GO).
                 _set_p2p_oper_channel(args.wfd_interface, p2p_channel)
             active_path = _connect_peer(
                 device_path,
