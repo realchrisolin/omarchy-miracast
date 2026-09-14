@@ -433,13 +433,15 @@ def collect_peers_readonly() -> list[dict[str, Any]]:
         status_path = home / "omarchy-miracast" / "status.json"
         if peers_path.is_file():
             for p in json.loads(peers_path.read_text()):
+                # Never default wfd=True — printers are plain P2P and must not
+                # appear as Miracast sinks (Wi-Fi Display IE is definitive).
                 upsert(
                     {
                         "mac": str(p.get("mac") or "").upper(),
                         "name": p.get("name") or p.get("mac"),
                         "manufacturer": p.get("manufacturer"),
                         "model": p.get("model"),
-                        "wfd": p.get("wfd", True),
+                        "wfd": bool(p.get("wfd")) if "wfd" in p else None,
                         "source": "peers.json",
                     }
                 )
@@ -451,7 +453,7 @@ def collect_peers_readonly() -> list[dict[str, Any]]:
                     {
                         "mac": mac,
                         "name": st.get("peerName") or mac,
-                        "wfd": True,
+                        "wfd": True,  # actively casting ⇒ Miracast-capable
                         "source": "active-session",
                     }
                 )
@@ -539,12 +541,30 @@ def _merge_peers(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if not mac:
                 continue
             cur = by_mac.get(mac, {})
-            by_mac[mac] = {
+            merged = {
                 **cur,
                 **{k: v for k, v in peer.items() if v not in (None, "", [])},
                 "mac": mac,
             }
+            # Live WFD IE evidence wins over stale cache.
+            if cur.get("wfd") is True and peer.get("wfd") is False and peer.get("source") in (
+                "wpa_cli",
+                "NetworkManager",
+            ):
+                merged["wfd"] = False
+            if peer.get("wfd") is True:
+                merged["wfd"] = True
+            by_mac[mac] = merged
     return list(by_mac.values())
+
+
+def _filter_miracast_sinks(peers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep peers that advertise Wi-Fi Display (Miracast) capability.
+
+    Spec: WFD IE in P2P probe/assoc (wpa: wfd_subelems; NM: WfdIEs). Plain
+    Wi-Fi Direct printers/PCs lack it (often WPS category 3 = Printer).
+    """
+    return [p for p in peers if p.get("wfd") is True]
 
 
 def scan(timeout: int = 5) -> tuple[list[dict[str, Any]], str, dict[str, Any]]:
@@ -618,9 +638,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(json.dumps({"ok": False, "peers": [], "error": str(exc)}, separators=(",", ":")))
         return 1
     if not args.all:
-        wfd = [x for x in peers if x.get("wfd")]
-        if wfd:
-            peers = wfd
+        peers = _filter_miracast_sinks(peers)
     peers.sort(key=lambda x: (0 if x.get("wfd") else 1, str(x.get("name") or "").lower()))
     for i, peer in enumerate(peers):
         peer["index"] = i

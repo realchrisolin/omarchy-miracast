@@ -2297,9 +2297,11 @@ for p in peers:
         "name": p.get("name") or p.get("mac") or "unknown",
         "manufacturer": p.get("manufacturer"),
         "model": p.get("model"),
-        "wfd": bool(p.get("wfd")),
+        "wfd": bool(p.get("wfd")) if p.get("wfd") is not None else False,
         "source": p.get("source"),
     })
+# Persist only Miracast-capable peers so printers are not sticky in cache.
+slim = [p for p in slim if p.get("wfd")]
 with open(peers_path, "w", encoding="utf-8") as f:
     json.dump(slim, f, separators=(",", ":"))
     f.write("\n")
