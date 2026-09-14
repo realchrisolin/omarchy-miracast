@@ -255,6 +255,30 @@ Artifacts: `docs/benchmarks/p2p_channel_ab.tsv`, `docs/benchmarks/p2p_channel_ab
 
 ---
 
+## Cross-device spot-check ([LG])
+
+Same host stack (custom ICC `wf-recorder`, DMA-BUF / `h264_vaapi`, quiet-channel
+MCC) on a **second Miracast sink** — display name **`[LG]`** — to show the path
+stays healthy beyond the dongle used in the primary matrix / P2P A/B.
+
+Live Extend, **1920×1080p30**, Persist display on; 6 s warmup + **18 s** CPU
+window (same one-core `/proc` method as above). Artifact:
+[`docs/benchmarks/live_session_20260914_120845.json`](docs/benchmarks/live_session_20260914_120845.json)
+(no SSIDs / MACs).
+
+| Item | [LG] spot-check | Primary matrix (dongle, 720p ICC DMA-BUF) |
+|------|-----------------|-------------------------------------------|
+| Hyprland % one core | **~5.8%** | ~15–17% (720p matrix; still ≪ distro ~80%) |
+| Capture / encode | ICC + dmabuf / h264_vaapi | ICC + dmabuf / h264_vaapi |
+| Radio | STA ch **44**, P2P ch **149** (MCC), ~15.8 Mbps TX (2 s) | P2P A/B on ch 44 vs 161 (see above) |
+| Session | Streaming stable through the sample | — |
+
+`wf-recorder` / `ffmpeg` one-core % were not recorded this run (PIDs recycled
+mid-window). The Hyprland figure and radio/GPU samples are enough to show the
+compositor stays light and the MCC link carries 1080p to a different sink.
+
+---
+
 ## Recommended defaults (from this data)
 
 | Knob | Recommendation | Why |

@@ -1,0 +1,94 @@
+{
+  "ts": "2026-09-14T12:09:19",
+  "method": {
+    "warmup_s": 6,
+    "sample_s": 18,
+    "cpu": "% of one core via /proc utime+stime"
+  },
+  "status": {
+    "phase": "streaming",
+    "peerName": "[LG]",
+    "mode": "extend",
+    "streamMode": "1920x1080p30",
+    "captureEncode": "dmabuf",
+    "capturePath": "dmabuf",
+    "encoder": "h264_vaapi",
+    "staChannel": 44,
+    "p2pChannel": 149,
+    "p2pRole": "P2P-client",
+    "radioMcc": true,
+    "preserveDisplayAcrossMonitors": true
+  },
+  "cpu": {
+    "label": "live_18s",
+    "elapsed_s": 18.001809,
+    "hyprland_pct_one_core": 5.83,
+    "wf_recorder_pct_one_core": null,
+    "ffmpeg_pct_one_core": null,
+    "fluxcast_pct_one_core": null
+  },
+  "radio": {
+    "p2p_iface_kind": "P2P-client",
+    "p2p_channel": "149 (5745 MHz), width: 80 MHz",
+    "p2p_tx_kbps": 15840.4,
+    "sta_signal_dbm": -48,
+    "p2p_signal_dbm": -51
+  },
+  "gpu": {
+    "source": "intel_gpu_top -l -s 1000 -n 8",
+    "rcs_busy_pct_approx_median": 34.57,
+    "vcs_busy_pct_approx_median": 2.55,
+    "note": "Column mapping from intel_gpu_top -l sample rows during DMA-BUF/VAAPI cast"
+  },
+  "host": {
+    "kernel": "7.2.3-arch1-3",
+    "cpu": "11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz",
+    "gpu": [
+      "00:02.0 VGA compatible controller [0300]: Intel Corporation TigerLake-LP GT2 [Iris Xe Graphics] [8086:9a49] (rev 01)"
+    ],
+    "wifi": {
+      "pci": [
+        "00:14.3 Network controller [0280]: Intel Corporation Wi-Fi 6 AX201 [8086:a0f0] (rev 20)"
+      ],
+      "iface": "wlp0s20f3",
+      "driver": "iwlwifi",
+      "sta_channel": "channel 44 (5220 MHz), width: 80 MHz, center1: 5210 MHz"
+    },
+    "monitors": [
+      {
+        "name": "eDP-1",
+        "description": "Chimei Innolux Corporation 0x14E7",
+        "make": "Chimei Innolux Corporation",
+        "model": "0x14E7",
+        "width": 1920,
+        "height": 1080,
+        "refresh_hz": 60.002,
+        "scale": 2
+      },
+      {
+        "name": "hotyeah-AABB12_P2P",
+        "description": "",
+        "make": null,
+        "model": null,
+        "width": 1920,
+        "height": 1080,
+        "refresh_hz": 30.0,
+        "scale": 1.6
+      }
+    ],
+    "compositor": "Hyprland 0.56.2 built from branch master at commit HEAD dirty ().",
+    "sink_display_name": "[LG]",
+    "omitted": [
+      "wifi_ssid",
+      "wifi_bssid",
+      "mac_addresses",
+      "ip_addresses"
+    ]
+  },
+  "notes": [
+    "Live spot-check on a second Miracast sink (display name [LG]).",
+    "Same host stack as the primary matrix: ICC wf-recorder + DMA-BUF/h264_vaapi.",
+    "wf-recorder/ffmpeg one-core % unavailable (PIDs recycled mid-window); Hyprland sample is valid.",
+    "No Wi-Fi SSIDs/BSSIDs or MAC addresses."
+  ]
+}

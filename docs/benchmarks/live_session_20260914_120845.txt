@@ -1,0 +1,10 @@
+Live Miracast spot-check @ 2026-09-14T12:09:19
+Sink display name: [LG]
+Mode: extend  stream=1920x1080p30
+Capture: dmabuf / h264_vaapi
+Persist display: True
+Radio: STA ch 44, P2P ch 149 (MCC=True, role=P2P-client)
+P2P TX (2s): 15840.4 kbps
+CPU % one-core (18s): Hyprland=5.83  (wf-recorder/ffmpeg n/a this run)
+GPU approx median: RCS=34.57%  VCS=2.55%
+Artifact: live_session_20260914_120845.json
