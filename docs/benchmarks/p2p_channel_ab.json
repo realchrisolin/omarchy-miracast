@@ -1,0 +1,84 @@
+{
+  "ok": true,
+  "ts": "2026-09-14T02:57:14.611870+00:00",
+  "mode": "extend",
+  "sample_s": 20,
+  "settle_s": 6,
+  "notes": "SCC = MIRACAST_SKIP_P2P_CSA=1; MCC = quiet-channel CSA after PLAY. TX from /sys/class/net/<go>/statistics. equipment omits Wi-Fi SSIDs/BSSIDs and MAC addresses.",
+  "rows": [
+    {
+      "case": "scc",
+      "sta_ch": "44",
+      "go_ch": "44",
+      "tx_kbps": "6347.6",
+      "rx_kbps": "0.0",
+      "signal_dbm": "-41",
+      "tx_bitrate_mbps": "72.2",
+      "inactive_ms": "6",
+      "authorized": "yes",
+      "phase": "streaming",
+      "sample_s": "20",
+      "health_events": "7"
+    },
+    {
+      "case": "mcc",
+      "sta_ch": "44",
+      "go_ch": "161",
+      "tx_kbps": "6548.3",
+      "rx_kbps": "0.0",
+      "signal_dbm": "-52",
+      "tx_bitrate_mbps": "72.2",
+      "inactive_ms": "2",
+      "authorized": "yes",
+      "phase": "streaming",
+      "sample_s": "20",
+      "health_events": "7"
+    }
+  ],
+  "equipment": {
+    "kernel": "7.2.3-arch1-3",
+    "cpu": "11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz",
+    "gpu": [
+      "00:02.0 VGA compatible controller [0300]: Intel Corporation TigerLake-LP GT2 [Iris Xe Graphics] [8086:9a49] (rev 01)"
+    ],
+    "wifi": {
+      "pci": [
+        "00:14.3 Network controller [0280]: Intel Corporation Wi-Fi 6 AX201 [8086:a0f0] (rev 20)"
+      ],
+      "iface": "wlp0s20f3",
+      "driver": "iwlwifi",
+      "sta_channel": "channel 44 (5220 MHz), width: 80 MHz, center1: 5210 MHz"
+    },
+    "monitors": [
+      {
+        "name": "eDP-1",
+        "description": "Chimei Innolux Corporation 0x14E7",
+        "make": "Chimei Innolux Corporation",
+        "model": "0x14E7",
+        "width": 1920,
+        "height": 1080,
+        "refresh_hz": 60.002,
+        "scale": 2
+      },
+      {
+        "name": "hotyeah-AABB12_P2P",
+        "description": "",
+        "make": null,
+        "model": null,
+        "width": 1920,
+        "height": 1080,
+        "refresh_hz": 30.0,
+        "scale": 1.6
+      }
+    ],
+    "compositor": "Hyprland 0.56.2 built from branch master at commit HEAD dirty ().",
+    "sink_display_name": "hotyeah-AABB12_P2P",
+    "omitted": [
+      "wifi_ssid",
+      "wifi_bssid",
+      "mac_addresses",
+      "ip_addresses"
+    ]
+  },
+  "sink_display_name": "hotyeah-AABB12_P2P"
+}

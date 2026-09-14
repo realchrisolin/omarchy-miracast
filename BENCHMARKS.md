@@ -4,10 +4,10 @@ Live **Extend** session on Omarchy/Hyprland. These numbers motivate shipping
 an ICC-capable `wf-recorder` (and keeping DMA-BUF as the default RENDER
 ENGINE). Setup: [BUILD.md](BUILD.md).
 
-**RF / P2P channel** (quiet-channel CSA / MCC vs SCC on the STA channel) is
-orthogonal to this encode matrix — it changes airtime contention, not
-Hyprland/`ffmpeg` CPU in the tables below. See [BUILD.md](BUILD.md) § P2P
-quiet channel; no separate RF A/B numbers are checked in yet.
+**RF / P2P channel** (quiet-channel CSA / MCC vs SCC) is mostly orthogonal to
+the encode CPU matrix below — it changes airtime contention on the radio.
+Measured A/B: [docs/benchmarks/p2p_channel_ab.tsv](docs/benchmarks/p2p_channel_ab.tsv)
+(see § P2P channel A/B). Setup notes: [BUILD.md](BUILD.md) § P2P quiet channel.
 
 ## Capture binaries compared
 
@@ -223,6 +223,38 @@ spike (recovery, not a cure for scale 1.6 load).
 
 ---
 
+## P2P channel A/B (SCC vs quiet-channel CSA)
+
+Live Extend. Equipment is **probed at bench time** by
+`scripts/bench_host_info.py` (CPU/GPU/Wi‑Fi chip+driver, monitor display
+names, sink display name). **Not logged:** Wi‑Fi SSID/BSSID or MAC addresses.
+
+From the checked-in run (`docs/benchmarks/p2p_channel_ab.json`): Intel
+i7-1165G7, Iris Xe, Wi‑Fi 6 AX201/`iwlwifi`, Hyprland; STA link **ch 44 @
+80 MHz**; sink display name as advertised by the dongle.
+
+**SCC**: `MIRACAST_SKIP_P2P_CSA=1` (GO remains on 44). **MCC**: post-PLAY CSA to
+quiet off-block channel (**161**). Sample **20 s** after **6 s** settle; TX from
+`/sys/class/net/<p2p-GO>/statistics`.
+
+| Case | STA ch | GO ch | TX kbps | Signal | iw TX bitrate | Authorized |
+|------|--------|-------|---------|--------|---------------|------------|
+| **scc** | 44 | 44 | 6347.6 | −41 dBm | 72.2 Mb/s | yes |
+| **mcc** | 44 | 161 | 6548.3 | −52 dBm | 72.2 Mb/s | yes |
+
+MCC kept similar TX throughput while moving P2P off the STA’s 80 MHz block
+(signal a bit weaker on 161, as expected). Home Wi‑Fi default route stayed up.
+
+```bash
+./scripts/bench_host_info.py                   # equipment JSON only
+./scripts/bench_p2p_channel.sh                 # SCC vs MCC + equipment → docs/benchmarks/
+./scripts/test_p2p_channel_integration.sh      # assert GO ch != STA ch after PLAY
+```
+
+Artifacts: `docs/benchmarks/p2p_channel_ab.tsv`, `docs/benchmarks/p2p_channel_ab.json`.
+
+---
+
 ## Recommended defaults (from this data)
 
 | Knob | Recommendation | Why |
@@ -250,13 +282,17 @@ the patched build explicitly — see [BUILD.md](BUILD.md) and [README.md](README
 ## Reproducing
 
 ```bash
-# Script used for this run (adjust paths):
+# Encode matrix (historical run):
 bash ~/.grok/long-running-background-tasks/miracast_encode_matrix_bench.sh
 # Outputs: /tmp/wf-recorder-icc-ab/encode-matrix/results.tsv
+
+# P2P channel A/B (SCC vs CSA):
+./scripts/bench_p2p_channel.sh
+# Outputs: docs/benchmarks/p2p_channel_ab.tsv / .json
 ```
 
-Reconnect / settings restore is built into the script (returns to saved
-`wfRecorderBin` + `captureEncode`).
+Reconnect / settings restore is built into the encode script (returns to saved
+`wfRecorderBin` + `captureEncode`). The P2P bench leaves the session on MCC.
 
 ---
 

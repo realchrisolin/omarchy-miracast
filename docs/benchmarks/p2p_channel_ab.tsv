@@ -1,0 +1,3 @@
+case	sta_ch	go_ch	tx_kbps	rx_kbps	signal_dbm	tx_bitrate_mbps	inactive_ms	authorized	phase	sample_s	health_events
+scc	44	44	6347.6	0.0	-41	72.2	6	yes	streaming	20	7
+mcc	44	161	6548.3	0.0	-52	72.2	2	yes	streaming	20	7

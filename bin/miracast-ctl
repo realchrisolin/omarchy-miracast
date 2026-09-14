@@ -215,7 +215,7 @@ p2p_channel_to_freq() {
 
 # After NM forms the group on the STA channel (SCC), CSA the GO onto a quiet
 # channel. AX201/iwlwifi already supports this MCC bind; soft OperChannel does
-# not. Never touches HomeLab / p2p-dev managed state.
+# not. Never touches the STA device or p2p-dev managed state.
 apply_p2p_quiet_csa() {
   local want_ch="$1"
   local freq go cur_ch
@@ -3177,9 +3177,13 @@ except Exception: print("")' "$STATUS_FILE" 2>/dev/null || true)"
         write_status "streaming" "$action_word to $label" "peer=$peer" "peerName=$peer_name" "mode=$mode" "monitor=$monitor" "pid=$pid" "running=true" >/dev/null
         saw_play=1
         missing_link=0
-        # Move GO off HomeLab's channel once the sink is fully up (MCC).
-        if [[ "$p2p_channel" =~ ^[0-9]+$ ]]; then
+        # Move GO off the STA channel once the sink is fully up (MCC).
+        # Set MIRACAST_SKIP_P2P_CSA=1 for SCC A/B benchmarks.
+        if [[ "$p2p_channel" =~ ^[0-9]+$ ]] \
+          && ! [[ "${MIRACAST_SKIP_P2P_CSA:-}" =~ ^(1|true|yes)$ ]]; then
           apply_p2p_quiet_csa "$p2p_channel" || true
+        elif [[ "${MIRACAST_SKIP_P2P_CSA:-}" =~ ^(1|true|yes)$ ]]; then
+          echo "[miracast-ctl] CSA skipped (MIRACAST_SKIP_P2P_CSA)" >>"$LOG_DIR/cast.log"
         fi
       elif [[ "$saw_play" -eq 0 ]]; then
         if rg -q "rtsp_connected" "$LAT_FILE" 2>/dev/null; then

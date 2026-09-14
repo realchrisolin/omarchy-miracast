@@ -187,6 +187,8 @@ override per sink in the Display panel (`sinkScales`).
 miracast-ctl set-capture-encode dmabuf|vaapi|cpu
 miracast-ctl pick-channel          # quiet 5 GHz P2P target (else quietest)
 miracast-ctl pick-channel --json
+./scripts/test_p2p_channel_integration.sh   # assert GO ch != STA ch after PLAY
+./scripts/bench_p2p_channel.sh              # SCC vs MCC TX A/B
 ```
 
 On connect, `miracast-ctl` associates via NetworkManager (same channel as

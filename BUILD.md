@@ -164,6 +164,8 @@ is overridden to the STA channel (SCC). The working approach:
 ```bash
 ./scripts/pick-p2p-channel.py --json --band 5
 ./scripts/test_pick_p2p_channel.py
+./scripts/test_p2p_channel_integration.sh   # reconnect + assert GO ch != STA ch
+./scripts/bench_p2p_channel.sh              # SCC vs MCC TX A/B → docs/benchmarks/
 miracast-ctl pick-channel
 # Live check while streaming:
 iw dev   # STA channel vs P2P-GO channel
