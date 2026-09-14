@@ -198,9 +198,12 @@ def _from_mode_state(mac: Optional[str]) -> dict[str, Any]:
     data = _load_json(_state_dir() / "sink-modes.json")
     if not data:
         return {}
-    if mac and normalize_mac(str(data.get("peer") or "")) not in (None, mac):
-        # Different peer than requested — still useful as "last negotiated"
-        pass
+    stored = normalize_mac(str(data.get("peer") or ""))
+    # Only use RTSP/mode-state when it matches the requested peer (or no MAC asked).
+    if mac and stored and stored != mac:
+        return {}
+    if mac and not stored:
+        return {}
     return {
         "device_name": data.get("peerName"),
         "cea_mask": data.get("ceaMask"),
@@ -221,20 +224,34 @@ def _from_omarchy(mac: Optional[str]) -> dict[str, Any]:
             peers = json.loads(peers_path.read_text())
         except Exception:
             peers = []
-    name = status.get("peerName") or settings.get("lastPeerName")
-    peer_mac = normalize_mac(status.get("peer") or settings.get("lastPeerMac"))
+    status_mac = normalize_mac(status.get("peer") or settings.get("lastPeerMac"))
+    name = None
+    peer_mac = mac or status_mac
+    # Prefer peers.json name for the requested MAC; do not mix in another peer's status.
     if mac and peers:
         for p in peers:
             if normalize_mac(str(p.get("mac") or "")) == mac:
                 name = p.get("name") or name
+                peer_mac = mac
                 break
+    if not mac or status_mac == mac:
+        name = name or status.get("peerName") or settings.get("lastPeerName")
+        peer_mac = status_mac or peer_mac
+        return {
+            "device_name": name,
+            "peer_mac": peer_mac,
+            "stream_mode": status.get("streamMode"),
+            "capture_path": status.get("capturePath"),
+            "encoder": status.get("encoder"),
+            "p2p_role": status.get("p2pRole"),
+        }
     return {
         "device_name": name,
-        "peer_mac": peer_mac or mac,
-        "stream_mode": status.get("streamMode"),
-        "capture_path": status.get("capturePath"),
-        "encoder": status.get("encoder"),
-        "p2p_role": status.get("p2pRole"),
+        "peer_mac": peer_mac,
+        "stream_mode": None,
+        "capture_path": None,
+        "encoder": None,
+        "p2p_role": None,
     }
 
 
