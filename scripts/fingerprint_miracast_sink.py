@@ -339,15 +339,51 @@ def fingerprint_sink(mac: Optional[str] = None, *, use_wpa: bool = True) -> dict
     }
 
 
+# Chip-vendor strings that are usually the Wi-Fi SoC OEM, not the retail brand.
+_CHIP_OEMS = frozenset(
+    {
+        "realtek",
+        "ralink",
+        "mediatek",
+        "mtk",
+        "broadcom",
+        "qualcomm",
+        "atheros",
+        "intel",
+        "marvell",
+        "cypress",
+        "espressif",
+    }
+)
+
+
 def public_identity(fp: dict[str, Any]) -> dict[str, Any]:
     """Crowdsource-safe subset (no MAC / raw dumps)."""
     ident = fp.get("identity") or {}
     caps = fp.get("capabilities") or {}
+    parsed = (fp.get("raw") or {}).get("device_name_parsed") or {}
+    wps_mfr = ident.get("manufacturer_normalized") or ident.get("manufacturer")
+    retail = parsed.get("bracket_brand") or parsed.get("name_prefix")
+    # Prefer retail P2P name brand when WPS manufacturer is a chip OEM (e.g. Realtek).
+    if wps_mfr and str(wps_mfr).lower() in _CHIP_OEMS and retail:
+        manufacturer = retail
+        chipset = f"{wps_mfr} {ident.get('model_name') or ''}".strip()
+    else:
+        manufacturer = wps_mfr or retail
+        chipset = None
+        if wps_mfr and str(wps_mfr).lower() in _CHIP_OEMS:
+            chipset = f"{wps_mfr} {ident.get('model_name') or ''}".strip()
+    model_hint = (
+        ident.get("model_code")
+        or (None if chipset else (ident.get("model_hint") or ident.get("model_name")))
+        or parsed.get("product_line")
+    )
     return {
-        "manufacturer": ident.get("manufacturer_normalized") or ident.get("manufacturer"),
-        "model_hint": ident.get("model_hint") or ident.get("model_code") or ident.get("model_name"),
+        "manufacturer": manufacturer,
+        "model_hint": model_hint,
         "model_name": ident.get("model_name"),
         "model_code": ident.get("model_code"),
+        "chipset": chipset,
         "device_name": ident.get("device_name"),
         "product_line": ident.get("product_line"),
         "device_category": (ident.get("primary_device_type") or {}).get("category"),
