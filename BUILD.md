@@ -342,6 +342,11 @@ workspaces over, and **leaves the empty old head in place**. Those leftovers
 appear on `miracast-ctl status` as `orphanExtendHeads`. They are **never**
 `hyprctl output remove`’d (eDP freeze); they clear when Hyprland restarts.
 
+On stop / link-drop, the cast head is **parked off-layout** (`-12000x0`) and
+the seat is forced back to eDP (focus + cursor warp). That prevents a dead
+Miracast head beside the laptop from trapping pointer/keyboard until reconnect
+re-places the head via `ensure_extend_monitor`.
+
 ---
 
 ## Hard constraints (do not “simplify” these away)

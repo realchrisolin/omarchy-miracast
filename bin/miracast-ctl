@@ -29,6 +29,9 @@ LEGACY_SHARED_EXTEND_NAME="Miracast"
 # Names of Extend heads we have created/reused (for orphan empty-head listing).
 EXTEND_HEADS_SEEN_FILE="$STATE_DIR/extend-heads.seen"
 CURSOR_PREV_FILE="$STATE_DIR/cursor-no-hw.prev"
+# Off-layout parking while cast is down (keeps head + Persist workspaces, but
+# out of the way of eDP so focus/cursor cannot strand beside the laptop).
+PARKED_EXTEND_POS="-12000x0"
 MODE_STATE_FILE="$STATE_DIR/sink-modes.json"  # sink-advertised CEA/VESA modes from RTSP
 # Fingerprint of the Extend output when capture last (re)bound. Hyprland reload
 # can leave wf-recorder/ffmpeg alive while feeding black/stale frames; comparing
@@ -1859,11 +1862,72 @@ raise SystemExit(0 if any(str(m.get("name") or "")==name for m in ms) else 1)
 ' "$name" 2>/dev/null
 }
 
+# Park an Extend head far off-layout (no destroy). Preserves mode/scale when possible.
+park_extend_head_offlayout() {
+  local name="${1:-}"
+  [[ -n "$name" ]] || return 0
+  hypr_has_monitor "$name" || return 0
+  local mode="1920x1080@30" scale="1"
+  read -r mode scale <<<"$(hyprctl -j monitors 2>/dev/null | python3 -c '
+import json,sys
+want=sys.argv[1]
+try:
+    ms=json.load(sys.stdin)
+except Exception:
+    print("1920x1080@30 1"); raise SystemExit
+for m in ms:
+    if str(m.get("name") or "") != want:
+        continue
+    w=int(m.get("width") or 1920)
+    h=int(m.get("height") or 1080)
+    r=m.get("refreshRate") or 30
+    try:
+        r=int(round(float(r)))
+    except Exception:
+        r=30
+    s=m.get("scale") or 1
+    print(f"{w}x{h}@{r} {s}")
+    raise SystemExit
+print("1920x1080@30 1")
+' "$name" 2>/dev/null || echo "1920x1080@30 1")"
+  hypr_set_monitor_geometry "$name" "$mode" "$PARKED_EXTEND_POS" "$scale" >/dev/null 2>&1 || true
+  disconnect_log "parked extend head name=$name at $PARKED_EXTEND_POS (mode=$mode scale=$scale)"
+}
+
+# Force keyboard/pointer seat onto the laptop panel (eDP).
+force_seat_to_primary() {
+  local primary=""
+  primary="$(primary_monitor_name)"
+  [[ -n "$primary" ]] || return 0
+  hypr_try dispatch "hl.dsp.focus({ monitor = \"${primary}\" })"
+  # Warp cursor onto primary so it cannot remain stranded on a parked head.
+  hyprctl -j monitors 2>/dev/null | python3 -c '
+import json,sys,subprocess
+want=sys.argv[1]
+try:
+    ms=json.load(sys.stdin)
+except Exception:
+    raise SystemExit
+for m in ms:
+    if str(m.get("name") or "") != want:
+        continue
+    x=int(m.get("x") or 0); y=int(m.get("y") or 0)
+    w=int(m.get("width") or 1920); h=int(m.get("height") or 1080)
+    cx=x + max(w//2, 1); cy=y + max(h//2, 1)
+    subprocess.run(
+        ["timeout","2","hyprctl","dispatch",f"movecursor {cx} {cy}"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+    )
+    raise SystemExit
+' "$primary" 2>/dev/null || true
+  hypr_try dispatch "hl.dsp.focus({ monitor = \"${primary}\" })"
+}
+
 cleanup_extend_monitor() {
-  # Stop path: detach capture + optionally migrate windows. Leave the Hyprland
-  # virtual output untouched (no park/disable/remove).
-  # Args: [--keep-workspaces] — skip migrate (preserve cast desktop across
-  # peer/mode reconnects when preserveDisplayAcrossMonitors is on).
+  # Stop path: detach capture + optionally migrate windows. Never destroy the
+  # Hyprland virtual output (eDP freeze). Always park it off-layout and return
+  # the seat to eDP so a dead cast cannot trap pointer/keyboard beside the laptop.
+  # Args: [--keep-workspaces] — skip migrate (Persist: keep cast desktop on head).
   local keep_workspaces=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1879,6 +1943,13 @@ cleanup_extend_monitor() {
     if [[ -f "$HEADLESS_FILE" ]]; then
       name="$(cat "$HEADLESS_FILE" 2>/dev/null || true)"
     fi
+    # Fall back to parked/shared name if tracking file already cleared.
+    if [[ -z "$name" && -f "$PARKED_FILE" ]]; then
+      name="$(tr -d '\n' <"$PARKED_FILE" 2>/dev/null || true)"
+    fi
+    if [[ -z "$name" ]] && hypr_has_monitor "$SHARED_EXTEND_NAME"; then
+      name="$SHARED_EXTEND_NAME"
+    fi
     primary="$(primary_monitor_name)"
     disconnect_log "cleanup begin name=${name:-none} primary=${primary:-none} keep_workspaces=$keep_workspaces"
 
@@ -1887,23 +1958,27 @@ cleanup_extend_monitor() {
     sleep 0.5
     wait_capture_senders_gone 20 || true
 
+    # Seat back to eDP first — before migrate/park — so input cannot stick on
+    # the cast head while P2P is already down.
+    force_seat_to_primary || true
+
     if [[ -n "$name" ]]; then
       if [[ -n "$primary" ]]; then
-        hypr_try dispatch "hl.dsp.focus({ monitor = \"${primary}\" })"
         if [[ "$keep_workspaces" == "1" ]]; then
           disconnect_log "cleanup skip migrate (keep workspaces on $name)"
         else
           migrate_workspaces_from_monitor "$name" "$primary"
         fi
-        hypr_try dispatch "hl.dsp.focus({ monitor = \"${primary}\" })"
       fi
+      # Park off-layout whether empty or Persist-occupied (reconnect will
+      # re-place via ensure_extend_monitor geometry).
+      park_extend_head_offlayout "$name" || true
       restore_software_cursors
       unload_icc_present_kick
-      # Remember for reuse on next connect — do not touch Hyprland geometry.
       printf '%s\n' "$name" >"$PARKED_FILE"
       rm -f "$HEADLESS_FILE" "$CAPTURE_GEOM_FILE" \
         "$STATE_DIR/pending-remove.name" "$STATE_DIR/pending-remove.primary"
-      disconnect_log "cleanup done name=$name (headless left in place for reuse; no hyprctl destroy)"
+      disconnect_log "cleanup done name=$name (parked off-layout; no hyprctl destroy)"
       local orphans
       orphans="$(list_orphan_extend_heads 2>/dev/null || echo '[]')"
       [[ "$orphans" != "[]" && -n "$orphans" ]] \
@@ -1914,6 +1989,8 @@ cleanup_extend_monitor() {
       rm -f "$CAPTURE_GEOM_FILE"
       disconnect_log "cleanup done (no tracked headless)"
     fi
+    # Final seat assert after cursor restore (restore can glitch pointer).
+    force_seat_to_primary || true
   ) 9>"$lock"
 }
 
