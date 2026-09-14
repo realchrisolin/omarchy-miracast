@@ -516,7 +516,12 @@ Item {
         try {
           var data = JSON.parse(String(text || "{}"))
           root.peers = data.peers || []
-          root.actionStatus = root.peers.length + " peer" + (root.peers.length === 1 ? "" : "s") + " found"
+          var n = root.peers.length
+          var src = data.source ? (" via " + data.source) : ""
+          var ms = data.elapsed_ms != null ? (" in " + data.elapsed_ms + "ms") : ""
+          root.actionStatus = n + " sink" + (n === 1 ? "" : "s") + " found" + src + ms
+          if (data.ok === false && data.error)
+            root.lastError = String(data.error)
           if (root.phase === "scanning") {
             root.phase = "idle"
             root.statusText = Model.miracastPhaseHint("idle", "")

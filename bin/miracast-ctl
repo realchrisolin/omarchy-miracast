@@ -2278,6 +2278,46 @@ cmd_scan() {
     emit '{"ok":false,"peers":[],"error":"scan refused while Miracast session is active (would disrupt P2P)"}'
     return 1
   fi
+  local timeout_s="${MIRACAST_SCAN_TIMEOUT:-5}"
+  local scanner="$PLUGIN_DIR/scripts/scan_miracast_sinks.py"
+  # Fast path: lean NM/wpa_cli scanner (no FluxCast cold start). Default 5s,
+  # early-exit when WFD peers appear. Override: MIRACAST_SCAN_TIMEOUT=8.
+  if [[ -f "$scanner" ]]; then
+    local out
+    out="$(python3 "$scanner" --timeout "$timeout_s" 2>/dev/null || true)"
+    if [[ -n "$out" ]] && python3 -c 'import json,sys; json.loads(sys.argv[1])' "$out" 2>/dev/null; then
+      python3 - "$out" "$PEERS_FILE" <<'PY'
+import json, sys
+raw, peers_path = sys.argv[1], sys.argv[2]
+data = json.loads(raw)
+peers = data.get("peers") or []
+# Persist slim list for reconnect UX; keep enrichment fields when present.
+slim = []
+for p in peers:
+    slim.append({
+        "index": p.get("index", 0),
+        "mac": str(p.get("mac") or "").upper(),
+        "name": p.get("name") or p.get("mac") or "unknown",
+        "manufacturer": p.get("manufacturer"),
+        "model": p.get("model"),
+        "wfd": bool(p.get("wfd")),
+        "source": p.get("source"),
+    })
+with open(peers_path, "w", encoding="utf-8") as f:
+    json.dump(slim, f, separators=(",", ":"))
+    f.write("\n")
+print(json.dumps({
+    "ok": bool(data.get("ok", True)),
+    "peers": slim,
+    "source": data.get("source"),
+    "elapsed_ms": data.get("elapsed_ms"),
+    "error": data.get("error"),
+}, separators=(",", ":")))
+PY
+      return 0
+    fi
+  fi
+  # Fallback: legacy FluxCast --wfd-scan (slower cold start, 8s default).
   local root
   root="$(resolve_fluxcast_root "${1:-}")"
   if [[ -z "$root" || ! -f "$root/src/main.py" ]]; then
@@ -2285,22 +2325,26 @@ cmd_scan() {
     return 1
   fi
   local out
-  out="$(cd "$root" && PYTHONUNBUFFERED=1 python3 -u src/main.py --protocol wfd --wfd-scan --wfd-p2p-backend nm 2>/dev/null || true)"
+  out="$(cd "$root" && PYTHONUNBUFFERED=1 python3 -u src/main.py --protocol wfd --wfd-scan --wfd-p2p-backend nm --wfd-timeout "$timeout_s" 2>/dev/null || true)"
   python3 - "$out" "$PEERS_FILE" <<'PY'
 import json, re, sys
 text, peers_path = sys.argv[1], sys.argv[2]
 peers = []
-# Example scan line: [4] AA:BB:CC:DD:EE:FF  Living-Room-TV via NetworkManager
-for m in re.finditer(r"\[(\d+)\]\s+([0-9A-Fa-f:]{17})\s+(\S+)", text):
+# Full name after MAC until " via " (not just first token).
+for m in re.finditer(
+    r"\[(\d+)\]\s+([0-9A-Fa-f:]{17})\s+(.+?)(?:\s+via\s+\S+)?\s*$",
+    text,
+    re.M,
+):
     peers.append({
         "index": int(m.group(1)),
         "mac": m.group(2).upper(),
-        "name": m.group(3),
+        "name": m.group(3).strip() or m.group(2).upper(),
     })
 with open(peers_path, "w", encoding="utf-8") as f:
     json.dump(peers, f, separators=(",", ":"))
     f.write("\n")
-print(json.dumps({"ok": True, "peers": peers, "raw": text[-2000:]}, separators=(",", ":")))
+print(json.dumps({"ok": True, "peers": peers, "source": "fluxcast", "raw": text[-2000:]}, separators=(",", ":")))
 PY
 }
 
