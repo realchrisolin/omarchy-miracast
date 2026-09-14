@@ -1358,7 +1358,7 @@ else:
     disconnect_log "connect-time created virtual output name=$headless"
   fi
 
-  # Preserve + older head: move windows onto persistent-miracast.
+  # Persist + older head: move windows onto persistent-miracast.
   # Do not destroy the legacy output (eDP freeze).
   if [[ "$preserve" == "1" && -n "$legacy" && "$legacy" != "$headless" ]]; then
     if headless_has_occupied_workspaces "$legacy"; then
@@ -1382,15 +1382,26 @@ else:
   scale="${rest#*|}"
   [[ "$scale" == "$rest" || -z "$scale" ]] && scale="${saved_scale:-1}"
   hypr_set_monitor_geometry "$headless" "$mode" "$pos" "$scale" >/dev/null 2>&1 || true
+  # Park empty legacy head far away so it does not stack on the same origin
+  # as persistent-miracast (same x/y hides the cast desktop under an empty head).
+  if [[ "$preserve" == "1" && -n "$legacy" && "$legacy" != "$headless" ]]; then
+    if ! headless_has_occupied_workspaces "$legacy"; then
+      hypr_set_monitor_geometry "$legacy" "1920x1080@30" "-12000x0" "1" >/dev/null 2>&1 || true
+      disconnect_log "connect-time parked empty legacy head $legacy at -12000x0"
+    fi
+  fi
   # Independent desktops: numeric 1-10 stay on the laptop; Extend uses named
   # ext-1..ext-10 (see omarchy-hyprland-workspace-focus).
-  # With preserveDisplayAcrossMonitors, keep an already-occupied cast desktop
-  # when switching sinks. Still seed empty heads.
+  # With persist, keep an already-occupied cast desktop when switching sinks.
+  # Still seed empty heads.
   if [[ "$preserve" == "1" ]] && headless_has_occupied_workspaces "$headless"; then
-    disconnect_log "connect-time skip seed (preserve display; occupied workspaces on $headless)"
+    disconnect_log "connect-time skip seed (persist display; occupied workspaces on $headless)"
   else
     seed_extend_workspaces "$headless" || true
   fi
+  # After migrate/reuse, make sure the cast head's *active* workspace is one
+  # that actually has windows (new heads default to an empty numeric WS).
+  focus_occupied_extend_workspace "$headless" || true
   # Capture not bound yet — fingerprint is recorded on first healthy ensure/rebind.
   echo "$headless"
 }
@@ -1476,6 +1487,63 @@ for ws in spaces:
         raise SystemExit(0)
 raise SystemExit(1)
 ' "$mon" 2>/dev/null
+}
+
+# Switch the cast head to an occupied workspace (prefer ext-1). New headless
+# outputs often activate an empty numeric workspace after create/migrate, which
+# makes the TV look blank even though windows still exist on ext-*.
+focus_occupied_extend_workspace() {
+  local mon="${1:-}" primary=""
+  [[ -n "$mon" ]] || return 0
+  primary="$(primary_monitor_name)"
+  python3 - "$mon" "$primary" <<'PY' 2>/dev/null || true
+import json, subprocess, sys
+mon, primary = sys.argv[1], sys.argv[2]
+try:
+    spaces = json.loads(subprocess.check_output(
+        ["timeout", "2", "hyprctl", "-j", "workspaces"], text=True, timeout=3
+    ))
+except Exception:
+    raise SystemExit
+occupied = []
+for ws in spaces:
+    if str(ws.get("monitor") or "") != mon:
+        continue
+    if int(ws.get("windows") or 0) <= 0:
+        continue
+    occupied.append(str(ws.get("name") or ""))
+if not occupied:
+    raise SystemExit
+# Prefer ext-1, then any ext-*, then first occupied.
+pick = None
+for pref in ("ext-1",):
+    if pref in occupied:
+        pick = pref
+        break
+if pick is None:
+    for name in occupied:
+        if name.startswith("ext-"):
+            pick = name
+            break
+if pick is None:
+    pick = occupied[0]
+target = f"name:{pick}" if pick.startswith("ext-") else pick
+subprocess.run(
+    ["timeout", "2", "hyprctl", "dispatch", f'hl.dsp.focus({{ monitor = "{mon}" }})'],
+    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, timeout=3,
+)
+subprocess.run(
+    ["timeout", "2", "hyprctl", "dispatch",
+     f'hl.dsp.focus({{ workspace = "{target}", on_current_monitor = true }})'],
+    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, timeout=3,
+)
+# Return keyboard focus to the laptop so Persist reconnects do not steal input.
+if primary and primary != mon:
+    subprocess.run(
+        ["timeout", "2", "hyprctl", "dispatch", f'hl.dsp.focus({{ monitor = "{primary}" }})'],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, timeout=3,
+    )
+PY
 }
 
 # Park named ext-1 on the cast output and move numeric workspaces back to eDP
