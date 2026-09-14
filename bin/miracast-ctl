@@ -1264,7 +1264,7 @@ ensure_extend_monitor() {
   # the old peer-named (or legacy "Miracast") head empty in place.
   local peer_name="${1:-}" peer_mac="${2:-}"
   local primary width height scale headless position old="" desired
-  local preserve=0 parked="" reuse="" legacy=""
+  local preserve=0 parked="" reuse="" legacy="" prefer_ws=""
   position="$(extend_position)"
   [[ "$(preserve_display_across_monitors)" == "1" ]] && preserve=1
   if [[ -f "$HEADLESS_FILE" ]]; then
@@ -1358,6 +1358,17 @@ else:
     disconnect_log "connect-time created virtual output name=$headless"
   fi
 
+  # Remember which workspace was active on the display we're keeping, before
+  # create/migrate/seed reshuffles Hyprland's activeWorkspace.
+  if [[ "$preserve" == "1" ]]; then
+    if [[ -n "$legacy" && "$legacy" != "$headless" ]]; then
+      prefer_ws="$(monitor_active_workspace_name "$legacy")"
+    elif [[ -n "$headless" ]]; then
+      prefer_ws="$(monitor_active_workspace_name "$headless")"
+    fi
+    [[ -n "$prefer_ws" ]] && disconnect_log "connect-time remember active workspace prefer_ws=$prefer_ws"
+  fi
+
   # Persist + older head: move windows onto persistent-miracast.
   # Do not destroy the legacy output (eDP freeze).
   if [[ "$preserve" == "1" && -n "$legacy" && "$legacy" != "$headless" ]]; then
@@ -1399,9 +1410,8 @@ else:
   else
     seed_extend_workspaces "$headless" || true
   fi
-  # After migrate/reuse, make sure the cast head's *active* workspace is one
-  # that actually has windows (new heads default to an empty numeric WS).
-  focus_occupied_extend_workspace "$headless" || true
+  # Restore the display's last active workspace (else any occupied WS).
+  focus_occupied_extend_workspace "$headless" "$prefer_ws" || true
   # Capture not bound yet — fingerprint is recorded on first healthy ensure/rebind.
   echo "$headless"
 }
@@ -1489,44 +1499,71 @@ raise SystemExit(1)
 ' "$mon" 2>/dev/null
 }
 
-# Switch the cast head to an occupied workspace (prefer ext-1). New headless
-# outputs often activate an empty numeric workspace after create/migrate, which
-# makes the TV look blank even though windows still exist on ext-*.
+# Active workspace name on a Hyprland monitor (empty if unknown).
+monitor_active_workspace_name() {
+  local mon="${1:-}"
+  [[ -n "$mon" ]] || return 0
+  hyprctl -j monitors 2>/dev/null | python3 -c '
+import json,sys
+want=sys.argv[1]
+try:
+    ms=json.load(sys.stdin)
+except Exception:
+    raise SystemExit
+for m in ms:
+    if str(m.get("name") or "") != want:
+        continue
+    aw=m.get("activeWorkspace") or {}
+    name=str(aw.get("name") or "")
+    if name.startswith("special:"):
+        name=""
+    print(name)
+    raise SystemExit
+' "$mon" 2>/dev/null || true
+}
+
+# Switch the cast head to a sensible workspace after create/migrate.
+# Prefer the display's last active workspace (passed as $2); fall back to any
+# occupied workspace on that monitor. New heads often activate an empty numeric
+# WS so the TV looks blank while windows still sit on inactive ext-*.
 focus_occupied_extend_workspace() {
-  local mon="${1:-}" primary=""
+  local mon="${1:-}" preferred="${2:-}" primary=""
   [[ -n "$mon" ]] || return 0
   primary="$(primary_monitor_name)"
-  python3 - "$mon" "$primary" <<'PY' 2>/dev/null || true
+  python3 - "$mon" "$primary" "$preferred" <<'PY' 2>/dev/null || true
 import json, subprocess, sys
-mon, primary = sys.argv[1], sys.argv[2]
+mon, primary, preferred = sys.argv[1], sys.argv[2], sys.argv[3]
 try:
     spaces = json.loads(subprocess.check_output(
         ["timeout", "2", "hyprctl", "-j", "workspaces"], text=True, timeout=3
     ))
 except Exception:
     raise SystemExit
+on_mon = []
 occupied = []
 for ws in spaces:
     if str(ws.get("monitor") or "") != mon:
         continue
-    if int(ws.get("windows") or 0) <= 0:
+    name = str(ws.get("name") or "")
+    if not name:
         continue
-    occupied.append(str(ws.get("name") or ""))
-if not occupied:
-    raise SystemExit
-# Prefer ext-1, then any ext-*, then first occupied.
+    on_mon.append(name)
+    if int(ws.get("windows") or 0) > 0:
+        occupied.append(name)
 pick = None
-for pref in ("ext-1",):
-    if pref in occupied:
-        pick = pref
-        break
-if pick is None:
+# 1) Last active workspace on that display, if it still exists there.
+if preferred and preferred in on_mon:
+    pick = preferred
+# 2) Else any occupied workspace (ext-* first, then others).
+if pick is None and occupied:
     for name in occupied:
         if name.startswith("ext-"):
             pick = name
             break
-if pick is None:
-    pick = occupied[0]
+    if pick is None:
+        pick = occupied[0]
+if not pick:
+    raise SystemExit
 target = f"name:{pick}" if pick.startswith("ext-") else pick
 subprocess.run(
     ["timeout", "2", "hyprctl", "dispatch", f'hl.dsp.focus({{ monitor = "{mon}" }})'],
