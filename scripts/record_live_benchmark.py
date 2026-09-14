@@ -34,6 +34,7 @@ from benchmark_privacy import (  # noqa: E402
     write_json,
 )
 from fingerprint_miracast_sink import fingerprint_sink, public_identity  # noqa: E402
+from radio_snapshot import collect_radio, public_radio  # noqa: E402
 
 
 def _run(cmd: list[str], timeout: float = 5.0) -> str:
@@ -116,7 +117,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     time.sleep(args.warmup)
     print(f"[record-live] Hyprland CPU sample {args.sample}s…", file=sys.stderr)
     hypr = _sample_hyprland(args.sample)
-    tx = _p2p_tx_kbps(status.get("p2pIface"), args.tx_sample)
+    print(f"[record-live] radio snapshot (tx {args.tx_sample}s)…", file=sys.stderr)
+    radio = collect_radio(status=status, tx_sample_s=args.tx_sample)
+    tx = (radio.get("p2p") or {}).get("tx_kbps_sample")
+    if tx is None:
+        tx = _p2p_tx_kbps(status.get("p2pIface"), args.tx_sample)
 
     host_full = collect_host(full=True)
     sink = host_full.get("sink") or {}
@@ -179,11 +184,19 @@ def main(argv: Optional[list[str]] = None) -> int:
             "p2p_tx_kbps": tx,
             "sta_channel": status.get("staChannel"),
             "p2p_channel": status.get("p2pChannel"),
+            "sta_freq_mhz": status.get("staFreqMHz"),
+            "p2p_freq_mhz": status.get("p2pFreqMHz"),
+            "sta_width_mhz": status.get("staWidthMHz"),
+            "p2p_width_mhz": status.get("p2pWidthMHz"),
             "radio_mcc": status.get("radioMcc"),
+            "p2p_role": status.get("p2pRole"),
         },
+        "radio": radio,
+        "radio_public": public_radio(radio),
         "status_raw": status,
         "public_notes": [
             "Live Extend spot-check; private dump includes sink MAC / Wi-Fi SSIDs.",
+            "Public radio fields: channels/width/freq, MCC, role, signal, bitrates, TX sample.",
         ],
         "notes": [
             "PRIVATE — do not commit. Sanitize with scripts/sanitize_benchmark_results.py.",

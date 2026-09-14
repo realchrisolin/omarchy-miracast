@@ -1,5 +1,5 @@
 {
-  "id": "20260914_lg-webos-tv-sm8600pua_live_session_92f92452c0",
+  "id": "20260914_lg-webos-tv-sm8600pua_live_session_bcd204192f",
   "ts": "2026-09-14T16:09:19+00:00",
   "kind": "live_session",
   "sink": {
@@ -12,6 +12,7 @@
     "device_category": "Display",
     "cea_mask": "0x000194ff",
     "vesa_mask": "0x155575df",
+    "chipset": null,
     "wfd_role": "P2P-client",
     "fingerprint_sources": {
       "wpa_cli_p2p_peer": true,
@@ -42,12 +43,53 @@
     "encoder": "h264_vaapi",
     "persist_display": true
   },
+  "radio": {
+    "sta": {
+      "iface": "wlp0s20f3",
+      "channel": 44,
+      "freq_mhz": 5220,
+      "width_mhz": 80,
+      "signal_dbm": -51,
+      "tx_bitrate_mbps": 1080.6,
+      "rx_bitrate_mbps": 1200.9,
+      "tx_bitrate_raw": "1080.6 MBit/s 80MHz HE-MCS 10 HE-NSS 2 HE-GI 0 HE-DCM 0",
+      "rx_bitrate_raw": "1200.9 MBit/s 80MHz HE-MCS 11 HE-NSS 2 HE-GI 0 HE-DCM 0"
+    },
+    "p2p": {
+      "iface": "p2p-wlp0s20-5",
+      "channel": 149,
+      "freq_mhz": 5745,
+      "width_mhz": 80,
+      "role": "P2P-client",
+      "signal_dbm": -50,
+      "tx_bitrate_mbps": 585.1,
+      "rx_bitrate_mbps": 866.7,
+      "tx_bitrate_raw": "585.1 MBit/s VHT-MCS 6 80MHz short GI VHT-NSS 2",
+      "rx_bitrate_raw": "866.7 MBit/s VHT-MCS 9 80MHz short GI VHT-NSS 2",
+      "tx_kbps_sample": 13360.7,
+      "tx_sample_s": 2.0
+    },
+    "negotiation": {
+      "p2p_role": "P2P-client",
+      "radio_mcc": true,
+      "quiet_channel_csa": true,
+      "stream_mode": "1920x1080p30",
+      "mode": "extend",
+      "go_intent_setting": null,
+      "oper_channel_soft_pin": 149
+    }
+  },
   "metrics": {
     "hyprland_pct_one_core": 5.83,
-    "p2p_tx_kbps": 15840.4,
+    "p2p_tx_kbps": 13360.7,
     "sta_channel": 44,
     "p2p_channel": 149,
+    "sta_freq_mhz": 5220,
+    "p2p_freq_mhz": 5745,
+    "sta_width_mhz": 80,
+    "p2p_width_mhz": 80,
     "radio_mcc": true,
+    "p2p_role": "P2P-client",
     "sample_s": 18,
     "rcs_busy_pct_approx_median": 34.57,
     "vcs_busy_pct_approx_median": 2.55

@@ -50,6 +50,35 @@ def _fmt(value: Any) -> str:
     return str(value)
 
 
+def _radio_summary(pub: dict[str, Any]) -> str:
+    radio = pub.get("radio") or {}
+    sta = radio.get("sta") or {}
+    p2p = radio.get("p2p") or {}
+    neg = radio.get("negotiation") or {}
+    metrics = pub.get("metrics") or {}
+    sta_ch = sta.get("channel") or metrics.get("sta_channel")
+    p2p_ch = p2p.get("channel") or metrics.get("p2p_channel")
+    sta_w = sta.get("width_mhz") or metrics.get("sta_width_mhz")
+    p2p_w = p2p.get("width_mhz") or metrics.get("p2p_width_mhz")
+    mcc = neg.get("radio_mcc")
+    if mcc is None:
+        mcc = metrics.get("radio_mcc")
+    role = p2p.get("role") or neg.get("p2p_role") or metrics.get("p2p_role") or "—"
+    sig = p2p.get("signal_dbm")
+    rate = p2p.get("tx_bitrate_mbps")
+    parts = [
+        f"STA {_fmt(sta_ch)}@{_fmt(sta_w)}MHz",
+        f"P2P {_fmt(p2p_ch)}@{_fmt(p2p_w)}MHz",
+        f"{'MCC' if mcc else ('SCC' if mcc is False else '—')}",
+        str(role),
+    ]
+    if sig is not None:
+        parts.append(f"{sig} dBm")
+    if rate is not None:
+        parts.append(f"{rate:g} Mb/s")
+    return "; ".join(parts)
+
+
 def _row(pub: dict[str, Any]) -> list[str]:
     sink = pub.get("sink") or {}
     host = pub.get("host") or {}
@@ -64,24 +93,28 @@ def _row(pub: dict[str, Any]) -> list[str]:
         disp = str(sink.get("display_name"))
         if disp.strip(" []()_-").lower() != str(brand).lower():
             model = disp
+    chip = sink.get("chipset")
+    sink_cell = f"{brand} / {model}"
+    if chip:
+        sink_cell += f" ({chip})"
     stream = session.get("stream_mode") or "—"
     path = session.get("capture_path") or "—"
     enc = session.get("encoder") or "—"
     hypr = metrics.get("hyprland_pct_one_core")
-    tx = metrics.get("p2p_tx_kbps")
-    sta = metrics.get("sta_channel")
-    p2p = metrics.get("p2p_channel")
+    tx = metrics.get("p2p_tx_kbps") or ((pub.get("radio") or {}).get("p2p") or {}).get(
+        "tx_kbps_sample"
+    )
     cpu = (host.get("cpu") or "—")
     if isinstance(cpu, str) and len(cpu) > 42:
         cpu = cpu[:39] + "…"
     return [
         _fmt(pub.get("ts", "")[:10]),
-        f"{brand} / {model}",
+        sink_cell,
         _fmt(stream),
         f"{path}/{enc}",
         _fmt(hypr),
         _fmt(tx),
-        f"{_fmt(sta)}/{_fmt(p2p)}",
+        _radio_summary(pub),
         cpu,
         _fmt(wifi.get("driver")),
         _fmt(pub.get("kind")),
@@ -96,7 +129,7 @@ def render_markdown_table(public_rows: list[dict[str, Any]]) -> str:
         "Capture",
         "Hyprland %",
         "P2P TX kbps",
-        "STA/P2P ch",
+        "Radio (ch/bw/MCC/role/signal)",
         "Host CPU",
         "Wi‑Fi driver",
         "Kind",

@@ -178,7 +178,12 @@ def sanitize_private_run(private: dict[str, Any]) -> dict[str, Any]:
             "p2p_tx_kbps",
             "sta_channel",
             "p2p_channel",
+            "sta_freq_mhz",
+            "p2p_freq_mhz",
+            "sta_width_mhz",
+            "p2p_width_mhz",
             "radio_mcc",
+            "p2p_role",
             "sample_s",
             "rcs_busy_pct_approx_median",
             "vcs_busy_pct_approx_median",
@@ -186,6 +191,37 @@ def sanitize_private_run(private: dict[str, Any]) -> dict[str, Any]:
         )
         if k in metrics and metrics[k] is not None
     }
+
+    radio = private.get("radio_public") or private.get("radio") or {}
+    # Prefer structured radio; fold flat metrics into radio if missing.
+    if radio:
+        try:
+            from radio_snapshot import public_radio
+
+            radio = public_radio(radio) if "sta" in radio or "p2p" in radio else radio
+        except Exception:
+            pass
+    else:
+        radio = {
+            "sta": {
+                "channel": metrics.get("sta_channel"),
+                "freq_mhz": metrics.get("sta_freq_mhz"),
+                "width_mhz": metrics.get("sta_width_mhz"),
+            },
+            "p2p": {
+                "channel": metrics.get("p2p_channel"),
+                "freq_mhz": metrics.get("p2p_freq_mhz"),
+                "width_mhz": metrics.get("p2p_width_mhz"),
+                "role": metrics.get("p2p_role"),
+                "tx_kbps_sample": metrics.get("p2p_tx_kbps"),
+            },
+            "negotiation": {
+                "p2p_role": metrics.get("p2p_role"),
+                "radio_mcc": metrics.get("radio_mcc"),
+                "quiet_channel_csa": metrics.get("radio_mcc"),
+                "oper_channel_soft_pin": metrics.get("p2p_channel"),
+            },
+        }
 
     kind = str(private.get("kind") or "benchmark")
     ts = str(private.get("ts") or datetime.now(timezone.utc).isoformat())
@@ -207,6 +243,7 @@ def sanitize_private_run(private: dict[str, Any]) -> dict[str, Any]:
             "device_category": fp_pub.get("device_category"),
             "cea_mask": fp_pub.get("cea_mask"),
             "vesa_mask": fp_pub.get("vesa_mask"),
+            "chipset": fp_pub.get("chipset") or sink.get("chipset"),
             "wfd_role": sink.get("wfd_role") or sink.get("p2p_role"),
             "fingerprint_sources": fp_pub.get("sources"),
         },
@@ -224,6 +261,7 @@ def sanitize_private_run(private: dict[str, Any]) -> dict[str, Any]:
             "encoder": session.get("encoder"),
             "persist_display": session.get("persist_display"),
         },
+        "radio": radio,
         "metrics": public_metrics,
         "notes": private.get("public_notes") or private.get("notes") or [],
         "omitted": [
