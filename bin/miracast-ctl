@@ -1221,15 +1221,22 @@ apply_extend_position() {
     emit "{\"ok\":true,\"position\":\"$position\",\"applied\":false}"
     return 0
   fi
-  local parts mode pos scale rest primary
-  parts="$(extend_geometry_parts "$position")"
+  local parts mode pos scale rest primary peer_mac saved_scale
+  # Prefer per-sink scale from settings (do not inherit a drifted live Hyprland scale).
+  peer_mac="$(python3 -c 'import json,sys
+try:
+  print(json.load(open(sys.argv[1])).get("lastPeerMac") or "")
+except Exception:
+  print("")
+' "$SETTINGS_FILE" 2>/dev/null || true)"
+  saved_scale="$(extend_scale_get "$peer_mac")"
+  parts="$(extend_geometry_parts "$position" "$saved_scale")"
   mode="${parts%%|*}"
   rest="${parts#*|}"
   pos="${rest%%|*}"
   scale="${rest#*|}"
-  [[ "$scale" == "$rest" || -z "$scale" ]] && scale="1"
-  # Keep refresh from extend_geometry_parts (default 60 for local cursor feel;
-  # capture fps is independent). Do not copy an unrelated live Hyprland rate.
+  [[ "$scale" == "$rest" || -z "$scale" ]] && scale="${saved_scale:-1}"
+  # Keep refresh from extend_geometry_parts (matches stream fps).
 
   # Same safe order as monitor-scale: leave the cast output, detach capture,
   # move geometry, then *force* rebuild (zombies looked "alive" and skipped rebind).
