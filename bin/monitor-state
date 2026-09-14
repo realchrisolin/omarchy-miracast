@@ -16,7 +16,7 @@ focused_monitor=$(printf '%s\n' "$monitors_json" | jq -r '[.[] | select(.focused
 # internal / external / internalEnabled / mirror — exclude Miracast virtual outputs
 printf '%s\n' "$monitors_json" | jq -r --arg t "$tracked" '
   def internal: test("^(eDP|LVDS|DSI)-");
-  def virtual: startswith("HEADLESS") or (. == $t and $t != "");
+  def virtual: startswith("HEADLESS") or (. == "persistent-miracast") or startswith("persistent-miracast-") or (. == "Miracast") or startswith("Miracast-") or (. == $t and $t != "");
   ([.[] | select((.name | internal) and (.name | virtual | not))][0].name // ""),
   ([.[] | select((.name | internal | not) and (.name | virtual | not))][0].name // ""),
   ([.[] | select((.name | internal) and .disabled != true)][0].name // ""),
@@ -35,7 +35,14 @@ tracked = sys.argv[2] if len(sys.argv) > 2 else ""
 
 def is_virtual(name: str) -> bool:
     n = str(name or "")
-    return n.startswith("HEADLESS") or (bool(tracked) and n == tracked)
+    return (
+        n.startswith("HEADLESS")
+        or n == "persistent-miracast"
+        or n.startswith("persistent-miracast-")
+        or n == "Miracast"
+        or n.startswith("Miracast-")
+        or (bool(tracked) and n == tracked)
+    )
 
 out = []
 for m in ms:

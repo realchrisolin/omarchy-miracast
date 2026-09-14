@@ -324,10 +324,31 @@ make -C hyprland-plugins/icc-present-kick
 
 ---
 
+## Persist display across monitors
+
+Display panel → MIRACAST → **Persist display across monitors** (default on).
+
+| Setting | Hyprland Extend head | Switch TV A → B |
+|---------|----------------------|-----------------|
+| **On** | Shared name `persistent-miracast` | Keep same desktop/workspaces; only retarget P2P/FluxCast |
+| **Off** | Peer-sanitized name (e.g. sink name) | Migrate windows to eDP on stop; next connect seeds fresh `ext-*` |
+
+CLI: `miracast-ctl set-persist-display true|false` (alias: `set-preserve-display`).
+Settings key remains `preserveDisplayAcrossMonitors` for compatibility.
+
+Hyprland cannot rename outputs. On the first persist-on connect after a
+peer-named session, miracast-ctl creates `persistent-miracast`, migrates
+workspaces over, and **leaves the empty old head in place**. Those leftovers
+appear on `miracast-ctl status` as `orphanExtendHeads`. They are **never**
+`hyprctl output remove`’d (eDP freeze); they clear when Hyprland restarts.
+
+---
+
 ## Hard constraints (do not “simplify” these away)
 
 - **Never** `hyprctl output remove` / destroy the Miracast headless on the hot
-  path — that has frozen eDP for tens of seconds. Park and reuse.
+  path — that has frozen eDP for tens of seconds. Park and reuse. Empty
+  peer-named leftovers after migrate-to-`persistent-miracast` are intentional.
 - Prefer **DMA-BUF + CQP** (`captureEncode: dmabuf`) on Intel; pipe VAAPI/CPU are
   fallbacks.
 - Stock DMA path must **not** pass `wf-recorder -r` (breaks VAAPI filter graph).

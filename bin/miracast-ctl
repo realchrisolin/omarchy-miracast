@@ -20,6 +20,14 @@ HEADLESS_FILE="$STATE_DIR/headless.name"  # tracked Extend output name (may be p
 # Headless left parked/disabled on Stop — remove on next connect, never during
 # disconnect (hyprctl output remove freezes eDP for seconds–minutes).
 PARKED_FILE="$STATE_DIR/parked-headless.name"
+# Shared Hyprland output name when preserveDisplayAcrossMonitors is on.
+# Peer-specific names are only used when preserve is off (fresh per-sink desktop).
+# No spaces — hyprctl treats the name as one token.
+SHARED_EXTEND_NAME="persistent-miracast"
+# Previous shared name (migrate workspaces from this if still present).
+LEGACY_SHARED_EXTEND_NAME="Miracast"
+# Names of Extend heads we have created/reused (for orphan empty-head listing).
+EXTEND_HEADS_SEEN_FILE="$STATE_DIR/extend-heads.seen"
 CURSOR_PREV_FILE="$STATE_DIR/cursor-no-hw.prev"
 MODE_STATE_FILE="$STATE_DIR/sink-modes.json"  # sink-advertised CEA/VESA modes from RTSP
 # Fingerprint of the Extend output when capture last (re)bound. Hyprland reload
@@ -98,10 +106,21 @@ is_virtual_output_name() {
   local tracked=""
   [[ -z "$name" ]] && return 1
   [[ "$name" == HEADLESS* ]] && return 0
+  [[ "$name" == "$SHARED_EXTEND_NAME" || "$name" == "$SHARED_EXTEND_NAME"-* ]] && return 0
+  [[ "$name" == "$LEGACY_SHARED_EXTEND_NAME" || "$name" == "$LEGACY_SHARED_EXTEND_NAME"-* ]] && return 0
   if [[ -f "$HEADLESS_FILE" ]]; then
     tracked="$(cat "$HEADLESS_FILE" 2>/dev/null || true)"
     [[ -n "$tracked" && "$name" == "$tracked" ]] && return 0
   fi
+  return 1
+}
+
+# True if name is the shared preserve head (current or legacy).
+is_shared_extend_name() {
+  local name="$1"
+  [[ -z "$name" ]] && return 1
+  [[ "$name" == "$SHARED_EXTEND_NAME" || "$name" == "$SHARED_EXTEND_NAME"-* ]] && return 0
+  [[ "$name" == "$LEGACY_SHARED_EXTEND_NAME" || "$name" == "$LEGACY_SHARED_EXTEND_NAME"-* ]] && return 0
   return 1
 }
 
@@ -671,7 +690,14 @@ except Exception:
 
 def is_virtual(name: str) -> bool:
     n = str(name or "")
-    return n.startswith("HEADLESS") or (bool(tracked) and n == tracked)
+    return (
+        n.startswith("HEADLESS")
+        or n == "persistent-miracast"
+        or n.startswith("persistent-miracast-")
+        or n == "Miracast"
+        or n.startswith("Miracast-")
+        or (bool(tracked) and n == tracked)
+    )
 
 raw = subprocess.check_output(["hyprctl", "-j", "monitors"], text=True)
 ms = json.loads(raw)
@@ -693,7 +719,14 @@ plh = int(round(ph / ps))
 
 virtual = next((m for m in ms if str(m.get("name", "")) == tracked), None) if tracked else None
 if virtual is None:
-    virtual = next((m for m in ms if str(m.get("name", "")).startswith("HEADLESS")), None)
+    virtual = next(
+        (
+            m for m in ms
+            if str(m.get("name", "")) in ("persistent-miracast", "Miracast")
+            or str(m.get("name", "")).startswith(("HEADLESS", "persistent-miracast-", "Miracast-"))
+        ),
+        None,
+    )
 # Always size the cast surface to extendResolution — matching the laptop's
 # 1080p panel made wf-recorder capture ~2× the pixels ffmpeg then discards.
 hw, hh = ew, eh
@@ -1222,57 +1255,90 @@ apply_extend_position() {
 }
 
 ensure_extend_monitor() {
-  # Create a Hyprland headless output named after the Miracast sink, placed
-  # relative to the primary display. Args: [peer_name] [peer_mac]
+  # Create/reuse a Hyprland headless for Extend, placed relative to primary.
+  # Args: [peer_name] [peer_mac]
+  # preserveDisplayAcrossMonitors on → shared name persistent-miracast.
+  # preserve off → peer-sanitized name (fresh per-sink desktop).
+  # NEVER destroy virtual outputs (eDP freeze). Hyprland cannot rename; when
+  # migrating to the shared name we create it, move workspaces over, and leave
+  # the old peer-named (or legacy "Miracast") head empty in place.
   local peer_name="${1:-}" peer_mac="${2:-}"
   local primary width height scale headless position old="" desired
+  local preserve=0 parked="" reuse="" legacy=""
   position="$(extend_position)"
+  [[ "$(preserve_display_across_monitors)" == "1" ]] && preserve=1
   if [[ -f "$HEADLESS_FILE" ]]; then
     old="$(cat "$HEADLESS_FILE" 2>/dev/null || true)"
+  fi
+  if [[ -f "$PARKED_FILE" ]]; then
+    parked="$(tr -d '\n' <"$PARKED_FILE" 2>/dev/null || true)"
   fi
 
   primary="$(hyprctl -j monitors 2>/dev/null | python3 -c '
 import json,sys
-tracked=sys.argv[1]
+tracked, shared, legacy = sys.argv[1], sys.argv[2], sys.argv[3]
 ms=json.load(sys.stdin)
 def virt(n):
   n=str(n or "")
-  return n.startswith("HEADLESS") or (tracked and n==tracked)
+  return (n.startswith("HEADLESS")
+          or n == shared or n.startswith(shared + "-")
+          or n == legacy or n.startswith(legacy + "-")
+          or (tracked and n == tracked))
 cands=[m for m in ms if not virt(m.get("name",""))]
 m=next((x for x in cands if x.get("focused")), cands[0] if cands else (ms[0] if ms else None))
 print(m["name"] if m else "eDP-1")
-' "$old")"
+' "$old" "$SHARED_EXTEND_NAME" "$LEGACY_SHARED_EXTEND_NAME")"
   read -r width height scale <<<"$(hyprctl -j monitors 2>/dev/null | python3 -c '
 import json,sys
-tracked=sys.argv[1]
+tracked, shared, legacy = sys.argv[1], sys.argv[2], sys.argv[3]
 ms=json.load(sys.stdin)
 def virt(n):
   n=str(n or "")
-  return n.startswith("HEADLESS") or (tracked and n==tracked)
+  return (n.startswith("HEADLESS")
+          or n == shared or n.startswith(shared + "-")
+          or n == legacy or n.startswith(legacy + "-")
+          or (tracked and n == tracked))
 cands=[m for m in ms if not virt(m.get("name",""))]
 m=next((x for x in cands if x.get("focused")), cands[0] if cands else None)
 if not m:
   print("1920 1080 1")
 else:
   print(int(m.get("width") or 1920), int(m.get("height") or 1080), m.get("scale") or 1)
-' "$old")"
+' "$old" "$SHARED_EXTEND_NAME" "$LEGACY_SHARED_EXTEND_NAME")"
 
-  # NEVER destroy virtual outputs here (eDP freeze). Reuse parked/previous if
-  # Hyprland still has them; only create when nothing reusable exists.
-  desired="$(sanitize_extend_output_name "$peer_name" "$peer_mac")"
-  headless=""
-  local parked="" reuse=""
-  if [[ -f "$PARKED_FILE" ]]; then
-    parked="$(tr -d '\n' <"$PARKED_FILE" 2>/dev/null || true)"
+  if [[ "$preserve" == "1" ]]; then
+    desired="$SHARED_EXTEND_NAME"
+  else
+    desired="$(sanitize_extend_output_name "$peer_name" "$peer_mac")"
   fi
-  for reuse in "$parked" "$old" "$desired"; do
-    [[ -n "$reuse" ]] || continue
-    if hypr_has_monitor "$reuse"; then
-      headless="$reuse"
-      disconnect_log "connect-time reuse existing virtual output name=$headless"
-      break
+
+  headless=""
+  if [[ "$preserve" == "1" ]]; then
+    # Prefer the shared name; migrate from peer-named or legacy "Miracast" heads.
+    if hypr_has_monitor "$SHARED_EXTEND_NAME"; then
+      headless="$SHARED_EXTEND_NAME"
+      disconnect_log "connect-time reuse shared virtual output name=$headless"
+    else
+      # Peer-named or legacy "Miracast" head → migrate onto persistent-miracast.
+      for reuse in "$parked" "$old" "$LEGACY_SHARED_EXTEND_NAME"; do
+        [[ -n "$reuse" ]] || continue
+        [[ "$reuse" == "$SHARED_EXTEND_NAME" || "$reuse" == "$SHARED_EXTEND_NAME"-* ]] && continue
+        if hypr_has_monitor "$reuse"; then
+          legacy="$reuse"
+          break
+        fi
+      done
     fi
-  done
+  else
+    for reuse in "$desired" "$parked" "$old"; do
+      [[ -n "$reuse" ]] || continue
+      if hypr_has_monitor "$reuse"; then
+        headless="$reuse"
+        disconnect_log "connect-time reuse existing virtual output name=$headless"
+        break
+      fi
+    done
+  fi
   rm -f "$PARKED_FILE" "$HEADLESS_FILE" "$CAPTURE_GEOM_FILE"
 
   if [[ -z "$headless" ]]; then
@@ -1281,7 +1347,6 @@ else:
       echo ""
       return 1
     fi
-    # Named headless: shows as the Miracast device in the Display panel.
     if ! timeout 3 hyprctl output create headless "$headless" >/dev/null 2>&1; then
       echo ""
       return 1
@@ -1293,8 +1358,19 @@ else:
     disconnect_log "connect-time created virtual output name=$headless"
   fi
 
+  # Preserve + older head: move windows onto persistent-miracast.
+  # Do not destroy the legacy output (eDP freeze).
+  if [[ "$preserve" == "1" && -n "$legacy" && "$legacy" != "$headless" ]]; then
+    if headless_has_occupied_workspaces "$legacy"; then
+      disconnect_log "connect-time migrate workspaces $legacy -> $headless (persistent-miracast)"
+      migrate_workspaces_from_monitor "$legacy" "$headless" || true
+    fi
+  fi
+
   # Track before geometry so placement uses this output's size/scale.
   printf '%s\n' "$headless" > "$HEADLESS_FILE"
+  remember_extend_head "$headless"
+  [[ -n "$legacy" ]] && remember_extend_head "$legacy"
   rm -f "$CAPTURE_GEOM_FILE"
   local parts mode pos scale rest saved_scale
   # Restore per-device Extend scale (sinkScales[MAC], else defaultExtendScale=1).
@@ -1309,9 +1385,8 @@ else:
   # Independent desktops: numeric 1-10 stay on the laptop; Extend uses named
   # ext-1..ext-10 (see omarchy-hyprland-workspace-focus).
   # With preserveDisplayAcrossMonitors, keep an already-occupied cast desktop
-  # when switching sinks (reuse the same headless). Still seed empty heads.
-  if [[ "$(preserve_display_across_monitors)" == "1" ]] \
-       && headless_has_occupied_workspaces "$headless"; then
+  # when switching sinks. Still seed empty heads.
+  if [[ "$preserve" == "1" ]] && headless_has_occupied_workspaces "$headless"; then
     disconnect_log "connect-time skip seed (preserve display; occupied workspaces on $headless)"
   else
     seed_extend_workspaces "$headless" || true
@@ -1330,7 +1405,10 @@ tracked=sys.argv[1]
 ms=json.load(sys.stdin)
 def virt(n):
   n=str(n or "")
-  return n.startswith("HEADLESS") or (tracked and n==tracked)
+  return (n.startswith("HEADLESS")
+          or n == "persistent-miracast" or n.startswith("persistent-miracast-")
+          or n == "Miracast" or n.startswith("Miracast-")
+          or (tracked and n == tracked))
 for m in ms:
   if str(m.get("name","")).startswith(("eDP","LVDS","DSI")):
     print(m["name"]); raise SystemExit
@@ -1589,10 +1667,79 @@ disconnect_log() {
 # HARD RULE: never call `hyprctl output remove` / `monitor,disable` for Miracast
 # virtual outputs on connect or disconnect — both freeze eDP (disconnect.log
 # 14:12:29 deferred remove; 14:53:03 connect-time remove). Reuse the headless.
+# Empty peer-named leftovers (after migrate to persistent-miracast) therefore
+# linger until Hyprland restart; see list_orphan_extend_heads / status JSON.
 remove_virtual_output_safe() {
   local name="${1:-}"
   disconnect_log "REFUSED hyprctl destroy for virtual output name=${name:-none} (eDP safety)"
   return 0
+}
+
+remember_extend_head() {
+  local name="${1:-}"
+  [[ -n "$name" ]] || return 0
+  mkdir -p "$STATE_DIR"
+  touch "$EXTEND_HEADS_SEEN_FILE"
+  if ! grep -qxF "$name" "$EXTEND_HEADS_SEEN_FILE" 2>/dev/null; then
+    printf '%s\n' "$name" >>"$EXTEND_HEADS_SEEN_FILE"
+  fi
+}
+
+# Empty Extend heads we previously used that are not the active capture target.
+# Never destroyed here (eDP freeze); exposed on status as orphanExtendHeads.
+list_orphan_extend_heads() {
+  local tracked=""
+  [[ -f "$HEADLESS_FILE" ]] && tracked="$(tr -d '\n' <"$HEADLESS_FILE" 2>/dev/null || true)"
+  [[ -f "$PARKED_FILE" ]] && {
+    local parked
+    parked="$(tr -d '\n' <"$PARKED_FILE" 2>/dev/null || true)"
+    [[ -z "$tracked" && -n "$parked" ]] && tracked="$parked"
+  }
+  local seen_file="$EXTEND_HEADS_SEEN_FILE"
+  [[ -f "$seen_file" ]] || seen_file="/dev/null"
+  {
+    echo '---SEEN---'
+    cat "$seen_file" 2>/dev/null || true
+    echo '---MON---'
+    hyprctl -j monitors 2>/dev/null || echo '[]'
+    echo '---WS---'
+    hyprctl -j workspaces 2>/dev/null || echo '[]'
+  } | python3 -c '
+import json, sys
+tracked, shared, legacy = sys.argv[1:4]
+blob = sys.stdin.read()
+try:
+    seen_s, rest = blob.split("---SEEN---", 1)[1].split("---MON---", 1)
+    mon_s, ws_s = rest.split("---WS---", 1)
+    seen = {ln.strip() for ln in seen_s.splitlines() if ln.strip()}
+    ms = json.loads(mon_s.strip() or "[]")
+    spaces = json.loads(ws_s.strip() or "[]")
+except Exception:
+    seen, ms, spaces = set(), [], []
+
+# Always consider known shared/legacy patterns plus anything we have tracked.
+for extra in (shared, legacy, tracked):
+    if extra:
+        seen.add(extra)
+
+present = {str(m.get("name") or "") for m in ms}
+occupied = set()
+for ws in spaces:
+    n = str(ws.get("monitor") or "")
+    if int(ws.get("windows") or 0) > 0:
+        occupied.add(n)
+
+out = []
+for n in sorted(seen):
+    if n not in present:
+        continue
+    if n == tracked or n == shared:
+        continue
+    if n in occupied:
+        continue
+    out.append(n)
+print(json.dumps(out, separators=(",", ":")))
+' "$tracked" "$SHARED_EXTEND_NAME" "$LEGACY_SHARED_EXTEND_NAME" 2>/dev/null || echo '[]'
 }
 
 # True if Hyprland currently has a monitor with this name.
@@ -1652,6 +1799,10 @@ cleanup_extend_monitor() {
       rm -f "$HEADLESS_FILE" "$CAPTURE_GEOM_FILE" \
         "$STATE_DIR/pending-remove.name" "$STATE_DIR/pending-remove.primary"
       disconnect_log "cleanup done name=$name (headless left in place for reuse; no hyprctl destroy)"
+      local orphans
+      orphans="$(list_orphan_extend_heads 2>/dev/null || echo '[]')"
+      [[ "$orphans" != "[]" && -n "$orphans" ]] \
+        && disconnect_log "orphan empty Extend heads (not destroyed; eDP safety): $orphans"
     else
       restore_software_cursors
       unload_icc_present_kick
@@ -1978,6 +2129,8 @@ cmd_set_mode() {
 }
 
 cmd_set_preserve_display() {
+  # UI: "Persist display across monitors". Aliases: set-persist-display.
+  # Settings key stays preserveDisplayAcrossMonitors for compatibility.
   local raw="${1:-}"
   local on=1
   raw="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
@@ -1985,7 +2138,7 @@ cmd_set_preserve_display() {
     1|true|yes|on) on=1 ;;
     0|false|no|off) on=0 ;;
     *)
-      emit '{"ok":false,"error":"preserve-display must be true or false"}'
+      emit '{"ok":false,"error":"persist-display must be true or false"}'
       return 1
       ;;
   esac
@@ -2381,6 +2534,25 @@ print(json.dumps(data, separators=(",", ":")))
 ' "$PEERS_FILE" "$SETTINGS_FILE"
 }
 
+attach_orphan_extend_heads() {
+  # stdin: status JSON → add orphanExtendHeads (empty leftover virtual heads).
+  local orphans
+  orphans="$(list_orphan_extend_heads)"
+  python3 -c '
+import json, sys
+data = json.loads(sys.stdin.read() or "{}")
+try:
+    orphans = json.loads(sys.argv[1] or "[]")
+except Exception:
+    orphans = []
+if not isinstance(orphans, list):
+    orphans = []
+data["orphanExtendHeads"] = orphans
+data["sharedExtendName"] = sys.argv[2]
+print(json.dumps(data, separators=(",", ":")))
+' "$orphans" "$SHARED_EXTEND_NAME"
+}
+
 cmd_status() {
   reconcile_stale_cast || true
   local settings link_up="false"
@@ -2389,7 +2561,7 @@ cmd_status() {
   if is_running; then
     local pid
     pid="$(cat "$PID_FILE")"
-    python3 - "$STATUS_FILE" "$pid" "$settings" "$link_up" <<'PY' | enrich_peer_name | attach_stream_mode_fields | attach_capture_encode_fields | attach_radio_channel_fields
+    python3 - "$STATUS_FILE" "$pid" "$settings" "$link_up" <<'PY' | enrich_peer_name | attach_stream_mode_fields | attach_capture_encode_fields | attach_radio_channel_fields | attach_orphan_extend_heads
 import json, sys
 path, pid, settings_raw, link_up = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 try:
@@ -2424,7 +2596,7 @@ print(json.dumps(data, separators=(",", ":")))
 PY
     return 0
   fi
-  python3 - "$STATUS_FILE" "$settings" "$link_up" <<'PY' | enrich_peer_name | attach_stream_mode_fields | attach_capture_encode_fields | attach_radio_channel_fields
+  python3 - "$STATUS_FILE" "$settings" "$link_up" <<'PY' | enrich_peer_name | attach_stream_mode_fields | attach_capture_encode_fields | attach_radio_channel_fields | attach_orphan_extend_heads
 import json, sys
 path, settings_raw, link_up = sys.argv[1], sys.argv[2], sys.argv[3]
 try:
@@ -3376,7 +3548,8 @@ Commands:
   stop [--keep-workspaces]   # keep-workspaces: leave Extend desktop on headless
   get-mode
   set-mode mirror|extend
-  set-preserve-display true|false   # keep same Extend desktop when switching sinks
+  set-persist-display true|false    # Persist display across monitors (shared persistent-miracast head)
+  set-preserve-display true|false   # alias of set-persist-display
   get-stream-mode
   set-stream-mode <id>   # e.g. 1280x720p30 / 1920x1080p60
   set-capture-encode dmabuf|vaapi|cpu   # RENDER METHOD preference
@@ -3511,7 +3684,7 @@ main() {
     stop) cmd_stop "$@" ;;
     get-mode|get_mode) cmd_get_mode "$@" ;;
     set-mode|set_mode) cmd_set_mode "$@" ;;
-    set-preserve-display|set_preserve_display) cmd_set_preserve_display "$@" ;;
+    set-persist-display|set_persist_display|set-preserve-display|set_preserve_display) cmd_set_preserve_display "$@" ;;
     get-stream-mode|get_stream_mode) cmd_get_stream_mode "$@" ;;
     set-stream-mode|set_stream_mode) cmd_set_stream_mode "$@" ;;
     set-capture-encode|set_capture_encode) cmd_set_capture_encode "$@" ;;

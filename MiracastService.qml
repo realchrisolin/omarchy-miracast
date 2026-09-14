@@ -150,11 +150,11 @@ Item {
     if (on === preserveDisplayAcrossMonitors && !preserveDisplayProcess.running) return
     preserveDisplayAcrossMonitors = on
     if (preserveDisplayProcess.running) return
-    preserveDisplayProcess.command = [ctl, "set-preserve-display", on ? "true" : "false"]
+    preserveDisplayProcess.command = [ctl, "set-persist-display", on ? "true" : "false"]
     preserveDisplayProcess.running = true
     actionStatus = on
-      ? "Preserve display across monitors: on"
-      : "Preserve display across monitors: off"
+      ? "Persist display across monitors: on"
+      : "Persist display across monitors: off"
   }
 
   function positionLabelFor(value) {
@@ -734,7 +734,7 @@ Item {
         try {
           var data = JSON.parse(String(text || "{}"))
           if (data.ok === false) {
-            root.lastError = String(data.error || "Failed to set preserve display")
+            root.lastError = String(data.error || "Failed to set persist display")
             return
           }
           if (data.preserveDisplayAcrossMonitors !== undefined)
