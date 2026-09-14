@@ -12,15 +12,14 @@ from ..encoding import (
 )
 from ..env import _detect_audio_monitor
 from ..hw_encode import (
-    apply_bitrate_bias,
+    apply_bitrate_plan,
     build_encode_plan,
     capture_encode_attempts,
     capture_encode_mode,
     capture_encode_preference,
-    power_bias,
     prefer_wf_recorder_vaapi_dmabuf,
-    vaapi_quality_for_bias,
 )
+from ..power_plan import active_power_plan, encode_throttled
 from ..latency import _append_latency_log
 from ..modes import _h264_level_for_mode
 from ..net import _ffmpeg_sender_args
@@ -35,8 +34,6 @@ class WlrootsMixin:
         preference: str,
         fallback: bool,
     ) -> None:
-        # Field name capture_path — latency helper already uses positional path=
-        # for the log file location.
         _append_latency_log(
             getattr(self.config, "latency_log_path", None),
             "capture_encode",
@@ -129,14 +126,15 @@ class WlrootsMixin:
         parsed_out = _parse_resolution(out_res) or (monitor.width, monitor.height)
         requested_kbits = _bitrate_to_kbits(self.config.bitrate)
         floor_kbits = _quality_floor_kbits(parsed_out[0], parsed_out[1], self.config.fps)
-        bias = power_bias()
-        if bias == "efficient":
+        plan = active_power_plan()
+        throttled = encode_throttled(plan)
+        if throttled:
             effective_kbits = requested_kbits
         else:
             effective_kbits = max(requested_kbits, floor_kbits)
         effective_bitrate = _kbits_to_bitrate_text(effective_kbits)
-        effective_bitrate = apply_bitrate_bias(effective_bitrate, bias)
-        if effective_kbits > requested_kbits and bias == "full":
+        effective_bitrate = apply_bitrate_plan(effective_bitrate, throttled=throttled)
+        if effective_kbits > requested_kbits and not throttled:
             print(
                 "[FluxCast WFD Media] Raising bitrate for desktop clarity: "
                 f"{self.config.bitrate} -> {effective_bitrate}"
@@ -146,7 +144,11 @@ class WlrootsMixin:
             "out_res": out_res,
             "gop": gop,
             "parsed_out": parsed_out,
-            "bias": bias,
+            "power_plan": plan.id,
+            "power_plan_name": plan.name,
+            "throttled": throttled,
+            # Deprecated alias for older log formatters.
+            "bias": plan.id,
             "effective_bitrate": effective_bitrate,
             "effective_kbits": _bitrate_to_kbits(effective_bitrate),
             "level": _h264_level_for_mode(self.config),
@@ -154,9 +156,7 @@ class WlrootsMixin:
         }
 
     def _wf_damage_flag(self) -> list[str]:
-        # Keep historical wf-recorder -D (continuous / no-damage) by default so
-        # existing FluxCast sessions do not change cadence. Opt into damage-
-        # aware capture with FLUXCAST_WFD_WF_RECORDER_DAMAGE=1 (omit -D).
+        # Default: -D (continuous). FLUXCAST_WFD_WF_RECORDER_DAMAGE=1 omits -D.
         damage_aware = os.environ.get("FLUXCAST_WFD_WF_RECORDER_DAMAGE", "").strip().lower() in (
             "1", "true", "yes", "on",
         )
@@ -165,19 +165,15 @@ class WlrootsMixin:
     def _wf_capture_rate_args(self, wf_recorder: str) -> list[str]:
         """Capture cadence flags for this wf-recorder build.
 
-        Stock wlr-screencopy DMA: do **not** pass ``-r`` — it appends ``fps=N``
-        after ``scale_vaapi`` and forces a VAAPI→software conversion (glitchy).
+        Stock wlr-screencopy DMA: omit ``-r`` (it appends ``fps=N`` after
+        ``scale_vaapi`` and forces VAAPI→software conversion).
 
-        ext-image-copy-capture (PR #347): ``-r`` sets the client request rate
-        without that fps filter; without it the PR defaults to 60. Pass ``-r``
-        only when the binary advertises ICC/toplevel support.
+        ICC (ext-image-copy-capture): pass ``-r`` as the client request rate
+        (defaults to 60 without it). Only when the binary advertises ICC.
         """
         if wf_recorder_supports_icc(wf_recorder):
-            # Match the user-selected / negotiated stream profile FPS
-            # (e.g. 1280x720p30 → 30). Encode already uses config.fps
-            # (-p framerate=); oversampling at a hardcoded 60 desyncs from
-            # Miracast mode pills and can overproduce vs a 30 Hz stream.
-            # Explicit override: FLUXCAST_WFD_ICC_CAPTURE_FPS.
+            # -r matches config.fps (encode framerate). Override:
+            # FLUXCAST_WFD_ICC_CAPTURE_FPS.
             icc_fps = (os.environ.get("FLUXCAST_WFD_ICC_CAPTURE_FPS") or "").strip()
             if not icc_fps:
                 try:
@@ -308,7 +304,7 @@ class WlrootsMixin:
         audio_monitor = self.config.audio_device or _detect_audio_monitor()
         if not audio_monitor:
             raise WFDNotReady("LPCM path requires a Pulse/PipeWire audio monitor")
-        # Never capture a mic / default source — that loops TV speakers→mic→TV.
+        # Capture must be a sink .monitor node, not a mic/default source.
         am = audio_monitor.strip()
         if am in ("default", "auto") or "input" in am.lower():
             raise WFDNotReady(
@@ -338,8 +334,7 @@ class WlrootsMixin:
         r_fd, w_fd = os.pipe()
         os.set_inheritable(r_fd, True)
         os.set_inheritable(w_fd, True)
-        # Large pipe so a slow muxer never blocks wf-recorder's encode thread
-        # (that fills the ICC buffer pool and leaves keystrokes one frame behind).
+        # Enlarge pipe capacity so a slow muxer does not block the recorder.
         try:
             import fcntl
 
@@ -366,8 +361,7 @@ class WlrootsMixin:
             f"{self.tv_ip}:{self.sink_rtp_port} from local port {self.config.source_port}"
         )
 
-        # Bind RTP port *before* spawning capture so a bind failure cannot
-        # leave orphan processes.
+        # Bind RTP before spawning capture (fail cleanly without orphans).
         muxer = WFDLPCMMuxer(
             self.tv_ip,
             self.sink_rtp_port,
@@ -375,19 +369,14 @@ class WlrootsMixin:
             local_port=self.config.source_port,
         )
 
-        # No blocking queue before parse — a full queue stalls fdsrc → pipe →
-        # wf-recorder encode → ICC pool backup → keystrokes lag until pointer
-        # motion. Drop only whole AUs at appsink.
+        # appsink: max-buffers=1 drop=true (drop whole AUs; no intermediate queue).
         vid_pipeline = (
             f"fdsrc fd={r_fd} do-timestamp=true ! "
             "h264parse config-interval=-1 ! "
             "video/x-h264,stream-format=byte-stream,alignment=au ! "
             "appsink name=sink sync=false max-buffers=1 drop=true"
         )
-        # Sink-monitor PCM via pw-cat (not ffmpeg/Lavf, not pipewiresrc).
-        # Pulse stream-restore keys on Lavf* and was remapping capture onto
-        # Speakers.monitor — picture OK, TV speakers silent. pw-cat --target
-        # binds the monitor node directly. Host-endian S16 → BE for WFD LPCM.
+        # pw-cat → S16LE pipe; convert to S16BE for WFD LPCM.
         aud_pipeline = (
             f"fdsrc fd={ar_fd} do-timestamp=true ! "
             "audio/x-raw,format=S16LE,rate=48000,channels=2,"
@@ -407,10 +396,7 @@ class WlrootsMixin:
             muxer.stop()
             raise
 
-        # Honor FLUXCAST_WFD_WF_RECORDER_DAMAGE like the DMA paths.
-        # Default remains continuous (-D). With DAMAGE=1, omit -D (damage-aware).
-        # Note: on stock Hyprland ICC, damage-aware can lag keystrokes until
-        # pointer motion; patched scheduleFrame-on-share mitigates that.
+        # Same -D / DAMAGE policy as the DMA paths (_wf_damage_flag).
         wf_cmd = [
             wf_recorder,
             "-y",
@@ -434,9 +420,8 @@ class WlrootsMixin:
         os.close(w_fd)
         self._watch_sender_stderr(wf_proc, "wf-recorder-lpcm")
 
-        # Explicit sink-monitor → raw S16LE (never default source/mic).
-        # Prefer pw-cat --target so WirePlumber/stream-restore cannot remap
-        # the capture onto Speakers.monitor (ffmpeg -f pulse Lavf* did that).
+        # pw-cat --target binds the sink .monitor node (S16LE).
+        # media.role=Abstract avoids Pulse stream-restore remapping.
         aud_cmd = [
             "pw-cat",
             "-r",
@@ -445,8 +430,6 @@ class WlrootsMixin:
             "--rate", "48000",
             "--channels", "2",
             "--format", "s16",
-            # Avoid media.role=Video — Pulse stream-restore keys on that role and
-            # remaps onto the default source (mic) → TV speakers→mic→TV feedback.
             "-P", "application.name=fluxcast-wfd-capture",
             "-P", f"media.name={audio_monitor}",
             "-P", "media.role=Abstract",
@@ -455,7 +438,7 @@ class WlrootsMixin:
             "-",
         ]
         if shutil.which("pw-cat") is None:
-            # Fallback: parec with a unique client name (still Pulse, but not Lavf).
+            # Fallback when pw-cat is unavailable.
             aud_cmd = [
                 "parec",
                 f"--device={audio_monitor}",
@@ -508,23 +491,19 @@ class WlrootsMixin:
     def _start_wf_recorder_vaapi_dmabuf(self, wf_recorder: str, monitor) -> None:
         """Capture+encode on GPU (DMA-BUF); ffmpeg only remuxes to RTP.
 
-        Colorspace notes (Intel + Hyprland):
-        - DMA-BUF frames arrive as RGB/GBR drm primes; scale_vaapi must convert
-          to NV12 with **tv/limited** range (full/pc looked glitchy on sinks).
-        - Stock builds: do **not** pass ``-r`` (appends ``fps=`` after scale_vaapi).
-          ICC builds: pass ``-r`` via ``_wf_capture_rate_args`` for capture cadence.
-        - Force ``bf=0`` + constrained_baseline for Miracast-friendly bitstreams
-          (default High+bframes produced visible “repeating pixel” artifacts).
+        Encode flags:
+        - scale_vaapi → NV12 with out_range=tv (limited).
+        - Stock DMA: omit ``-r``; ICC: ``-r`` via ``_wf_capture_rate_args``.
+        - ``bf=0`` + constrained_baseline for Miracast bitstreams.
         """
         meta = self._desktop_bitrate_plan(monitor)
         audio_monitor = self.config.audio_device or _detect_audio_monitor()
-        # Default CQP is best for desktop text; movie preset uses CBR via
-        # FLUXCAST_WFD_VAAPI_RC (see _vaapi_rc_wf_params).
+        # RC from _vaapi_rc_wf_params (CQP default; CBR via FLUXCAST_WFD_VAAPI_RC).
         rc_params, rc_desc = self._vaapi_rc_wf_params(meta)
         out_w, out_h = meta["parsed_out"]
         device = os.environ.get("FLUXCAST_VAAPI_DEVICE", "").strip() or "/dev/dri/renderD128"
 
-        # out_range=tv (limited) — not full/pc — for TV/Miracast sinks.
+        # out_range=tv (limited) for Miracast sinks.
         if meta["out_res"] != meta["src_res"]:
             vf = f"scale_vaapi=w={out_w}:h={out_h}:format=nv12:out_range=tv"
         else:
@@ -536,7 +515,7 @@ class WlrootsMixin:
             "-y",
             *self._wf_damage_flag(),
             *self._wf_capture_rate_args(wf_recorder),
-            # -b 0 is max b-frames (not bitrate) — required for Miracast sinks.
+            # -b 0 = max b-frames (not bitrate).
             "-o", monitor.name,
             "-c", "h264_vaapi",
             "-d", device,
@@ -546,8 +525,7 @@ class WlrootsMixin:
             "-m", "nut",
             "-f", "/dev/stdout",
         ]
-        # Bake AAC into the same nut as video. A second live pulse input in
-        # ffmpeg stalls reading pipe:0 and fills wf-recorder's buffer pool.
+        # AAC in the same nut container as video (single ffmpeg input).
         if not self.config.no_audio and audio_monitor:
             wf_cmd[1:1] = [f"--audio={audio_monitor}", "-C", "aac", "-R", "48000"]
 
@@ -577,7 +555,7 @@ class WlrootsMixin:
         proto = "icc" if icc else "wlr-screencopy"
         print(
             f"[FluxCast WFD Media] Video encoder   : h264_vaapi via wf-recorder "
-            f"DMA-BUF on {device} ({meta['bias']} power bias, "
+            f"DMA-BUF on {device} ({meta['power_plan']} / {meta['power_plan_name']}, "
             f"{rc_desc}, tv-range, no-bframes, proto={proto})"
         )
         print(

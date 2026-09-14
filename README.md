@@ -19,7 +19,7 @@ why upstream merges matter): see **[BUILD.md](BUILD.md)**.
 - Quiet P2P channel after connect (scan → associate on home Wi‑Fi channel → CSA off that block)
 - Safe scale / position changes (pause capture → move → restart)
 - Safer disconnect teardown (workspace migrate, cursor restore, eDP re-assert)
-- Optional VAAPI/QSV encode with battery / power-saver bias (FluxCast patch)
+- Optional VAAPI/QSV encode with OS power-plan throttling (FluxCast `power_plan_N`)
 
 ## Install
 

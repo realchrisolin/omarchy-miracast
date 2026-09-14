@@ -1,6 +1,7 @@
 import os
 import shutil
 import subprocess
+import threading
 import time
 
 from ..config import WFDNotReady
@@ -11,15 +12,14 @@ from ..encoding import (
 )
 from ..env import _detect_audio_monitor
 from ..hw_encode import (
-    apply_bitrate_bias,
+    apply_bitrate_plan,
     build_encode_plan,
     capture_encode_attempts,
     capture_encode_mode,
     capture_encode_preference,
-    power_bias,
     prefer_wf_recorder_vaapi_dmabuf,
-    vaapi_quality_for_bias,
 )
+from ..power_plan import active_power_plan, encode_throttled
 from ..latency import _append_latency_log
 from ..modes import _h264_level_for_mode
 from ..net import _ffmpeg_sender_args
@@ -34,8 +34,6 @@ class WlrootsMixin:
         preference: str,
         fallback: bool,
     ) -> None:
-        # Field name capture_path — latency helper already uses positional path=
-        # for the log file location.
         _append_latency_log(
             getattr(self.config, "latency_log_path", None),
             "capture_encode",
@@ -128,14 +126,15 @@ class WlrootsMixin:
         parsed_out = _parse_resolution(out_res) or (monitor.width, monitor.height)
         requested_kbits = _bitrate_to_kbits(self.config.bitrate)
         floor_kbits = _quality_floor_kbits(parsed_out[0], parsed_out[1], self.config.fps)
-        bias = power_bias()
-        if bias == "efficient":
+        plan = active_power_plan()
+        throttled = encode_throttled(plan)
+        if throttled:
             effective_kbits = requested_kbits
         else:
             effective_kbits = max(requested_kbits, floor_kbits)
         effective_bitrate = _kbits_to_bitrate_text(effective_kbits)
-        effective_bitrate = apply_bitrate_bias(effective_bitrate, bias)
-        if effective_kbits > requested_kbits and bias == "full":
+        effective_bitrate = apply_bitrate_plan(effective_bitrate, throttled=throttled)
+        if effective_kbits > requested_kbits and not throttled:
             print(
                 "[FluxCast WFD Media] Raising bitrate for desktop clarity: "
                 f"{self.config.bitrate} -> {effective_bitrate}"
@@ -145,7 +144,11 @@ class WlrootsMixin:
             "out_res": out_res,
             "gop": gop,
             "parsed_out": parsed_out,
-            "bias": bias,
+            "power_plan": plan.id,
+            "power_plan_name": plan.name,
+            "throttled": throttled,
+            # Deprecated alias for older log formatters.
+            "bias": plan.id,
             "effective_bitrate": effective_bitrate,
             "effective_kbits": _bitrate_to_kbits(effective_bitrate),
             "level": _h264_level_for_mode(self.config),
@@ -153,9 +156,7 @@ class WlrootsMixin:
         }
 
     def _wf_damage_flag(self) -> list[str]:
-        # Keep historical wf-recorder -D (continuous / no-damage) by default so
-        # existing FluxCast sessions do not change cadence. Opt into damage-
-        # aware capture with FLUXCAST_WFD_WF_RECORDER_DAMAGE=1 (omit -D).
+        # Default: -D (continuous). FLUXCAST_WFD_WF_RECORDER_DAMAGE=1 omits -D.
         damage_aware = os.environ.get("FLUXCAST_WFD_WF_RECORDER_DAMAGE", "").strip().lower() in (
             "1", "true", "yes", "on",
         )
@@ -164,36 +165,165 @@ class WlrootsMixin:
     def _wf_capture_rate_args(self, wf_recorder: str) -> list[str]:
         """Capture cadence flags for this wf-recorder build.
 
-        Stock wlr-screencopy DMA: do **not** pass ``-r`` — it appends ``fps=N``
-        after ``scale_vaapi`` and forces a VAAPI→software conversion (glitchy).
+        Stock wlr-screencopy DMA: omit ``-r`` (it appends ``fps=N`` after
+        ``scale_vaapi`` and forces VAAPI→software conversion).
 
-        ext-image-copy-capture (PR #347): ``-r`` sets the client request rate
-        without that fps filter; without it the PR defaults to 60. Pass ``-r``
-        only when the binary advertises ICC/toplevel support.
+        ICC (ext-image-copy-capture): pass ``-r`` as the client request rate
+        (defaults to 60 without it). Only when the binary advertises ICC.
         """
         if wf_recorder_supports_icc(wf_recorder):
-            return ["-r", str(self.config.fps)]
+            # -r matches config.fps (encode framerate). Override:
+            # FLUXCAST_WFD_ICC_CAPTURE_FPS.
+            icc_fps = (os.environ.get("FLUXCAST_WFD_ICC_CAPTURE_FPS") or "").strip()
+            if not icc_fps:
+                try:
+                    icc_fps = str(int(self.config.fps))
+                except (TypeError, ValueError, AttributeError):
+                    icc_fps = "30"
+            return ["-r", icc_fps]
         return []
+
+    def _maybe_rebind_for_impairment(self, reason: str) -> None:
+        """Restart desktop capture after DTS/pool spikes (debounced)."""
+        now = time.monotonic()
+        last = float(getattr(self, "_last_impairment_rebind", 0.0) or 0.0)
+        if now - last < 20.0:
+            return
+        if getattr(self, "restarting", False):
+            return
+        self._last_impairment_rebind = now
+        print(
+            f"[FluxCast WFD Media] Auto-rebind after {reason} "
+            "(buffer-pool / DTS stutter recovery)",
+            flush=True,
+        )
+        try:
+            self.restart_video()
+        except Exception as exc:
+            print(f"[FluxCast WFD Media] Auto-rebind failed: {exc}", flush=True)
+
+    def _watch_sender_stderr(self, proc: subprocess.Popen, label: str) -> None:
+        """Relay sender stderr and trigger rebind on known impairment lines."""
+
+        def _run() -> None:
+            if proc.stderr is None:
+                return
+            pool_hits = 0
+            window_start = time.monotonic()
+            try:
+                for raw in iter(proc.stderr.readline, b""):
+                    try:
+                        line = raw.decode(errors="replace").rstrip()
+                    except Exception:
+                        continue
+                    if line:
+                        print(line, flush=True)
+                    now = time.monotonic()
+                    if now - window_start > 5.0:
+                        pool_hits = 0
+                        window_start = now
+                    low = line.lower()
+                    if "non monotonically" in low or "non-monotonically" in low:
+                        self._maybe_rebind_for_impairment("dts")
+                    elif "buffer pool full" in low:
+                        pool_hits += 1
+                        if pool_hits >= 2:
+                            self._maybe_rebind_for_impairment("buffer-pool")
+            except Exception:
+                pass
+            finally:
+                try:
+                    proc.stderr.close()
+                except Exception:
+                    pass
+
+        threading.Thread(
+            target=_run, name=f"fluxcast-{label}-stderr", daemon=True
+        ).start()
+
+    def _vaapi_rc_wf_params(self, meta: dict) -> tuple[list[str], str]:
+        """Build wf-recorder ``-p`` rate-control args for h264_vaapi.
+
+        Env:
+          FLUXCAST_WFD_VAAPI_RC — CQP (default), CBR, or VBR
+          FLUXCAST_WFD_VAAPI_QP — CQP quantizer (default 18)
+          FLUXCAST_WFD_VAAPI_BITRATE — CBR/VBR target (e.g. 12M); falls back
+            to the desktop bitrate plan
+          FLUXCAST_WFD_VAAPI_GOP — GOP frames (default = stream fps ≈ 1s)
+        """
+        rc = (os.environ.get("FLUXCAST_WFD_VAAPI_RC", "") or "CQP").strip().upper()
+        if rc not in ("CQP", "CBR", "VBR", "AVBR", "QVBR", "ICQ"):
+            rc = "CQP"
+        quality = (os.environ.get("FLUXCAST_WFD_VAAPI_QUALITY", "") or "4").strip() or "4"
+        _gop_env = (os.environ.get("FLUXCAST_WFD_VAAPI_GOP", "") or "").strip()
+        try:
+            gop = max(1, int(_gop_env)) if _gop_env else max(meta["gop"], int(self.config.fps))
+        except (TypeError, ValueError):
+            gop = max(meta["gop"], int(self.config.fps))
+
+        if rc == "CQP":
+            qp = (os.environ.get("FLUXCAST_WFD_VAAPI_QP", "") or "18").strip() or "18"
+            params = [
+                "-p", f"rc_mode={rc}",
+                "-p", f"qp={qp}",
+                "-p", f"gop_size={gop}",
+                "-p", f"quality={quality}",
+                "-p", "bf=0",
+                "-p", "profile=constrained_baseline",
+                "-p", f"framerate={self.config.fps}",
+            ]
+            desc = f"{rc} qp={qp}, gop={gop}, quality={quality}"
+        else:
+            br = (os.environ.get("FLUXCAST_WFD_VAAPI_BITRATE", "") or "").strip()
+            if not br:
+                br = meta.get("effective_bitrate") or self.config.bitrate or "12M"
+            # AVOption name is ``b`` (bits/s), not ``bitrate``. Set before
+            # rc_mode so CBR validation sees a target.
+            br_bits = _bitrate_to_kbits(br) * 1000
+            params = [
+                "-p", f"b={br_bits}",
+                "-p", f"rc_mode={rc}",
+                "-p", f"gop_size={gop}",
+                "-p", f"quality={quality}",
+                "-p", "bf=0",
+                "-p", "profile=constrained_baseline",
+                "-p", f"framerate={self.config.fps}",
+            ]
+            desc = f"{rc} bitrate={br}, gop={gop}, quality={quality}"
+        return params, desc
 
     def _start_wf_recorder_lpcm(self, wf_recorder: str, monitor) -> None:
         """DMA-BUF H.264 + WFD LPCM mux for LPCM-only sinks (e.g. many TVs).
 
         ffmpeg mpegtsmux cannot emit WFD stream_type 0x83; reuse WFDLPCMMuxer
-        (same path as the Microsoft adapter) with wf-recorder annex-B video and
-        pulsesrc PCM audio.
+        with wf-recorder annex-B video and Pulse *sink monitor* PCM (same
+        device string as ``wf-recorder --audio=``).
         """
         meta = self._desktop_bitrate_plan(monitor)
+        rc_params, rc_desc = self._vaapi_rc_wf_params(meta)
         audio_monitor = self.config.audio_device or _detect_audio_monitor()
         if not audio_monitor:
             raise WFDNotReady("LPCM path requires a Pulse/PipeWire audio monitor")
+        # Capture must be a sink .monitor node, not a mic/default source.
+        am = audio_monitor.strip()
+        if am in ("default", "auto") or "input" in am.lower():
+            raise WFDNotReady(
+                f"Refusing LPCM capture from {audio_monitor!r}; "
+                "need a sink monitor like 'miracast.monitor'"
+            )
+        if not am.endswith(".monitor"):
+            am = f"{am}.monitor"
+            print(
+                f"[FluxCast WFD Media] Audio device {audio_monitor!r} is not a "
+                f"monitor; using {am!r}"
+            )
+        audio_monitor = am
 
         try:
             from drivers.wfd_lpcm_mux import WFDLPCMMuxer
         except ImportError as exc:
             raise WFDNotReady(f"WFDLPCMMuxer unavailable: {exc}") from exc
 
-        qp = (os.environ.get("FLUXCAST_WFD_VAAPI_QP", "") or "18").strip() or "18"
-        gop = max(meta["gop"], int(self.config.fps) * 2)
         out_w, out_h = meta["parsed_out"]
         device = os.environ.get("FLUXCAST_VAAPI_DEVICE", "").strip() or "/dev/dri/renderD128"
         if meta["out_res"] != meta["src_res"]:
@@ -204,7 +334,69 @@ class WlrootsMixin:
         r_fd, w_fd = os.pipe()
         os.set_inheritable(r_fd, True)
         os.set_inheritable(w_fd, True)
+        # Enlarge pipe capacity so a slow muxer does not block the recorder.
+        try:
+            import fcntl
 
+            pipe_sz = 1 << 20  # 1 MiB
+            fcntl.fcntl(r_fd, fcntl.F_SETPIPE_SZ, pipe_sz)
+            fcntl.fcntl(w_fd, fcntl.F_SETPIPE_SZ, pipe_sz)
+        except OSError:
+            pass
+        ar_fd, aw_fd = os.pipe()
+        os.set_inheritable(ar_fd, True)
+        os.set_inheritable(aw_fd, True)
+
+        print(f"[FluxCast WFD Media] Capturing screen : {monitor.name} ({meta['src_res']})")
+        print(
+            f"[FluxCast WFD Media] Capturing audio  : {audio_monitor} "
+            "(sink monitor via pw-cat — not mic)"
+        )
+        print(
+            "[FluxCast WFD Media] Video encoder   : h264_vaapi DMA-BUF + "
+            f"WFDLPCMMuxer (stream_type=0x83, {rc_desc})"
+        )
+        print(
+            f"[FluxCast WFD Media] RTP target      : "
+            f"{self.tv_ip}:{self.sink_rtp_port} from local port {self.config.source_port}"
+        )
+
+        # Bind RTP before spawning capture (fail cleanly without orphans).
+        muxer = WFDLPCMMuxer(
+            self.tv_ip,
+            self.sink_rtp_port,
+            local_ip=self.local_ip,
+            local_port=self.config.source_port,
+        )
+
+        # appsink: max-buffers=1 drop=true (drop whole AUs; no intermediate queue).
+        vid_pipeline = (
+            f"fdsrc fd={r_fd} do-timestamp=true ! "
+            "h264parse config-interval=-1 ! "
+            "video/x-h264,stream-format=byte-stream,alignment=au ! "
+            "appsink name=sink sync=false max-buffers=1 drop=true"
+        )
+        # pw-cat → S16LE pipe; convert to S16BE for WFD LPCM.
+        aud_pipeline = (
+            f"fdsrc fd={ar_fd} do-timestamp=true ! "
+            "audio/x-raw,format=S16LE,rate=48000,channels=2,"
+            "layout=interleaved ! "
+            "audioconvert ! audio/x-raw,format=S16BE ! "
+            "audiobuffersplit output-buffer-size=1920 ! "
+            "appsink name=sink sync=false max-buffers=32 drop=false"
+        )
+
+        try:
+            muxer.start(vid_pipeline, aud_pipeline)
+        except Exception:
+            os.close(r_fd)
+            os.close(w_fd)
+            os.close(ar_fd)
+            os.close(aw_fd)
+            muxer.stop()
+            raise
+
+        # Same -D / DAMAGE policy as the DMA paths (_wf_damage_flag).
         wf_cmd = [
             wf_recorder,
             "-y",
@@ -215,101 +407,103 @@ class WlrootsMixin:
             "-d", device,
             "-b", "0",
             "-F", vf,
-            "-p", "rc_mode=CQP",
-            "-p", f"qp={qp}",
-            "-p", f"gop_size={gop}",
-            "-p", "quality=4",
-            "-p", "bf=0",
-            "-p", "profile=constrained_baseline",
-            "-p", f"framerate={self.config.fps}",
+            *rc_params,
             "-m", "h264",
             "-f", "/dev/stdout",
         ]
-
-        print(f"[FluxCast WFD Media] Capturing screen : {monitor.name} ({meta['src_res']})")
-        print(f"[FluxCast WFD Media] Capturing audio  : {audio_monitor} (WFD LPCM)")
-        print(
-            "[FluxCast WFD Media] Video encoder   : h264_vaapi DMA-BUF + "
-            "WFDLPCMMuxer (stream_type=0x83)"
-        )
-        print(
-            f"[FluxCast WFD Media] RTP target      : "
-            f"{self.tv_ip}:{self.sink_rtp_port} from local port {self.config.source_port}"
-        )
-
         wf_proc = subprocess.Popen(
             wf_cmd,
             stdout=w_fd,
-            stderr=None,
+            stderr=subprocess.PIPE,
             pass_fds=(w_fd,),
         )
         os.close(w_fd)
+        self._watch_sender_stderr(wf_proc, "wf-recorder-lpcm")
 
-        vid_pipeline = (
-            f"fdsrc fd={r_fd} do-timestamp=true ! queue max-size-buffers=8 ! "
-            "h264parse config-interval=-1 ! "
-            "video/x-h264,stream-format=byte-stream ! "
-            "appsink name=sink sync=false max-buffers=4 drop=true"
+        # pw-cat --target binds the sink .monitor node (S16LE).
+        # media.role=Abstract avoids Pulse stream-restore remapping.
+        aud_cmd = [
+            "pw-cat",
+            "-r",
+            "-a",
+            "--target", audio_monitor,
+            "--rate", "48000",
+            "--channels", "2",
+            "--format", "s16",
+            "-P", "application.name=fluxcast-wfd-capture",
+            "-P", f"media.name={audio_monitor}",
+            "-P", "media.role=Abstract",
+            "-P", "media.category=Capture",
+            "-P", f"target.object={audio_monitor}",
+            "-",
+        ]
+        if shutil.which("pw-cat") is None:
+            # Fallback when pw-cat is unavailable.
+            aud_cmd = [
+                "parec",
+                f"--device={audio_monitor}",
+                "--client-name=fluxcast-wfd-capture",
+                f"--stream-name={audio_monitor}",
+                "--rate=48000",
+                "--channels=2",
+                "--format=s16le",
+                "--raw",
+                "--property=media.role=Abstract",
+                f"--property=module-stream-restore.id=fluxcast-wfd:{audio_monitor}",
+            ]
+        aud_proc = subprocess.Popen(
+            aud_cmd,
+            stdout=aw_fd,
+            stderr=None,
+            pass_fds=(aw_fd,),
         )
-        aud_pipeline = (
-            f"pulsesrc device={audio_monitor} do-timestamp=true ! "
-            "audioconvert ! audioresample ! "
-            "audio/x-raw,format=S16BE,rate=48000,channels=2,"
-            "layout=interleaved ! "
-            "appsink name=sink sync=false max-buffers=8 drop=true"
-        )
-
-        muxer = WFDLPCMMuxer(self.tv_ip, self.sink_rtp_port)
-        try:
-            muxer.start(vid_pipeline, aud_pipeline)
-        except Exception:
-            wf_proc.terminate()
-            try:
-                wf_proc.wait(timeout=2)
-            except Exception:
-                wf_proc.kill()
-            os.close(r_fd)
-            raise
+        os.close(aw_fd)
 
         time.sleep(2.0)
-        if wf_proc.poll() is not None or not muxer._mux_thread or not muxer._mux_thread.is_alive():
+        if (
+            wf_proc.poll() is not None
+            or aud_proc.poll() is not None
+            or not muxer._mux_thread
+            or not muxer._mux_thread.is_alive()
+        ):
             muxer.stop()
-            if wf_proc.poll() is None:
-                wf_proc.terminate()
+            for proc in (wf_proc, aud_proc):
+                if proc.poll() is None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=2)
+                    except Exception:
+                        proc.kill()
             os.close(r_fd)
+            os.close(ar_fd)
             raise WFDNotReady("WFD LPCM muxer failed to stay up")
 
         self._lpcm_muxer = muxer
         self.processes.append(wf_proc)
-        # r_fd stays open for in-process fdsrc for the session lifetime
+        self.processes.append(aud_proc)
         self._lpcm_video_fd = r_fd
+        self._lpcm_audio_fd = ar_fd
+        print(
+            f"[FluxCast WFD Media] LPCM muxer up "
+            f"(audio_frames={muxer.audio_frames_sent}, video_frames={muxer.frames_sent})"
+        )
 
     def _start_wf_recorder_vaapi_dmabuf(self, wf_recorder: str, monitor) -> None:
         """Capture+encode on GPU (DMA-BUF); ffmpeg only remuxes to RTP.
 
-        Colorspace notes (Intel + Hyprland):
-        - DMA-BUF frames arrive as RGB/GBR drm primes; scale_vaapi must convert
-          to NV12 with **tv/limited** range (full/pc looked glitchy on sinks).
-        - Stock builds: do **not** pass ``-r`` (appends ``fps=`` after scale_vaapi).
-          ICC builds: pass ``-r`` via ``_wf_capture_rate_args`` for capture cadence.
-        - Force ``bf=0`` + constrained_baseline for Miracast-friendly bitstreams
-          (default High+bframes produced visible “repeating pixel” artifacts).
+        Encode flags:
+        - scale_vaapi → NV12 with out_range=tv (limited).
+        - Stock DMA: omit ``-r``; ICC: ``-r`` via ``_wf_capture_rate_args``.
+        - ``bf=0`` + constrained_baseline for Miracast bitstreams.
         """
         meta = self._desktop_bitrate_plan(monitor)
         audio_monitor = self.config.audio_device or _detect_audio_monitor()
-        # DMA encode is GPU-cheap. Prefer constant-quality (CQP) over bitrate
-        # modes: on this Intel+wf-recorder DMA path, AVBR/CBR undershoot to a
-        # few hundred kb/s on desktop content → blocky text and periodic dips
-        # around IDR frames. Wi‑Fi P2P (~70 Mbps) has headroom for CQP peaks.
-        # Override QP with FLUXCAST_WFD_VAAPI_QP (lower = sharper, bigger).
-        qp = (os.environ.get("FLUXCAST_WFD_VAAPI_QP", "") or "18").strip() or "18"
-        quality = "4"  # VAAPI speed/quality tradeoff (lower = slower/better)
-        # 2s GOP cuts IDR spikes vs 1s (fps) without hurting Miracast recovery.
-        gop = max(meta["gop"], int(self.config.fps) * 2)
+        # RC from _vaapi_rc_wf_params (CQP default; CBR via FLUXCAST_WFD_VAAPI_RC).
+        rc_params, rc_desc = self._vaapi_rc_wf_params(meta)
         out_w, out_h = meta["parsed_out"]
         device = os.environ.get("FLUXCAST_VAAPI_DEVICE", "").strip() or "/dev/dri/renderD128"
 
-        # out_range=tv (limited) — not full/pc — for TV/Miracast sinks.
+        # out_range=tv (limited) for Miracast sinks.
         if meta["out_res"] != meta["src_res"]:
             vf = f"scale_vaapi=w={out_w}:h={out_h}:format=nv12:out_range=tv"
         else:
@@ -321,24 +515,17 @@ class WlrootsMixin:
             "-y",
             *self._wf_damage_flag(),
             *self._wf_capture_rate_args(wf_recorder),
-            # -b 0 is max b-frames (not bitrate) — required for Miracast sinks.
+            # -b 0 = max b-frames (not bitrate).
             "-o", monitor.name,
             "-c", "h264_vaapi",
             "-d", device,
             "-b", "0",
             "-F", vf,
-            "-p", "rc_mode=CQP",
-            "-p", f"qp={qp}",
-            "-p", f"gop_size={gop}",
-            "-p", f"quality={quality}",
-            "-p", "bf=0",
-            "-p", "profile=constrained_baseline",
-            "-p", f"framerate={self.config.fps}",
+            *rc_params,
             "-m", "nut",
             "-f", "/dev/stdout",
         ]
-        # Bake AAC into the same nut as video. A second live pulse input in
-        # ffmpeg stalls reading pipe:0 and fills wf-recorder's buffer pool.
+        # AAC in the same nut container as video (single ffmpeg input).
         if not self.config.no_audio and audio_monitor:
             wf_cmd[1:1] = [f"--audio={audio_monitor}", "-C", "aac", "-R", "48000"]
 
@@ -368,9 +555,8 @@ class WlrootsMixin:
         proto = "icc" if icc else "wlr-screencopy"
         print(
             f"[FluxCast WFD Media] Video encoder   : h264_vaapi via wf-recorder "
-            f"DMA-BUF on {device} ({meta['bias']} power bias, "
-            f"CQP qp={qp}, gop={gop}, quality={quality}, tv-range, no-bframes, "
-            f"proto={proto})"
+            f"DMA-BUF on {device} ({meta['power_plan']} / {meta['power_plan_name']}, "
+            f"{rc_desc}, tv-range, no-bframes, proto={proto})"
         )
         print(
             f"[FluxCast WFD Media] RTP target      : "
@@ -480,13 +666,17 @@ class WlrootsMixin:
         return plan.name
 
     def _spawn_wf_ffmpeg(self, wf_cmd: list[str], ffmpeg_cmd: list[str]) -> None:
-        wf_proc = subprocess.Popen(wf_cmd, stdout=subprocess.PIPE, stderr=None)
+        wf_proc = subprocess.Popen(wf_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if wf_proc.stdout is None:
             wf_proc.kill()
             raise WFDNotReady("wf-recorder did not expose stdout.")
 
-        ffmpeg_proc = subprocess.Popen(ffmpeg_cmd, stdin=wf_proc.stdout, stderr=None)
+        ffmpeg_proc = subprocess.Popen(
+            ffmpeg_cmd, stdin=wf_proc.stdout, stderr=subprocess.PIPE
+        )
         wf_proc.stdout.close()
+        self._watch_sender_stderr(wf_proc, "wf-recorder")
+        self._watch_sender_stderr(ffmpeg_proc, "ffmpeg")
         time.sleep(1.0)
 
         if wf_proc.poll() is not None:
