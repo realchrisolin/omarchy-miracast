@@ -262,6 +262,11 @@ def sanitize_private_run(private: dict[str, Any]) -> dict[str, Any]:
             "persist_display": session.get("persist_display"),
         },
         "radio": radio,
+        "quality": private.get("quality_public")
+        or {
+            "criteria": (private.get("quality") or {}).get("criteria"),
+            "window_s": (private.get("quality") or {}).get("window_s"),
+        },
         "metrics": public_metrics,
         "notes": private.get("public_notes") or private.get("notes") or [],
         "omitted": [

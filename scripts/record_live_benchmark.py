@@ -35,6 +35,7 @@ from benchmark_privacy import (  # noqa: E402
 )
 from fingerprint_miracast_sink import fingerprint_sink, public_identity  # noqa: E402
 from radio_snapshot import collect_radio, public_radio  # noqa: E402
+from quality_snapshot import collect_quality  # noqa: E402
 
 
 def _run(cmd: list[str], timeout: float = 5.0) -> str:
@@ -122,6 +123,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     tx = (radio.get("p2p") or {}).get("tx_kbps_sample")
     if tx is None:
         tx = _p2p_tx_kbps(status.get("p2pIface"), args.tx_sample)
+    print(f"[record-live] quality probes (window {args.sample}s)…", file=sys.stderr)
+    quality = collect_quality(radio=radio, window_s=max(args.sample, 15.0))
 
     host_full = collect_host(full=True)
     sink = host_full.get("sink") or {}
@@ -193,10 +196,24 @@ def main(argv: Optional[list[str]] = None) -> int:
         },
         "radio": radio,
         "radio_public": public_radio(radio),
+        "quality": quality,
+        "quality_public": {
+            "criteria": (quality.get("criteria") or {}),
+            "window_s": quality.get("window_s"),
+            "capture_restarts": (quality.get("cast_log") or {}).get("capture_restarts"),
+            "hard_error_hits": (quality.get("cast_log") or {}).get("hard_error_hits"),
+            "tx_stability_cv": (quality.get("cast_log") or {}).get("tx_stability_cv")
+            or ((quality.get("latency_log") or {}).get("tx_stability_cv")),
+            "setup_ms": (quality.get("latency_log") or {}).get("setup_ms"),
+            "sender_path_latency_ms": (quality.get("latency_log") or {}).get(
+                "sender_path_latency_ms"
+            ),
+        },
         "status_raw": status,
         "public_notes": [
             "Live Extend spot-check; private dump includes sink MAC / Wi-Fi SSIDs.",
             "Public radio fields: channels/width/freq, MCC, role, signal, bitrates, TX sample.",
+            "Quality: lightweight delivery/radio criteria (not VMAF/SSIM).",
         ],
         "notes": [
             "PRIVATE — do not commit. Sanitize with scripts/sanitize_benchmark_results.py.",

@@ -1,5 +1,5 @@
 {
-  "id": "20260914_lg-webos-tv-sm8600pua_live_session_bcd204192f",
+  "id": "20260914_lg-webos-tv-sm8600pua_live_session_234556f6c9",
   "ts": "2026-09-14T16:09:19+00:00",
   "kind": "live_session",
   "sink": {
@@ -49,11 +49,11 @@
       "channel": 44,
       "freq_mhz": 5220,
       "width_mhz": 80,
-      "signal_dbm": -51,
-      "tx_bitrate_mbps": 1080.6,
-      "rx_bitrate_mbps": 1200.9,
-      "tx_bitrate_raw": "1080.6 MBit/s 80MHz HE-MCS 10 HE-NSS 2 HE-GI 0 HE-DCM 0",
-      "rx_bitrate_raw": "1200.9 MBit/s 80MHz HE-MCS 11 HE-NSS 2 HE-GI 0 HE-DCM 0"
+      "signal_dbm": -53,
+      "tx_bitrate_mbps": 600.4,
+      "rx_bitrate_mbps": 1080.6,
+      "tx_bitrate_raw": "600.4 MBit/s 80MHz HE-MCS 11 HE-NSS 1 HE-GI 0 HE-DCM 0",
+      "rx_bitrate_raw": "1080.6 MBit/s 80MHz HE-MCS 10 HE-NSS 2 HE-GI 0 HE-DCM 0"
     },
     "p2p": {
       "iface": "p2p-wlp0s20-5",
@@ -61,12 +61,12 @@
       "freq_mhz": 5745,
       "width_mhz": 80,
       "role": "P2P-client",
-      "signal_dbm": -50,
-      "tx_bitrate_mbps": 585.1,
+      "signal_dbm": -49,
+      "tx_bitrate_mbps": 866.7,
       "rx_bitrate_mbps": 866.7,
-      "tx_bitrate_raw": "585.1 MBit/s VHT-MCS 6 80MHz short GI VHT-NSS 2",
+      "tx_bitrate_raw": "866.7 MBit/s VHT-MCS 9 80MHz short GI VHT-NSS 2",
       "rx_bitrate_raw": "866.7 MBit/s VHT-MCS 9 80MHz short GI VHT-NSS 2",
-      "tx_kbps_sample": 13360.7,
+      "tx_kbps_sample": 11803.9,
       "tx_sample_s": 2.0
     },
     "negotiation": {
@@ -79,9 +79,43 @@
       "oper_channel_soft_pin": 149
     }
   },
+  "quality": {
+    "criteria": {
+      "overall": "pass",
+      "checks": [
+        {
+          "name": "p2p_signal",
+          "status": "pass",
+          "detail": "-49 dBm"
+        },
+        {
+          "name": "delivery_errors",
+          "status": "pass",
+          "detail": "no restarts/hard errors in window"
+        },
+        {
+          "name": "tx_stability",
+          "status": "pass",
+          "detail": "cv=0.286"
+        },
+        {
+          "name": "p2p_tx_bitrate",
+          "status": "pass",
+          "detail": "866.7 Mb/s"
+        }
+      ],
+      "note": "Lightweight delivery/radio criteria only \u2014 not perceptual video quality (no VMAF/SSIM/blockiness)."
+    },
+    "window_s": 20.0,
+    "capture_restarts": 0,
+    "hard_error_hits": 0,
+    "tx_stability_cv": 0.286,
+    "setup_ms": 6710.7,
+    "sender_path_latency_ms": 7425.0
+  },
   "metrics": {
     "hyprland_pct_one_core": 5.83,
-    "p2p_tx_kbps": 13360.7,
+    "p2p_tx_kbps": 11803.9,
     "sta_channel": 44,
     "p2p_channel": 149,
     "sta_freq_mhz": 5220,

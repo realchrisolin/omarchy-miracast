@@ -107,6 +107,8 @@ def _row(pub: dict[str, Any]) -> list[str]:
     cpu = (host.get("cpu") or "—")
     if isinstance(cpu, str) and len(cpu) > 42:
         cpu = cpu[:39] + "…"
+    q = pub.get("quality") or {}
+    crit = (q.get("criteria") or {}).get("overall") or "—"
     return [
         _fmt(pub.get("ts", "")[:10]),
         sink_cell,
@@ -115,6 +117,7 @@ def _row(pub: dict[str, Any]) -> list[str]:
         _fmt(hypr),
         _fmt(tx),
         _radio_summary(pub),
+        _fmt(crit),
         cpu,
         _fmt(wifi.get("driver")),
         _fmt(pub.get("kind")),
@@ -130,6 +133,7 @@ def render_markdown_table(public_rows: list[dict[str, Any]]) -> str:
         "Hyprland %",
         "P2P TX kbps",
         "Radio (ch/bw/MCC/role/signal)",
+        "Quality",
         "Host CPU",
         "Wi‑Fi driver",
         "Kind",
@@ -143,13 +147,19 @@ def render_markdown_table(public_rows: list[dict[str, Any]]) -> str:
     for pub in sorted(public_rows, key=lambda r: str(r.get("ts") or ""), reverse=True):
         lines.append("| " + " | ".join(_row(pub)) + " |")
     if len(public_rows) == 0:
-        lines.append("| — | — | — | — | — | — | — | — | — | — |")
+        lines.append("| — | — | — | — | — | — | — | — | — | — | — |")
     lines.append("")
     lines.append(
         "Private full dumps (name, MAC, SSIDs) live in `docs/benchmarks/private/` "
         "(gitignored). Contributors: run a bench, then "
         "`./scripts/sanitize_benchmark_results.py` and PR the updated "
         "`docs/benchmarks/public/` files plus this table."
+    )
+    lines.append("")
+    lines.append(
+        "**Quality** is lightweight delivery/radio criteria (`pass`/`warn`/`fail`) "
+        "from `scripts/quality_snapshot.py` — signal floors, capture restarts, TX "
+        "stability — **not** perceptual scores (no VMAF/SSIM)."
     )
     return "\n".join(lines) + "\n"
 
