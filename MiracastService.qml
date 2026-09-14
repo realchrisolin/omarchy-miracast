@@ -517,16 +517,24 @@ Item {
           var data = JSON.parse(String(text || "{}"))
           root.peers = data.peers || []
           var n = root.peers.length
-          var src = data.source ? (" via " + data.source) : ""
-          var ms = data.elapsed_ms != null ? (" in " + data.elapsed_ms + "ms") : ""
-          root.actionStatus = n + " sink" + (n === 1 ? "" : "s") + " found" + src + ms
-          if (data.ok === false && data.error)
-            root.lastError = String(data.error)
-          if (root.phase === "scanning") {
-            root.phase = "idle"
-            root.statusText = Model.miracastPhaseHint("idle", "")
+          if (data.ok === false) {
+            root.lastError = String(data.error || "Scan failed")
+            root.actionStatus = root.lastError
+            if (root.phase === "scanning") {
+              root.phase = "idle"
+              root.statusText = Model.miracastPhaseHint("idle", "")
+            }
+          } else {
+            var src = data.source ? (" via " + data.source) : ""
+            var ms = data.elapsed_ms != null ? (" in " + data.elapsed_ms + "ms") : ""
+            root.actionStatus = n + " sink" + (n === 1 ? "" : "s") + " found" + src + ms
+            root.lastError = ""
+            if (root.phase === "scanning") {
+              root.phase = "idle"
+              root.statusText = Model.miracastPhaseHint("idle", "")
+            }
+            if (root.peers.length === 1) root.persistPeer(root.peers[0].mac, root.peers[0].name)
           }
-          if (root.peers.length === 1) root.persistPeer(root.peers[0].mac, root.peers[0].name)
         } catch (e) {
           root.lastError = "Scan parse failed"
           root.phase = "error"
