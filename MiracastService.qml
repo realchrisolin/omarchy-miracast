@@ -527,7 +527,9 @@ Item {
           } else {
             var src = data.source ? (" via " + data.source) : ""
             var ms = data.elapsed_ms != null ? (" in " + data.elapsed_ms + "ms") : ""
-            root.actionStatus = n + " sink" + (n === 1 ? "" : "s") + " found" + src + ms
+            var live = data.session_active ? " (while casting)" : ""
+            root.actionStatus = n + " sink" + (n === 1 ? "" : "s") + " found" + src + ms + live
+            if (data.warning) root.actionStatus += " — " + String(data.warning)
             root.lastError = ""
             if (root.phase === "scanning") {
               root.phase = "idle"

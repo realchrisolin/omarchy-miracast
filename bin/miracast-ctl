@@ -2273,11 +2273,8 @@ EOS
 }
 
 cmd_scan() {
-  # Refuse while casting / P2P group is up — P2P discovery can drop the live link.
-  if is_running || p2p_group_up; then
-    emit '{"ok":false,"peers":[],"error":"scan refused while Miracast session is active (would disrupt P2P)"}'
-    return 1
-  fi
+  # Allowed while casting: scanner uses short p2p_find without flush and aborts
+  # if the live P2P group drops (see scripts/scan_miracast_sinks.py).
   local timeout_s="${MIRACAST_SCAN_TIMEOUT:-5}"
   local scanner="$PLUGIN_DIR/scripts/scan_miracast_sinks.py"
   # Fast path: lean NM/wpa_cli scanner (no FluxCast cold start). Default 5s,
@@ -2311,13 +2308,20 @@ print(json.dumps({
     "peers": slim,
     "source": data.get("source"),
     "elapsed_ms": data.get("elapsed_ms"),
+    "session_active": data.get("session_active"),
+    "live_discovery": data.get("live_discovery"),
+    "warning": data.get("warning"),
     "error": data.get("error"),
 }, separators=(",", ":")))
 PY
       return 0
     fi
   fi
-  # Fallback: legacy FluxCast --wfd-scan (slower cold start, 8s default).
+  # Fallback: legacy FluxCast --wfd-scan only when idle (disruptive while casting).
+  if is_running || p2p_group_up; then
+    emit '{"ok":false,"peers":[],"error":"fast scanner failed while cast active"}'
+    return 1
+  fi
   local root
   root="$(resolve_fluxcast_root "${1:-}")"
   if [[ -z "$root" || ! -f "$root/src/main.py" ]]; then
