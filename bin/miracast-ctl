@@ -161,6 +161,93 @@ stamp_cast_log() {
 LAT_FILE="$LOG_DIR/latency.jsonl"
 
 PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# When MCC is available, tell wpa_supplicant not to prefer the STA shared freq.
+ensure_p2p_ignore_shared_freq() {
+  local out
+  # Prefer sudo -n (session NOPASSWD / keep-alive). Never pkexec here.
+  if sudo -n true 2>/dev/null; then
+    out="$(sudo -n wpa_cli -i wlp0s20f3 set p2p_ignore_shared_freq 1 2>/dev/null || true)"
+  else
+    out="$(wpa_cli -i wlp0s20f3 set p2p_ignore_shared_freq 1 2>/dev/null || true)"
+  fi
+  echo "[miracast-ctl] p2p_ignore_shared_freq set: ${out:-unknown}"
+}
+
+# Scan Wi-Fi occupancy and pick a quiet 5 GHz P2P channel (else the quietest).
+# Prints the channel number on stdout; empty on failure. Logs reason to stderr.
+pick_p2p_channel() {
+  local script="$PLUGIN_DIR/scripts/pick-p2p-channel.py"
+  local out ch
+  [[ -f "$script" ]] || return 1
+  out="$(python3 "$script" --json --band 5 2>/dev/null || true)"
+  [[ -n "$out" ]] || return 1
+  ch="$(python3 -c 'import json,sys
+try:
+  d=json.load(sys.stdin)
+  if d.get("ok") and d.get("channel") is not None:
+    print(int(d["channel"]))
+    reason=d.get("reason") or ""
+    if reason:
+      print(reason, file=sys.stderr)
+except Exception:
+  pass
+' <<<"$out" 2>"$LOG_DIR/p2p-channel.pick.log" || true)"
+  # Surface the pick reason into the cast log when present.
+  if [[ -s "$LOG_DIR/p2p-channel.pick.log" ]]; then
+    echo "[miracast-ctl] P2P channel pick: $(tr '\n' ' ' <"$LOG_DIR/p2p-channel.pick.log")" >>"$LOG_DIR/cast.log" || true
+  fi
+  [[ "$ch" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$ch"
+}
+
+# Map P2P channel number → MHz (20 MHz primary).
+p2p_channel_to_freq() {
+  local ch="$1"
+  if [[ "$ch" -ge 1 && "$ch" -le 13 ]]; then
+    echo $((2407 + 5 * ch))
+  elif [[ "$ch" -ge 32 && "$ch" -le 177 ]]; then
+    echo $((5000 + 5 * ch))
+  else
+    return 1
+  fi
+}
+
+# After NM forms the group on the STA channel (SCC), CSA the GO onto a quiet
+# channel. AX201/iwlwifi already supports this MCC bind; soft OperChannel does
+# not. Never touches HomeLab / p2p-dev managed state.
+apply_p2p_quiet_csa() {
+  local want_ch="$1"
+  local freq go cur_ch
+  [[ "$want_ch" =~ ^[0-9]+$ ]] || return 1
+  freq="$(p2p_channel_to_freq "$want_ch")" || return 1
+  go="$(iw dev 2>/dev/null | awk '/Interface p2p-/{iface=$2} /type P2P-GO/{print iface; exit}')"
+  [[ -n "$go" ]] || {
+    echo "[miracast-ctl] CSA skip: no P2P-GO iface yet" >>"$LOG_DIR/cast.log"
+    return 1
+  }
+  cur_ch="$(iw dev "$go" info 2>/dev/null | awk '/channel/{print $2; exit}')"
+  if [[ "$cur_ch" == "$want_ch" ]]; then
+    echo "[miracast-ctl] CSA skip: GO $go already on ch $want_ch" >>"$LOG_DIR/cast.log"
+    return 0
+  fi
+  echo "[miracast-ctl] CSA: moving GO $go ch ${cur_ch:-?} → $want_ch (${freq} MHz)" >>"$LOG_DIR/cast.log"
+  local csa_out=""
+  if csa_out="$(sudo -n wpa_cli -i "$go" chan_switch 5 "$freq" bandwidth=20 2>&1)"; then
+    echo "[miracast-ctl] CSA wpa_cli: $csa_out" >>"$LOG_DIR/cast.log"
+    sleep 1
+    cur_ch="$(iw dev "$go" info 2>/dev/null | awk '/channel/{print $2; exit}')"
+    echo "[miracast-ctl] CSA result: GO $go now ch ${cur_ch:-unknown} (wanted $want_ch)" >>"$LOG_DIR/cast.log"
+    [[ "$cur_ch" == "$want_ch" ]]
+  else
+    echo "[miracast-ctl] CSA failed for $go → ch $want_ch (${csa_out:-no output})" >>"$LOG_DIR/cast.log"
+    # Channel may still have moved; record observed freq for debugging.
+    cur_ch="$(iw dev "$go" info 2>/dev/null | awk '/channel/{print $2; exit}')"
+    echo "[miracast-ctl] CSA result: GO $go now ch ${cur_ch:-unknown} (wanted $want_ch, cli failed)" >>"$LOG_DIR/cast.log"
+    return 1
+  fi
+}
+
 # Optional local FluxCast checkout. Prefer FLUXCAST_ROOT in the environment.
 DEFAULT_SPIKE_ROOT="${FLUXCAST_ROOT:-}"
 
@@ -2884,6 +2971,18 @@ print("1" if v in (True,1,"1","true","yes","on") else "0")' "$settings")"
   [[ "$mode" == "extend" ]] && action_word="Extending"
   write_status "connecting" "Connecting to $label" "peer=$peer" "peerName=$peer_name" "monitor=$monitor" "mode=$mode" >/dev/null
 
+  # Quiet-channel target for post-connect CSA (MCC). Soft OperChannel still
+  # passed for logging/preference; NM associates on STA channel first, then
+  # apply_p2p_quiet_csa moves the GO once PLAY is accepted.
+  local p2p_channel="" p2p_channel_args=()
+  p2p_channel="$(pick_p2p_channel 2>>"$LOG_DIR/cast.log" || true)"
+  if [[ "$p2p_channel" =~ ^[0-9]+$ ]]; then
+    p2p_channel_args=(--wfd-p2p-channel "$p2p_channel")
+    echo "[miracast-ctl] P2P quiet target channel=$p2p_channel (CSA after PLAY)" >>"$LOG_DIR/cast.log"
+  else
+    echo "[miracast-ctl] P2P channel scan skipped; stay on STA/SCC channel" >>"$LOG_DIR/cast.log"
+  fi
+
   # Audio default: settings.audioEnabled (true) unless --with-audio / --no-audio.
   if [[ -z "$with_audio" ]]; then
     with_audio="$(python3 -c 'import json,sys
@@ -3035,6 +3134,7 @@ print(str(s.get("vaapiQuality") or "4").strip() or "4")
       --wfd-aosp-pmt-pid \
       --wfd-p2p-backend nm \
       --wfd-go-intent "$go_intent" \
+      "${p2p_channel_args[@]}" \
       --fps "$fps" \
       --output-res "$output_res" \
       --bitrate "$bitrate" \
@@ -3077,6 +3177,10 @@ except Exception: print("")' "$STATUS_FILE" 2>/dev/null || true)"
         write_status "streaming" "$action_word to $label" "peer=$peer" "peerName=$peer_name" "mode=$mode" "monitor=$monitor" "pid=$pid" "running=true" >/dev/null
         saw_play=1
         missing_link=0
+        # Move GO off HomeLab's channel once the sink is fully up (MCC).
+        if [[ "$p2p_channel" =~ ^[0-9]+$ ]]; then
+          apply_p2p_quiet_csa "$p2p_channel" || true
+        fi
       elif [[ "$saw_play" -eq 0 ]]; then
         if rg -q "rtsp_connected" "$LAT_FILE" 2>/dev/null; then
           write_status "rtsp" "RTSP connected; negotiating media" "peer=$peer" "peerName=$peer_name" "mode=$mode" "pid=$pid" "running=true" >/dev/null
@@ -3133,6 +3237,7 @@ Commands:
   doctor [fluxcast-root]
   firewall-open
   scan [fluxcast-root]
+  pick-channel [--json]   # quiet 5 GHz P2P channel (else quietest)
   start --peer MAC [--peer-name NAME] [--mode mirror|extend] [--monitor NAME]
         [--fluxcast-root DIR] [--go-intent N] [--fps N] [--bitrate RATE]
         [--output-res WxH] [--with-audio|--no-audio] [--no-firewall]
@@ -3241,6 +3346,26 @@ except Exception: print("")
   emit "{\"ok\":true,\"mac\":\"$mac\",\"scale\":\"$(extend_scale_get "$mac")\"}"
 }
 
+cmd_pick_channel() {
+  local script="$PLUGIN_DIR/scripts/pick-p2p-channel.py"
+  local want_json=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) want_json=1; shift ;;
+      *) shift ;;
+    esac
+  done
+  if [[ ! -f "$script" ]]; then
+    emit '{"ok":false,"error":"pick-p2p-channel.py missing"}'
+    return 1
+  fi
+  if [[ "$want_json" == "1" ]]; then
+    python3 "$script" --json --band 5
+  else
+    python3 "$script" --band 5
+  fi
+}
+
 main() {
   local cmd="${1:-}"
   shift || true
@@ -3248,6 +3373,7 @@ main() {
     doctor) cmd_doctor "$@" ;;
     firewall-open|firewall_open) cmd_firewall_open "$@" ;;
     scan) cmd_scan "$@" ;;
+    pick-channel|pick_channel) cmd_pick_channel "$@" ;;
     start) cmd_start "$@" ;;
     status) cmd_status "$@" ;;
     stop) cmd_stop "$@" ;;

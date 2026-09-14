@@ -9,7 +9,9 @@ from .constants import WFD_RTSP_PORT, WFD_UIBC_PORT
 from .dump import report_ts_dump
 from .env import _is_hyprland_session, _is_wayland_session
 from .firewall import _close_wfd_firewall_port, _open_wfd_firewall_port
-from .p2p.device import _set_p2p_device_name, _set_p2p_go_intent
+from .p2p.device import (
+    _set_p2p_device_name, _set_p2p_go_intent, _set_p2p_oper_channel,
+)
 from .p2p.nm import (
     _connect_peer, _deactivate_connection, _disconnect_device,
     _nm_p2p_device_path, _wait_for_nm_activation,
@@ -148,11 +150,17 @@ def start_experimental_backend(args) -> None:
                 p2p_channel=getattr(args, "wfd_p2p_channel", None),
             )
         else:
-            # Lower our GO intent before negotiation so the TV becomes the group
-            # owner; most Miracast sinks only start the RTSP session in that role.
+            # Omarchy / miracast-ctl defaults go-intent 15 so we are GO and can
+            # pin OperChannel. Stock FluxCast still defaults to 0 (TV is GO).
             previous_go_intent = _set_p2p_go_intent(
                 args.wfd_interface, getattr(args, "wfd_go_intent", 0)
             )
+            p2p_channel = getattr(args, "wfd_p2p_channel", None)
+            if p2p_channel is not None:
+                # Best-effort: NM has no wifi-p2p channel property, so set it
+                # on wpa_supplicant before AddAndActivateConnection2. Only
+                # effective when we become GO; SCC may still pin to STA.
+                _set_p2p_oper_channel(args.wfd_interface, p2p_channel)
             active_path = _connect_peer(
                 device_path,
                 peer,

@@ -10,7 +10,11 @@ variables set by `miracast-ctl`; damage-aware capture remains opt-in.
 | `src/wfd/hw_encode.py` | Optional VAAPI/QSV encode; capture-encode mode (DMA-BUF vs pipe); battery bias |
 | `src/wfd/mode_state.py` | Persist sink-advertised stream modes for the UI (`FLUXCAST_WFD_MODE_STATE`) |
 | `src/wfd/config.py` | `peer_address` for mode-state JSON |
-| `src/wfd/session.py` | SIGUSR1 capture rebind loop; peer MAC on media config |
+| `src/wfd/session.py` | SIGUSR1 capture rebind loop; peer MAC on media config; NM-path `--wfd-p2p-channel` |
+| `src/wfd/p2p/device.py` | P2P OperChannel for 2.4GHz + non-DFS 5GHz (quiet-channel picks) |
+| `src/wfd/p2p/wpas.py` | Hard Connect `frequency=`; wait for `AP-STA-CONNECTED` before IP flush; remanage on failure |
+| `src/wfd/p2p/wpas_ip.py` | `sudo -n` elevation; `mark_managed` helper |
+| `src/wfd/p2p/dbus.py` | Privileged calls use `sudo -n` (no pkexec) |
 | `src/wfd/media/wlroots.py` | DMA-BUF `h264_vaapi`+CQP; ICC `-r`; LPCM path captures **`*.monitor` via `pw-cat --target`** (not mic/`pipewiresrc`/`ffmpeg -f pulse`) |
 | `src/wfd/wf_recorder.py` | Optional `FLUXCAST_WFD_WF_RECORDER_BIN` / `…_PROTO=icc` for PR #347 builds |
 | `src/wfd/media/pipeline.py` | Desktop `restart_video()`; stop LPCM muxer + close video/audio fds on restart |
@@ -49,6 +53,11 @@ cp patches/fluxcast/src/wfd/hw_encode.py          "$FLUXCAST_ROOT/src/wfd/"
 cp patches/fluxcast/src/wfd/mode_state.py         "$FLUXCAST_ROOT/src/wfd/"
 cp patches/fluxcast/src/wfd/config.py             "$FLUXCAST_ROOT/src/wfd/"
 cp patches/fluxcast/src/wfd/session.py            "$FLUXCAST_ROOT/src/wfd/"
+mkdir -p "$FLUXCAST_ROOT/src/wfd/p2p"
+cp patches/fluxcast/src/wfd/p2p/device.py         "$FLUXCAST_ROOT/src/wfd/p2p/"
+cp patches/fluxcast/src/wfd/p2p/wpas.py           "$FLUXCAST_ROOT/src/wfd/p2p/"
+cp patches/fluxcast/src/wfd/p2p/wpas_ip.py        "$FLUXCAST_ROOT/src/wfd/p2p/"
+cp patches/fluxcast/src/wfd/p2p/dbus.py           "$FLUXCAST_ROOT/src/wfd/p2p/"
 cp patches/fluxcast/src/wfd/media/wlroots.py      "$FLUXCAST_ROOT/src/wfd/media/"
 cp patches/fluxcast/src/wfd/media/pipeline.py     "$FLUXCAST_ROOT/src/wfd/media/"
 cp patches/fluxcast/src/wfd/wf_recorder.py        "$FLUXCAST_ROOT/src/wfd/"

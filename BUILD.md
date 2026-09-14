@@ -148,6 +148,27 @@ omarchy pkg add dnsmasq wf-recorder xorg-xrandr ffmpeg meson ninja \
 - A TV/dongle that actually completes WFD (many “Miracast” sticks are flaky)
 - Hyprland new enough for `ext_image_copy_capture_manager_v1`
 
+### P2P quiet channel (MCC via CSA)
+
+Home Wi‑Fi (STA) and Miracast (P2P-GO) share one radio on typical laptops
+(e.g. Intel AX201 / `iwlwifi`). Soft `--wfd-p2p-channel` during GO negotiation
+is overridden to the STA channel (SCC). The working approach:
+
+1. `scripts/pick-p2p-channel.py` — prefer quiet channels **outside** the STA’s
+   80 MHz block (UNII-3 when STA is on UNII-1 ch 36–48).
+2. Connect with NetworkManager as usual (association succeeds on STA channel).
+3. After PLAY, `miracast-ctl` runs `wpa_cli chan_switch` on the GO iface to the
+   picked channel. Home Wi‑Fi stays up; do **not** unmanage `p2p-dev-*` (that
+   can leave wifi-p2p unavailable until NetworkManager restarts).
+
+```bash
+./scripts/pick-p2p-channel.py --json --band 5
+./scripts/test_pick_p2p_channel.py
+miracast-ctl pick-channel
+# Live check while streaming:
+iw dev   # STA channel vs P2P-GO channel
+```
+
 ### 1. FluxCast (encode + session)
 
 ```bash
@@ -217,7 +238,7 @@ Default is portable: **PATH stock** `wf-recorder`. Point settings at your build:
   "mode": "extend",
   "streamMode": "1280x720p30",
   "captureEncode": "dmabuf",
-  "wfRecorderBin": "/home/YOU/src/wf-recorder/build/wf-recorder",
+  "wfRecorderBin": "$HOME/src/wf-recorder/build/wf-recorder",
   "wfRecorderProto": "auto"
 }
 ```

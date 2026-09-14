@@ -16,6 +16,7 @@ why upstream merges matter): see **[BUILD.md](BUILD.md)**.
 - Scan / connect / disconnect Miracast sinks from the Display panel
 - **Mirror** or **Extend** (Hyprland virtual output named after the sink)
 - Stream mode pills (sink-advertised CEA modes such as 720p30 / 1080p30)
+- Quiet P2P channel after connect (scan → associate on home Wi‑Fi channel → CSA off that block)
 - Safe scale / position changes (pause capture → move → restart)
 - Safer disconnect teardown (workspace migrate, cursor restore, eDP re-assert)
 - Optional VAAPI/QSV encode with battery / power-saver bias (FluxCast patch)
@@ -184,7 +185,14 @@ override per sink in the Display panel (`sinkScales`).
 
 ```bash
 miracast-ctl set-capture-encode dmabuf|vaapi|cpu
+miracast-ctl pick-channel          # quiet 5 GHz P2P target (else quietest)
+miracast-ctl pick-channel --json
 ```
+
+On connect, `miracast-ctl` associates via NetworkManager (same channel as
+home Wi‑Fi), then after PLAY runs a GO **channel switch** to the picked
+quiet channel when the radio supports it (AX201: STA can stay on home Wi‑Fi
+while P2P moves to e.g. UNII-3). See [BUILD.md](BUILD.md) § P2P quiet channel.
 
 ## Virtual output lifecycle (eDP safety)
 

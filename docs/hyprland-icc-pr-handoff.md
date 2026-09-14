@@ -1,41 +1,51 @@
-# Handoff: Hyprland ICC present fix (resume later)
+# Handoff: Hyprland ICC screenshare redraw fix
 
 Last updated: 2026-09-13  
-Status: **local fix validated**; fork branch **pushed**; **PR not opened yet**
+Status: **validated locally**; fork branch **pushed** (`a73e6bd8`); **upstream PR not opened**
 
 ## Goal
 
-Land the Hyprland fix so ICC Miracast Extend no longer stalls typed glyphs (and
-similar small damage) until pointer motion. Keep ICC for GPU cost; stock wlr
-remains the fallback.
+Upstream the Hyprland change so ICC screenshare clients keep receiving frames on
+idle or headless outputs without waiting for unrelated activity (for example
+pointer motion). Prefer ICC for GPU cost; stock wlr-screencopy remains a
+fallback.
 
-## Root cause (confirmed)
+## Root cause
 
-In `CScreenshareFrame::share()` Hyprland only called
-`scheduleFrame` / `damageMonitor` when `m_isFirst`.
+In `CScreenshareFrame::share()`, Hyprland only called `scheduleFrame` /
+`damageMonitor` when `m_isFirst` was true.
 
-wlr-screencopy damages the monitor on (nearly) every share. On headless Miracast
-outputs, ICC therefore kept a stale framebuffer until an unrelated present
-(e.g. mouse move). Evidence:
+wlr-screencopy damages the monitor on (nearly) every share. With ICC, a quiet
+headless output could keep a stale framebuffer until an unrelated redraw.
 
-- `grim` of the Extend head already showed full typed text
-- Stock `/usr/bin/wf-recorder` (wlr) had no typing flush bug
-- Patched Hyprland (always schedule on share) felt “much better” in session
+Evidence from Miracast Extend validation:
+
+- `grim` of the Extend head already showed fully typed text
+- Stock `/usr/bin/wf-recorder` (wlr-screencopy) did not show the typing lag
+- Always scheduling on share resolved the lag in session
 
 Related notes: [icc-text-delay-debug.md](icc-text-delay-debug.md)
 
-## What’s already done
+## Change
 
-### Hyprland upstream prep
+On every share (when a monitor exists), call:
+
+- `PMONITOR->scheduleFrame(AQ_SCHEDULE_NEEDS_FRAME)`
+- `g_pHyprRenderer->damageMonitor(PMONITOR)`
+
+`m_isFirst` still controls full vs incremental buffer damage later in the same
+function. The null monitor pointer is guarded before `damageMonitor`.
+
+## Branch / packaging
 
 | Item | Location |
 |------|----------|
-| Upstream repo | https://github.com/hyprwm/Hyprland |
-| Your fork | https://github.com/realchrisolin/Hyprland |
+| Upstream | https://github.com/hyprwm/Hyprland |
+| Fork | https://github.com/realchrisolin/Hyprland |
 | Branch | `fix/icc-screenshare-schedule-every-share` |
-| Commit | `af2108c04a41440ef3273a597a5b16dffaf29fa5` |
+| Commit | `a73e6bd8c4502dd4eab24b2e53c0b7724c4cc58b` |
 | Local clone | `$HOME/src/Hyprland-icc-pr` |
-| Open PR UI | https://github.com/realchrisolin/Hyprland/pull/new/fix/icc-screenshare-schedule-every-share |
+| Compare | https://github.com/hyprwm/Hyprland/compare/main...realchrisolin:Hyprland:fix/icc-screenshare-schedule-every-share?expand=1 |
 
 Patch copies in this repo:
 
@@ -45,59 +55,37 @@ Patch copies in this repo:
 Local install used for validation:
 
 - Prefix: `~/.local/hyprland-icc-fix/`
-- UWSM enable: `~/.config/uwsm/env.d/50-hyprland-icc-fix`
+- UWSM: `~/.config/uwsm/env.d/50-hyprland-icc-fix`
 - Toggle: `~/.local/hyprland-icc-fix/toggle-icc-fix.sh {on,off,status}`
 
 ### omarchy-miracast packaging
 
-- Plugin source + **tracked** `.so`: `hyprland-plugins/icc-present-kick/`
-- `miracast-ctl` loads plugin when `PROTO=icc`, unloads on stop
-- Docs: this file, `icc-text-delay-debug.md`, BUILD.md §7
+- Plugin source + tracked `.so`: `hyprland-plugins/icc-present-kick/`
+- `miracast-ctl` loads the plugin when `PROTO=icc`, unloads on stop
+- Temporary fallback while Arch Hyprland lacks the upstream fix
 
-Plugin is a **fallback** while on stock Arch Hyprland. After upstream merges,
-plugin can be optional/removed.
-
-### Local commits (not all necessarily pushed)
-
-| Repo | Branch | Notes |
-|------|--------|--------|
-| `fluxcast` | `feat/wfd-hw-encode-modes` | LPCM mux harden commit |
-| `omarchy-miracast` | `master` | LPCM docs/patches + Hyprland packaging commits |
-| `wf-recorder` | `ext-copy-capture` | buffer-pool / NO_PAINT_CURSORS |
-| Hyprland fork | `fix/icc-screenshare-schedule-every-share` | **pushed** to realchrisolin/Hyprland |
-
-## Resume checklist — open the Hyprland PR
+## Upstream PR checklist
 
 1. Read [PR Guidelines](https://wiki.hypr.land/Contributing-and-Debugging/PR-Guidelines/)
-2. Confirm you are [vouched](https://wiki.hypr.land/Contributing-and-Debugging/) (required or PR auto-closes)
-3. Follow [AI policy](https://github.com/hyprwm/.github/blob/main/policies/AI_USAGE.md) — **you** open and manage the PR (no AI-operated PR interactions)
-4. Open PR: base `hyprwm/Hyprland:main` ← `realchrisolin:fix/icc-screenshare-schedule-every-share`
-5. Suggested PR title: `fix: schedule ICC screenshare present on every share`
-6. Suggested body points:
-   - Problem: headless / Miracast Extend ICC stale FB until pointer motion
-   - Evidence: grim has glyphs; wlr OK; patch validates
-   - Change: always `scheduleFrame` + `damageMonitor` in `share()` (match wlr)
-   - Also null-check `PMONITOR` before `damageMonitor`
-   - Test plan: ICC capture on headless/Extend, type without moving mouse
+2. Be [vouched](https://wiki.hypr.land/Contributing-and-Debugging/#getting-vouched) (required)
+3. Follow the [AI Usage Policy](https://github.com/hyprwm/.github/blob/main/policies/AI_USAGE.md)
+4. Open PR: `hyprwm/Hyprland:main` ← `realchrisolin:fix/icc-screenshare-schedule-every-share`
+5. Test plan: ICC capture on a headless/Extend output; type without moving the pointer
 
-## Resume checklist — re-validate after PR / new Hyprland
+## Re-validate after merge / new Hyprland package
 
 ```bash
-~/.local/hyprland-icc-fix/toggle-icc-fix.sh status   # or off once Arch has the fix
+~/.local/hyprland-icc-fix/toggle-icc-fix.sh status
 hyprctl version
-# Miracast settings: wfRecorderBin → ICC build, wfRecorderProto → icc
-# Type on Extend foot without mouse; workspace switch should not smear
+# Miracast: wfRecorderBin → ICC build, wfRecorderProto → icc
 ```
 
-## Optional cleanup later
+## Optional cleanup after upstream merge
 
-- [ ] Unload / stop auto-loading `icc-present-kick` once Arch Hyprland includes the fix
-- [ ] Push omarchy-miracast / fluxcast / wf-recorder commits if not yet pushed
-- [ ] Upstream or drop `WF_RECORDER_NO_PAINT_CURSORS` if still useful
-- [ ] Revisit `softwareCursors` default once ICC present is solid on stock Hyprland
+- [ ] Stop auto-loading `icc-present-kick` once Arch includes the fix
+- [ ] Revisit `softwareCursors` defaults once ICC redraw is solid on stock Hyprland
 
 ## Do not
 
-- Open/manage the Hyprland PR via AI tooling
-- Re-enable the old **function-hook** plugin variant (crashed Hyprland)
-- Force v0.3 “full session forceFullFrames every tick” (caused artifacts)
+- Re-enable the old function-hook plugin variant (crashed Hyprland)
+- Force full-session `forceFullFrames` every tick (caused artifacts)

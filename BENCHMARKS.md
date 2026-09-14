@@ -4,6 +4,11 @@ Live **Extend** session on Omarchy/Hyprland. These numbers motivate shipping
 an ICC-capable `wf-recorder` (and keeping DMA-BUF as the default RENDER
 ENGINE). Setup: [BUILD.md](BUILD.md).
 
+**RF / P2P channel** (quiet-channel CSA / MCC vs SCC on the STA channel) is
+orthogonal to this encode matrix — it changes airtime contention, not
+Hyprland/`ffmpeg` CPU in the tables below. See [BUILD.md](BUILD.md) § P2P
+quiet channel; no separate RF A/B numbers are checked in yet.
+
 ## Capture binaries compared
 
 | Label in tables/charts | Binary | Protocol | Notes |
