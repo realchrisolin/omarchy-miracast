@@ -78,6 +78,20 @@ you are not already running that checkout (see `patches/fluxcast/APPLY.md`).
 
 ## Settings
 
+### CLI on PATH
+
+The Display panel runs `pluginDir/bin/miracast-ctl` directly. For a terminal:
+
+```bash
+mkdir -p ~/.local/bin
+ln -sfn "$PWD/bin/miracast-ctl" ~/.local/bin/miracast-ctl   # from the checkout root
+# ~/.local/bin must be on PATH (Omarchy usually already has it)
+miracast-ctl status
+```
+
+`status` JSON includes live radio fields (no SSIDs): `staChannel`, `p2pChannel`,
+`staWidthMHz`, `p2pRole`, `radioMcc` (true when STA and P2P channels differ).
+
 Override in `~/.config/omarchy-miracast/settings.json` (merged with
 `miracast-ctl` defaults on read):
 

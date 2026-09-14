@@ -160,7 +160,8 @@ stamp_cast_log() {
 }
 LAT_FILE="$LOG_DIR/latency.jsonl"
 
-PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Resolve symlinks (e.g. ~/.local/bin/miracast-ctl → checkout) so scripts/ works.
+PLUGIN_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 
 # When MCC is available, tell wpa_supplicant not to prefer the STA shared freq.
 ensure_p2p_ignore_shared_freq() {
@@ -1750,8 +1751,9 @@ except Exception:
     return
   fi
   # Sibling checkout next to the plugin repo (e.g. ../fluxcast).
+  # Resolve symlinks (e.g. ~/.local/bin/miracast-ctl → checkout) like PLUGIN_DIR.
   local sibling
-  sibling="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/fluxcast"
+  sibling="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd)/fluxcast"
   if [[ -d "$sibling/src" ]]; then
     echo "$sibling"
     return
@@ -2086,6 +2088,12 @@ print(json.dumps(data, separators=(",", ":")))
 ' "$CAPTURE_ENCODE_FILE" "$SETTINGS_FILE" "$LAT_FILE" "$LOG_FILE"
 }
 
+# Merge live STA / P2P-GO channel info from `iw` into status JSON (stdin→stdout).
+# Implementation lives in scripts/ so unit tests can cover the iw parser.
+attach_radio_channel_fields() {
+  python3 "$PLUGIN_DIR/scripts/attach_radio_channel_fields.py"
+}
+
 cmd_set_capture_encode() {
   local value="${1:-}"
   case "$value" in
@@ -2297,7 +2305,7 @@ cmd_status() {
   if is_running; then
     local pid
     pid="$(cat "$PID_FILE")"
-    python3 - "$STATUS_FILE" "$pid" "$settings" "$link_up" <<'PY' | enrich_peer_name | attach_stream_mode_fields | attach_capture_encode_fields
+    python3 - "$STATUS_FILE" "$pid" "$settings" "$link_up" <<'PY' | enrich_peer_name | attach_stream_mode_fields | attach_capture_encode_fields | attach_radio_channel_fields
 import json, sys
 path, pid, settings_raw, link_up = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 try:
@@ -2323,7 +2331,7 @@ print(json.dumps(data, separators=(",", ":")))
 PY
     return 0
   fi
-  python3 - "$STATUS_FILE" "$settings" "$link_up" <<'PY' | enrich_peer_name | attach_stream_mode_fields | attach_capture_encode_fields
+  python3 - "$STATUS_FILE" "$settings" "$link_up" <<'PY' | enrich_peer_name | attach_stream_mode_fields | attach_capture_encode_fields | attach_radio_channel_fields
 import json, sys
 path, settings_raw, link_up = sys.argv[1], sys.argv[2], sys.argv[3]
 try:
