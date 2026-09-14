@@ -2183,6 +2183,11 @@ EOS
 }
 
 cmd_scan() {
+  # Refuse while casting / P2P group is up — P2P discovery can drop the live link.
+  if is_running || p2p_group_up; then
+    emit '{"ok":false,"peers":[],"error":"scan refused while Miracast session is active (would disrupt P2P)"}'
+    return 1
+  fi
   local root
   root="$(resolve_fluxcast_root "${1:-}")"
   if [[ -z "$root" || ! -f "$root/src/main.py" ]]; then

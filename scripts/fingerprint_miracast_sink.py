@@ -13,6 +13,11 @@ Sources (best → fallback):
    addrs are locally administered / randomized and yield nothing)
 5. Heuristic parse of ``device_name`` (e.g. ``[LG] webOS TV SM8600PUA``)
 
+**Session safety:** this module is read-only against wpa (``p2p_peer`` only).
+Never call ``p2p_flush`` / ``p2p_find`` / ``iw scan`` / ``miracast-ctl scan``
+while a cast is active — those disrupt live P2P associations. If the peer is
+not already in the wpa table, fingerprint what caches provide and stop.
+
 Private benches should store the full record. Crowdsource sanitization keeps
 manufacturer / model / device category / capability masks — never MAC/SSID.
 """
@@ -162,8 +167,39 @@ def oui_vendor(mac: str) -> Optional[str]:
     return None
 
 
+def miracast_session_active() -> bool:
+    """True when a Miracast cast or P2P group is up — do not p2p_find/flush."""
+    status = _load_json(_state_dir() / "status.json")
+    phase = str(status.get("phase") or "")
+    if status.get("running") or phase in (
+        "streaming",
+        "connecting",
+        "dhcp",
+        "rtsp",
+        "scanning",
+    ):
+        return True
+    # Live P2P group iface (GO or client) besides p2p-dev-*
+    for path in Path("/sys/class/net").glob("p2p-*"):
+        name = path.name
+        if name.startswith("p2p-dev"):
+            continue
+        oper = path / "operstate"
+        try:
+            if oper.read_text().strip() in ("up", "dormant"):
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def _wpa_cli_p2p_peer(mac: str) -> dict[str, str]:
-    """Return key=value map from ``wpa_cli p2p_peer`` (empty if unavailable)."""
+    """Return key=value map from ``wpa_cli p2p_peer`` (empty if unavailable).
+
+    Read-only: never runs ``p2p_find`` / ``p2p_flush`` (those tear down live
+    Miracast associations). If the peer is not already in the wpa peer table,
+    returns {}.
+    """
     mac_l = mac.lower()
     # Prefer sudo -n (miracast benches often already have keep-alive sudo).
     candidates = [
