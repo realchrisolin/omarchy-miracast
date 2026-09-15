@@ -35,40 +35,31 @@ class EncodeQualityPresetsTest(unittest.TestCase):
     def setUpClass(cls):
         cls.mod = _load()
 
-    def test_all_tiers_fit_20mhz_peak_budget(self):
-        # Reliable maximize: high ≤ 14 Mbps video (under on-device corruption ~22+).
+    def test_budget_knobs_cap_at_14m(self):
         for engine in self.mod.ENGINES:
             for tier in self.mod.TIERS:
                 knobs = self.mod.resolve_preset(engine, tier)
-                peak = _mbps(knobs["vaapiBitrate"])
-                target = _mbps(knobs["bitrate"])
-                self.assertLessEqual(
-                    peak,
-                    14.0 + 1e-6,
-                    f"{engine}/{tier} peak {peak}M exceeds 20 MHz budget",
-                )
-                self.assertLessEqual(target, peak + 1e-6)
+                self.assertLessEqual(_mbps(knobs["vaapiBitrate"]), 14.0 + 1e-6)
+                self.assertLessEqual(_mbps(knobs["bitrate"]), 14.0 + 1e-6)
 
-    def test_dmabuf_high_uses_cbr_at_max_budget(self):
+    def test_dmabuf_high_uses_cqp_not_starved_cbr(self):
         dma = self.mod.resolve_preset("dmabuf", "high")
         pipe = self.mod.resolve_preset("vaapi", "high")
-        self.assertEqual(dma["vaapiRcMode"], "CBR")
+        self.assertEqual(dma["vaapiRcMode"], "CQP")
+        self.assertEqual(dma["vaapiQp"], 18)
+        self.assertEqual(dma["vaapiQuality"], "2")
         self.assertEqual(pipe["vaapiRcMode"], "CBR")
-        self.assertEqual(dma["bitrate"], "14M")
-        self.assertEqual(dma["vaapiBitrate"], "14M")
         self.assertEqual(pipe["bitrate"], "14M")
 
     def test_apply_retargets_on_engine_change(self):
         data = {"captureEncode": "vaapi", "encodeProfile": "high"}
         self.mod.apply_to_settings(data, tier="high", engine="vaapi")
-        self.assertEqual(data["vaapiBitrate"], "14M")
-        self.assertEqual(data["vaapiQuality"], "2")
+        self.assertEqual(data["vaapiRcMode"], "CBR")
         self.mod.apply_to_settings(data, tier="high", engine="dmabuf")
         self.assertEqual(data["captureEncode"], "dmabuf")
-        self.assertEqual(data["encodeProfile"], "high")
-        self.assertEqual(data["vaapiRcMode"], "CBR")
-        self.assertEqual(data["bitrate"], "14M")
-        self.assertEqual(data["vaapiBitrate"], "14M")
+        self.assertEqual(data["vaapiRcMode"], "CQP")
+        self.assertEqual(data["vaapiQp"], 18)
+        self.assertEqual(data["vaapiQuality"], "2")
 
 
 if __name__ == "__main__":

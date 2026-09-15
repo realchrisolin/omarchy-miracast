@@ -279,8 +279,8 @@ Item {
         spacing: Style.space(3)
         Repeater {
           model: [
-            "On 20 MHz P2P prefer VAAPI pipe + PRESET High (14 Mbps CBR).",
-            "DMA-BUF bitrate RC undershoots here (~2–3 Mbps). Uncapped CQP can spike past the link.",
+            "20 MHz budget ≈ 14 Mbps video. DMA-BUF High uses CQP qp=18 (bitrate RC undershoots here).",
+            "VAAPI pipe High = 14 Mbps CBR for a hard cap. CQP qp=16 can spike past the link.",
             "After changing engine or preset quality, reconnect so encode settings reload.",
             "Keep eDP and Miracast desktops separate (ext-* on the TV, numbers on the laptop)."
           ]
