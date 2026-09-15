@@ -74,6 +74,25 @@ def render_table(rows: list[list[str]]) -> list[str]:
     return out
 
 
+def wrap_text(text: str, width: int) -> list[str]:
+    """Wrap a single logical line on spaces; keep ANSI sequences intact for length."""
+    if visible_len(text) <= width:
+        return [text]
+    words = text.split(" ")
+    rows: list[str] = []
+    cur = ""
+    for w in words:
+        trial = w if not cur else cur + " " + w
+        if cur and visible_len(trial) > width:
+            rows.append(cur)
+            cur = w
+        else:
+            cur = trial
+    if cur:
+        rows.append(cur)
+    return rows or [text]
+
+
 def render(path: str) -> str:
     lines = open(path, encoding="utf-8").read().splitlines()
     out: list[str] = []
@@ -81,6 +100,7 @@ def render(path: str) -> str:
     in_code = False
     code_lang = ""
     table_buf: list[list[str]] = []
+    width = min(shutil.get_terminal_size((72, 24)).columns, 72)
 
     def flush_table() -> None:
         nonlocal table_buf
@@ -121,7 +141,6 @@ def render(path: str) -> str:
         flush_table()
 
         if re.fullmatch(r"-{3,}", raw.strip()):
-            width = min(shutil.get_terminal_size((72, 24)).columns, 72)
             out.append(DIM + ("─" * width) + RESET)
             i += 1
             continue
@@ -137,15 +156,24 @@ def render(path: str) -> str:
             out.append(f"{BOLD}{inline(raw[4:].strip())}{RESET}")
         elif re.match(r"^\s*[-*]\s+", raw):
             item = re.sub(r"^\s*[-*]\s+", "", raw)
-            out.append(f"  {CYAN}•{RESET} {inline(item)}")
+            wrapped = wrap_text(inline(item), max(16, width - 4))
+            out.append(f"  {CYAN}•{RESET} {wrapped[0]}")
+            for cont in wrapped[1:]:
+                out.append(f"    {cont}")
         elif re.match(r"^\s*\d+\.\s+", raw):
             m = re.match(r"^(\s*)(\d+)\.\s+(.*)$", raw)
-            out.append(f"{m.group(1)}{BOLD}{m.group(2)}.{RESET} {inline(m.group(3))}")
+            prefix = f"{m.group(1)}{BOLD}{m.group(2)}.{RESET} "
+            wrapped = wrap_text(inline(m.group(3)), max(16, width - visible_len(prefix)))
+            out.append(prefix + wrapped[0])
+            pad_sp = " " * visible_len(prefix)
+            for cont in wrapped[1:]:
+                out.append(pad_sp + cont)
         elif raw.strip() == "":
             if out and out[-1] != "":
                 out.append("")
         else:
-            out.append(inline(raw))
+            for row in wrap_text(inline(raw), width):
+                out.append(row)
         i += 1
 
     flush_table()
