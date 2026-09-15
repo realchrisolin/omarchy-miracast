@@ -254,9 +254,13 @@ apply_p2p_quiet_csa() {
     echo "[miracast-ctl] CSA skip: GO $go already on ch $want_ch" >>"$LOG_DIR/cast.log"
     return 0
   fi
-  echo "[miracast-ctl] CSA: moving GO $go ch ${cur_ch:-?} → $want_ch (${freq} MHz)" >>"$LOG_DIR/cast.log"
+  # bandwidth=20 was hard-coded and left P2P at "20 MHz (no HT)" (~58–72 Mbps)
+  # with retry storms. Override for A/B: MIRACAST_P2P_CSA_BW=20|40|80 (default 20).
+  local csa_bw="${MIRACAST_P2P_CSA_BW:-20}"
+  [[ "$csa_bw" =~ ^(20|40|80)$ ]] || csa_bw=20
+  echo "[miracast-ctl] CSA: moving GO $go ch ${cur_ch:-?} → $want_ch (${freq} MHz, bw=${csa_bw})" >>"$LOG_DIR/cast.log"
   local csa_out=""
-  if csa_out="$(sudo -n wpa_cli -i "$go" chan_switch 5 "$freq" bandwidth=20 2>&1)"; then
+  if csa_out="$(sudo -n wpa_cli -i "$go" chan_switch 5 "$freq" "bandwidth=$csa_bw" 2>&1)"; then
     echo "[miracast-ctl] CSA wpa_cli: $csa_out" >>"$LOG_DIR/cast.log"
     sleep 1
     cur_ch="$(iw dev "$go" info 2>/dev/null | awk '/channel/{print $2; exit}')"
@@ -335,6 +339,12 @@ defaults = {
     "vaapiRcMode": "CQP",
     # CBR/VBR target (e.g. 12M); ignored for CQP.
     "vaapiBitrate": "12M",
+    # ffmpeg h264_vaapi -quality (1–8; higher = faster/worse). Default 5.
+    "vaapiQuality": "5",
+    # FLUXCAST_WFD_VBV_MULTIPLIER — CBR VBV as fraction of bitrate (~seconds).
+    "vbvMultiplier": "0.5",
+    # Post-PLAY CSA to a quiet channel (MCC). Default false = SCC.
+    "p2pQuietCsa": False,
 }
 try:
     data = json.load(open(path))
@@ -395,7 +405,8 @@ if preset == "movie":
     data["vaapiRcMode"] = "CQP"
     data["vaapiQp"] = 18
     data["vaapiGop"] = 60
-    data["vaapiQuality"] = "2"
+    # quality 5: pipe CBR A/B — q2 choppier; q7+tight VBV locked up.
+    data["vaapiQuality"] = "5"
     data["vaapiBitrate"] = str(data.get("vaapiBitrate") or "28M")  # unused for CQP
     data["wfRecorderDamage"] = "0"  # continuous -D
 else:
@@ -403,7 +414,7 @@ else:
     data["vaapiRcMode"] = "CQP"
     data["vaapiQp"] = int(data.get("vaapiQp") or 18)
     data["vaapiGop"] = 30
-    data["vaapiQuality"] = str(data.get("vaapiQuality") or "4")
+    data["vaapiQuality"] = str(data.get("vaapiQuality") or "5")
     data["wfRecorderDamage"] = str(data.get("wfRecorderDamage") or "1")
 with open(path, "w", encoding="utf-8") as f:
     json.dump(data, f, separators=(",", ":"))
@@ -3641,12 +3652,25 @@ s=json.loads(sys.argv[1])
 print(str(s.get("vaapiBitrate") or "12M").strip() or "12M")
 ' "$settings" 2>/dev/null || echo 12M)"
     export FLUXCAST_WFD_VAAPI_BITRATE="$_br"
+    # Settings default; pre-set FLUXCAST_WFD_VAAPI_QUALITY wins (A/B tests).
+    # Default 5: pipe A/B — q2 choppier; q7+tight VBV stalled.
     _qual="$(python3 -c 'import json,sys
 s=json.loads(sys.argv[1])
-print(str(s.get("vaapiQuality") or "4").strip() or "4")
-' "$settings" 2>/dev/null || echo 4)"
+print(str(s.get("vaapiQuality") or "5").strip() or "5")
+' "$settings" 2>/dev/null || echo 5)"
+    _qual="${FLUXCAST_WFD_VAAPI_QUALITY:-$_qual}"
     export FLUXCAST_WFD_VAAPI_QUALITY="$_qual"
     echo "[miracast-ctl] VAAPI RC=$FLUXCAST_WFD_VAAPI_RC bitrate=$FLUXCAST_WFD_VAAPI_BITRATE quality=$FLUXCAST_WFD_VAAPI_QUALITY preset=$(python3 -c 'import json,sys;print(json.loads(sys.argv[1]).get("castPreset","desktop"))' "$settings" 2>/dev/null || echo desktop)" >>"$LOG_DIR/cast.log"
+    # VBV multiplier (~seconds of CBR buffer). Default 0.5 validated on pipe.
+    # Do not enable PIPE_LOW_LATENCY here (async=1/tiny queue caused lockups).
+    _vbv="$(python3 -c 'import json,sys
+s=json.loads(sys.argv[1])
+print(str(s.get("vbvMultiplier") or "0.5").strip() or "0.5")
+' "$settings" 2>/dev/null || echo 0.5)"
+    _vbv="${FLUXCAST_WFD_VBV_MULTIPLIER:-$_vbv}"
+    export FLUXCAST_WFD_VBV_MULTIPLIER="$_vbv"
+    unset FLUXCAST_WFD_VAAPI_PIPE_LOW_LATENCY 2>/dev/null || true
+    echo "[miracast-ctl] VBV_MULTIPLIER=$FLUXCAST_WFD_VBV_MULTIPLIER (PIPE_LOW_LATENCY unset)" >>"$LOG_DIR/cast.log"
     # Optional ICC / custom wf-recorder: env or settings.wfRecorderBin only
     # (see resolve_wf_recorder_env). Default = PATH stock binary.
     local _wf_env _wf_bin _wf_proto
@@ -3726,13 +3750,27 @@ except Exception: print("")' "$STATUS_FILE" 2>/dev/null || true)"
         write_status "streaming" "$action_word to $label" "peer=$peer" "peerName=$peer_name" "mode=$mode" "monitor=$monitor" "pid=$pid" "running=true" >/dev/null
         saw_play=1
         missing_link=0
-        # Move GO off the STA channel once the sink is fully up (MCC).
-        # Set MIRACAST_SKIP_P2P_CSA=1 for SCC A/B benchmarks.
-        if [[ "$p2p_channel" =~ ^[0-9]+$ ]] \
-          && ! [[ "${MIRACAST_SKIP_P2P_CSA:-}" =~ ^(1|true|yes)$ ]]; then
+        # Quiet-channel CSA (MCC) vs stay-on-STA (SCC).
+        # Default SCC: radio A/B — MCC bw20 had retry storms; SCC had none.
+        # Override: settings p2pQuietCsa=true, or MIRACAST_P2P_QUIET_CSA=1 /
+        # MIRACAST_SKIP_P2P_CSA=1.
+        local _do_csa=0
+        if [[ "${MIRACAST_SKIP_P2P_CSA:-}" =~ ^(1|true|yes)$ ]]; then
+          _do_csa=0
+        elif [[ "${MIRACAST_P2P_QUIET_CSA:-}" =~ ^(1|true|yes)$ ]]; then
+          _do_csa=1
+        else
+          _csa_set="$(python3 -c 'import json,sys
+s=json.loads(sys.argv[1])
+v=s.get("p2pQuietCsa", False)
+print("1" if v in (True,1,"1","true","yes","on") else "0")
+' "$settings" 2>/dev/null || echo 0)"
+          _do_csa="$_csa_set"
+        fi
+        if [[ "$p2p_channel" =~ ^[0-9]+$ ]] && [[ "$_do_csa" == "1" ]]; then
           apply_p2p_quiet_csa "$p2p_channel" || true
-        elif [[ "${MIRACAST_SKIP_P2P_CSA:-}" =~ ^(1|true|yes)$ ]]; then
-          echo "[miracast-ctl] CSA skipped (MIRACAST_SKIP_P2P_CSA)" >>"$LOG_DIR/cast.log"
+        else
+          echo "[miracast-ctl] CSA skipped (SCC; p2pQuietCsa=false or SKIP env)" >>"$LOG_DIR/cast.log"
         fi
       elif [[ "$saw_play" -eq 0 ]]; then
         if rg -q "rtsp_connected" "$LAT_FILE" 2>/dev/null; then
