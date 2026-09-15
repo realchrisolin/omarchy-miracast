@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Private vs public Miracast benchmark artifacts.
 
-Private runs (gitignored) may include full sink name, MAC, SSIDs, BSSIDs, and
-raw ``iw`` dumps needed for local analysis.
+Private runs live under ``$XDG_STATE_HOME/omarchy-miracast/benchmarks/``
+(default ``~/.local/state/omarchy-miracast/benchmarks/``). They may include
+full sink name, MAC, SSIDs, BSSIDs, and raw ``iw`` dumps for local analysis.
 
 Public runs (committed under docs/benchmarks/public/) keep manufacturer/model
 hints, host chipset info, and metrics only — never MACs, SSIDs, BSSIDs, IPs,
@@ -21,8 +22,18 @@ from typing import Any, Optional
 
 ROOT = Path(__file__).resolve().parents[1]
 BENCH_DIR = ROOT / "docs" / "benchmarks"
-PRIVATE_DIR = BENCH_DIR / "private"
 PUBLIC_DIR = BENCH_DIR / "public"
+
+
+def state_home() -> Path:
+    return Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+
+
+def private_dir() -> Path:
+    return state_home() / "omarchy-miracast" / "benchmarks"
+
+
+PRIVATE_DIR = private_dir()
 
 _MAC_RE = re.compile(r"(?i)\b(?:[0-9a-f]{2}:){5}[0-9a-f]{2}\b")
 _IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
@@ -139,8 +150,9 @@ def private_filename_stem(
 
 
 def private_path(stem: str) -> Path:
-    PRIVATE_DIR.mkdir(parents=True, exist_ok=True)
-    return PRIVATE_DIR / f"{stem}.json"
+    dest = private_dir()
+    dest.mkdir(parents=True, exist_ok=True)
+    return dest / f"{stem}.json"
 
 
 def public_path(stem: str) -> Path:

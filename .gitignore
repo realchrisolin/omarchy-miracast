@@ -16,7 +16,6 @@ __pycache__/
 
 # Private Miracast benchmark dumps (full sink name/MAC/SSIDs). Sanitize before PR:
 #   ./scripts/sanitize_benchmark_results.py
-docs/benchmarks/private/
 
 # Built Hyprland plugins (keep icc-present-kick.so tracked for packaging)
 hyprland-plugins/**/*.so

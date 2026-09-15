@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Sanitize private Miracast benchmark runs into crowdsource-safe docs.
 
-Reads ``docs/benchmarks/private/*.json`` (gitignored; may contain MAC/SSID),
-writes ``docs/benchmarks/public/*.json``, and refreshes the crowdsource table
-in ``BENCHMARKS.md`` between:
+Reads ``$XDG_STATE_HOME/omarchy-miracast/benchmarks/*.json`` (may contain
+MAC/SSID), writes ``docs/benchmarks/public/*.json``, and refreshes the
+crowdsource table in ``BENCHMARKS.md`` between:
 
   <!-- crowdsource-benchmarks:begin -->
   ...
@@ -28,9 +28,9 @@ if str(_SCRIPTS) not in sys.path:
 
 from benchmark_privacy import (  # noqa: E402
     BENCH_DIR,
-    PRIVATE_DIR,
     PUBLIC_DIR,
     load_json,
+    private_dir,
     sanitize_private_run,
     write_json,
 )
@@ -150,8 +150,10 @@ def render_markdown_table(public_rows: list[dict[str, Any]]) -> str:
         lines.append("| — | — | — | — | — | — | — | — | — | — | — |")
     lines.append("")
     lines.append(
-        "Private full dumps (name, MAC, SSIDs) live in `docs/benchmarks/private/` "
-        "(gitignored). Contributors: run a bench, then "
+        "Private full dumps (name, MAC, SSIDs) live in "
+        "`$XDG_STATE_HOME/omarchy-miracast/benchmarks/` "
+        "(default `~/.local/state/omarchy-miracast/benchmarks/`). "
+        "Contributors: run a bench, then "
         "`./scripts/sanitize_benchmark_results.py` and PR the updated "
         "`docs/benchmarks/public/` files plus this table."
     )
@@ -184,11 +186,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args(argv)
 
-    PRIVATE_DIR.mkdir(parents=True, exist_ok=True)
+    priv = private_dir()
+    priv.mkdir(parents=True, exist_ok=True)
     PUBLIC_DIR.mkdir(parents=True, exist_ok=True)
 
     public_rows: list[dict[str, Any]] = []
-    for path in sorted(PRIVATE_DIR.glob("*.json")):
+    for path in sorted(priv.glob("*.json")):
         private = load_json(path)
         private.setdefault("stem", path.stem)
         pub = sanitize_private_run(private)

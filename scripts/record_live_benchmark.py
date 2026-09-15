@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Record a live Miracast session benchmark into docs/benchmarks/private/.
+"""Record a live Miracast session benchmark into XDG state.
+
+Writes private JSON under
+``$XDG_STATE_HOME/omarchy-miracast/benchmarks/`` (default
+``~/.local/state/omarchy-miracast/benchmarks/``).
 
 Captures full sink name + MAC (and host Wi-Fi details) for local analysis.
 Run ``./scripts/sanitize_benchmark_results.py`` afterward to publish a

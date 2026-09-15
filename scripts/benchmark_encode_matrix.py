@@ -403,15 +403,15 @@ def run_matrix(
         restore()
 
     # Private matrix index (no MAC in top-level; per-cell summaries already scrubbed)
-    priv = (
-        Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
-    )
-    # Prefer repo private dir via benchmark_privacy
     try:
         bp = _load("benchmark_privacy", SCRIPTS / "benchmark_privacy.py")
-        out_dir = bp.PRIVATE_DIR
+        out_dir = bp.private_dir()
     except Exception:
-        out_dir = ROOT / "docs" / "benchmarks" / "private"
+        out_dir = (
+            Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+            / "omarchy-miracast"
+            / "benchmarks"
+        )
     out_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_path = out_dir / f"matrix-encode-{ts}.json"

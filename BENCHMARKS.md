@@ -281,7 +281,7 @@ on the same host favored **SCC** (0 retry spikes) over MCC at 20 MHz no-HT
 ./scripts/test_list_p2p_radios.py
 ```
 
-Artifacts: `docs/benchmarks/public/p2p_channel_ab.*` (and legacy copies at `docs/benchmarks/p2p_channel_ab.*`). Full sink name/MAC dumps go to `docs/benchmarks/private/` (gitignored); run `./scripts/sanitize_benchmark_results.py` before PRs.
+Artifacts: `docs/benchmarks/public/p2p_channel_ab.*` (and legacy copies at `docs/benchmarks/p2p_channel_ab.*`). Full sink name/MAC dumps go to `$XDG_STATE_HOME/omarchy-miracast/benchmarks/`; run `./scripts/sanitize_benchmark_results.py` before PRs.
 
 ---
 
@@ -305,7 +305,7 @@ action”) until a heavier reference pipeline exists.
 ## Crowdsourced device results
 
 Full local runs (sink **name + MAC**, WPS/P2P peer fields, Wi‑Fi SSIDs/BSSIDs,
-raw `iw`) are written under **`docs/benchmarks/private/`** (gitignored). Device
+raw `iw`) are written under **`$XDG_STATE_HOME/omarchy-miracast/benchmarks/`**. Device
 identity prefers ``wpa_cli p2p_peer`` (manufacturer / model_name / device_name),
 then RTSP ``sink-modes.json``, then name heuristics — see
 ``scripts/fingerprint_miracast_sink.py``. Before opening a PR, sanitize:
@@ -328,7 +328,7 @@ BSSIDs, or `$HOME` paths.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 2026-09-14 | LG / SM8600PUA | 1920x1080p30 | dmabuf/h264_vaapi | 5.83 | 11803.9 | STA 44@80MHz; P2P 149@80MHz; MCC; P2P-client; -49 dBm; 866.7 Mb/s | pass | 11th Gen Intel(R) Core(TM) i7-1165G7 @ … | iwlwifi | live_session |
 
-Private full dumps (name, MAC, SSIDs) live in `docs/benchmarks/private/` (gitignored). Contributors: run a bench, then `./scripts/sanitize_benchmark_results.py` and PR the updated `docs/benchmarks/public/` files plus this table.
+Private full dumps (name, MAC, SSIDs) live in `$XDG_STATE_HOME/omarchy-miracast/benchmarks/`. Contributors: run a bench, then `./scripts/sanitize_benchmark_results.py` and PR the updated `docs/benchmarks/public/` files plus this table.
 
 **Quality** is lightweight delivery/radio criteria (`pass`/`warn`/`fail`) from `scripts/quality_snapshot.py` — signal floors, capture restarts, TX stability — **not** perceptual scores (no VMAF/SSIM).
 <!-- crowdsource-benchmarks:end -->
