@@ -2330,16 +2330,30 @@ cmd_benchmark() {
         cat <<'EOF'
 Usage: miracast-ctl benchmark [--apply] [--json] [--offline-only] [--live-seconds N]
 
-Auto-tune:
-  - probe supported render engines (dmabuf / vaapi / cpu)
-  - pick P2P Wi-Fi radio (idle P2P-GO preferred)
-  - apply validated encode knobs (quality 5, VBV 0.5, SCC)
-  - optionally merge docs/benchmarks/results.tsv via recommend-cast-profile
-  - if a cast is streaming: sample ~25s TX / retries / CPU and refine advice
+Pick good Miracast settings for this machine and print a plain-language report.
 
---offline-only   skip the live sample (fast capability-only pass)
---live-seconds N live sample length when streaming (default 25)
---apply          write settings.json, state/capture-encode, recommended-cast.env
+What it decides
+  Capture path   dmabuf (best) → vaapi pipe → cpu
+  Wi-Fi radio    Auto prefers an idle P2P-GO adapter
+  Encode knobs   quality 5, VBV 0.5s (validated defaults)
+  Channel mode   SCC by default (same channel as normal Wi-Fi)
+
+How it decides
+  1. Probe what VAAPI / wf-recorder / ffmpeg support on this host
+  2. Optionally merge docs/benchmarks/results.tsv scores
+  3. If a cast is already streaming: ~25s live TX / retry / CPU sample
+     and refine the advice (e.g. prefer dmabuf when pipe CPU is high)
+
+Flags
+  --offline-only    skip the live sample (fast capability-only pass)
+  --live-seconds N  live sample length when streaming (default 25)
+  --apply           write settings.json, capture-encode, recommended-cast.env
+  --json            machine-readable output (no human report)
+
+Examples
+  miracast-ctl benchmark                 # dry-run; live sample if casting
+  miracast-ctl benchmark --offline-only  # fast, no live wait
+  miracast-ctl benchmark --apply         # save recommendation
 EOF
         return 0
         ;;
