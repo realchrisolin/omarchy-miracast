@@ -169,7 +169,8 @@ def prefer_wf_recorder_vaapi_dmabuf(monitor=None) -> bool:
 
     Scaled outputs are allowed: whole-output screencopy still yields physical
     mode-sized DMA buffers (logical region in the log is expected). Proven at
-    integer scale 2 with ``out_range=tv`` / no ``-r`` / CQP.
+    integer and fractional scales with ``out_range=tv`` / CQP when geometry is
+    stable (mid-session scale/position thrash can still black the sink).
 
     Escape hatches:
     - RENDER METHOD ``vaapi`` / ``cpu`` (or ``FLUXCAST_WFD_CAPTURE_ENCODE=pipe``)
@@ -211,7 +212,15 @@ def vaapi_quality_for_plan(*, throttled: Optional[bool] = None) -> str:
 
     Throttled used to force ``7`` (very blocky on Miracast TVs). GPU encode is
     cheap enough that ``5`` still saves work without looking like a slideshow.
+
+    Override with ``FLUXCAST_WFD_VAAPI_QUALITY`` (1–8) for A/B tests.
     """
+    env_q = (os.environ.get("FLUXCAST_WFD_VAAPI_QUALITY", "") or "").strip()
+    if env_q:
+        try:
+            return str(max(1, min(8, int(env_q))))
+        except ValueError:
+            pass
     if throttled is None:
         throttled = encode_throttled()
     return "5" if throttled else "4"
@@ -222,6 +231,38 @@ def vaapi_quality_for_bias(bias: Optional[str] = None) -> str:
     if bias is None:
         return vaapi_quality_for_plan()
     return vaapi_quality_for_plan(throttled=(bias == "efficient"))
+
+
+def _vaapi_rc_mode(*, default: str = "CBR") -> str:
+    """Rate control for pipe-path ffmpeg h264_vaapi.
+
+    Honors ``FLUXCAST_WFD_VAAPI_RC`` (CQP / CBR / VBR / …) the same way the
+    DMA-BUF wf-recorder path does. When unset, ``default`` applies — pipe
+    historically used CBR (bare ``-b:v`` could land on AVBR and undershoot).
+    """
+    rc = (os.environ.get("FLUXCAST_WFD_VAAPI_RC", "") or "").strip().upper()
+    if rc in ("CQP", "CBR", "VBR", "AVBR", "QVBR", "ICQ"):
+        return rc
+    return default
+
+
+def _vaapi_qp() -> str:
+    qp = (os.environ.get("FLUXCAST_WFD_VAAPI_QP", "") or "18").strip() or "18"
+    try:
+        return str(max(1, min(51, int(qp))))
+    except ValueError:
+        return "18"
+
+
+def _vaapi_gop(gop: int) -> int:
+    """Prefer ``FLUXCAST_WFD_VAAPI_GOP`` (movie preset = 60) over caller default."""
+    raw = (os.environ.get("FLUXCAST_WFD_VAAPI_GOP", "") or "").strip()
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    return max(1, int(gop))
 
 
 def _level_to_idc(level: str) -> str:
@@ -372,28 +413,49 @@ def build_encode_plan(
         # and CQP+low_power measured ~2.5× ffmpeg CPU vs normal CBR VAAPI on
         # this hardware. Throttled plan = faster quality + trimmed bitrate.
         quality = vaapi_quality_for_plan(throttled=throttled)
+        # Pipe-path latency: async_depth 1 reduces parallelism but cuts encoder
+        # queuing. Override with FLUXCAST_WFD_VAAPI_ASYNC_DEPTH (default 2).
+        _async = (os.environ.get("FLUXCAST_WFD_VAAPI_ASYNC_DEPTH", "") or "2").strip() or "2"
+        try:
+            _async_i = str(max(1, min(4, int(_async))))
+        except ValueError:
+            _async_i = "2"
+        rc = _vaapi_rc_mode(default="CBR")
+        gop_i = _vaapi_gop(gop)
+        video_args = [
+            "-c:v", "h264_vaapi",
+            "-profile:v", _map_h264_profile(h264_profile),
+            "-level", level_idc,
+            "-bf", "0",
+            "-g", str(gop_i),
+            "-keyint_min", str(gop_i),
+            "-r", str(fps),
+            "-rc_mode", rc,
+        ]
+        if rc == "CQP":
+            # Movie/desktop presets: CQP avoids Intel CBR undershoot/blockiness.
+            qp = _vaapi_qp()
+            video_args += ["-qp", qp]
+            rc_note = f"CQP qp={qp} gop={gop_i}"
+        else:
+            # Explicit bitrate mode: bare -b:v can land on AVBR and undershoot
+            # badly on static desktops (few hundred kb/s vs multi-Mbps target).
+            video_args += [
+                "-b:v", bitrate,
+                "-maxrate", bitrate,
+                "-bufsize", bufsize,
+            ]
+            rc_note = f"{rc} {bitrate} gop={gop_i}"
+        video_args += [
+            "-quality", quality,
+            "-async_depth", _async_i,
+        ]
         return EncodePlan(
             name="vaapi",
             pre_input=["-vaapi_device", device],
             vf=["-vf", vf],
-            video_args=[
-                "-c:v", "h264_vaapi",
-                "-profile:v", _map_h264_profile(h264_profile),
-                "-level", level_idc,
-                "-bf", "0",
-                "-g", str(gop),
-                "-keyint_min", str(gop),
-                "-r", str(fps),
-                # Explicit CBR: bare -b:v can land on AVBR and undershoot badly
-                # on static desktops (few hundred kb/s vs multi-Mbps target).
-                "-rc_mode", "CBR",
-                "-b:v", bitrate,
-                "-maxrate", bitrate,
-                "-bufsize", bufsize,
-                "-quality", quality,
-                "-async_depth", "2",
-            ],
-            note=f"h264_vaapi on {device} ({plan_note})",
+            video_args=video_args,
+            note=f"h264_vaapi on {device} ({plan_note}; {rc_note})",
         )
 
     if choice == "qsv":

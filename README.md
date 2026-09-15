@@ -121,11 +121,11 @@ Override in `~/.config/omarchy-miracast/settings.json` (merged with
 | `vbvMultiplier` | `0.5` | CBR VBV as a fraction of bitrate (~0.5 s). → `FLUXCAST_WFD_VBV_MULTIPLIER`. |
 | `p2pWifiInterface` | `auto` | Managed Wi‑Fi iface for Miracast P2P, or `auto` (prefer idle P2P-GO). `miracast-ctl list-p2p-radios` / `set-p2p-wifi-interface`. |
 | `p2pQuietCsa` | `false` | `true` = post-PLAY CSA to a quiet channel (MCC). Default **SCC** (same channel as STA) after retry-storm A/B. |
-| `vaapiRcMode` | `CQP` | `CQP` / `CBR` / `VBR` → `FLUXCAST_WFD_VAAPI_RC` |
+| `vaapiRcMode` | `CQP` | `CQP` / `CBR` / `VBR` → `FLUXCAST_WFD_VAAPI_RC` (pipe + DMA) |
 | `vaapiBitrate` | `12M` | Target for CBR/VBR (Intel CBR undershoots; movie preset uses CQP). |
 | `vaapiQp` | `18` | CQP quantizer (lower = sharper) |
 | `vaapiGop` | `30` | GOP length in frames (~1s at 30 fps; movie preset uses 60) |
-| *(env)* `FLUXCAST_WFD_VAAPI_QP` | `18` | DMA CQP quantizer (lower = sharper / more bitrate) |
+| *(env)* `FLUXCAST_WFD_VAAPI_QP` | `18` | CQP quantizer for pipe ffmpeg and DMA wf-recorder |
 | `sinkScales` | `{}` | Per-sink Extend scale, keyed by MAC (overrides default) |
 | `defaultExtendScale` | `1` | Extend scale when a sink has no `sinkScales` entry — **1** is cheapest for Hyprland |
 | `onlyExpandFocusedDisplay` | `false` | Display panel: `false` expands all outputs; `true` = accordion (focused only) |

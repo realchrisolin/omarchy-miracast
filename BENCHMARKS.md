@@ -220,6 +220,10 @@ matching `FLUXCAST_WFD_*` env vars via `miracast-ctl`.
 | **desktop** | CQP | qp 18, quality **5** | 30 | damage-aware (`1`) | UI / terminals |
 | **movie** | CQP | qp 18, quality **5** | 60 | continuous `-D` (`0`) | Fullscreen video (Intel CBR undershoots ≈3 Mbps → blocky) |
 
+Pipe-path ffmpeg now honors the same `FLUXCAST_WFD_VAAPI_RC` / `QP` / `GOP`
+env as DMA-BUF (movie/desktop presets). Without those env vars, pipe still
+defaults to CBR for backward compatibility.
+
 ```bash
 miracast-ctl set-cast-preset movie     # apply + restart capture if streaming
 miracast-ctl set-cast-preset desktop
