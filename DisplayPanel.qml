@@ -1321,7 +1321,7 @@ Panel {
 
                   PanelActionButton {
                     iconText: "󰍉"
-                    tooltipText: "Scan for Miracast sinks (S)"
+                    tooltipText: "Scan (S)"
                     foreground: root.bar.foreground
                     fontFamily: root.bar.fontFamily
                     enabled: !miracast.busy
@@ -1330,7 +1330,7 @@ Panel {
                   PanelActionButton {
                     // nf-md-bandage — Check & fix (diagnose + open UFW if needed)
                     iconText: "󱣥"
-                    tooltipText: "Check & fix (D): diagnose Miracast; open UFW ports if blocked"
+                    tooltipText: "Check & fix (D)"
                     foreground: root.bar.foreground
                     fontFamily: root.bar.fontFamily
                     enabled: !miracast.busy
@@ -1339,7 +1339,7 @@ Panel {
                   PanelActionButton {
                     // nf-md-information-outline
                     iconText: "󰋽"
-                    tooltipText: "Miracast help — requirements, ports, tips (I)"
+                    tooltipText: "Info (I)"
                     foreground: root.bar.foreground
                     fontFamily: root.bar.fontFamily
                     enabled: true
@@ -1348,13 +1348,7 @@ Panel {
                   Item { width: Style.space(8); height: 1 }
                   PanelActionButton {
                     iconText: miracast.active ? "󰓛" : "󰑐"
-                    tooltipText: miracast.active
-                      ? "Stop casting (X)"
-                      : ("Reconnect to last device"
-                         + (miracast.connectedLabel !== ""
-                            ? " (" + miracast.connectedLabel + ")"
-                            : "")
-                         + " (C)")
+                    tooltipText: miracast.active ? "Stop (X)" : "Reconnect (C)"
                     foreground: root.bar.foreground
                     fontFamily: root.bar.fontFamily
                     enabled: !miracast.busy

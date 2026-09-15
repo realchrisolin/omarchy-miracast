@@ -2541,27 +2541,43 @@ PY
 }
 
 cmd_info() {
-  # Brief Miracast help in a floating terminal (or less in-place).
+  # Rendered Miracast help in a compact floating terminal (fits ~1080p@2x).
   local help="$PLUGIN_DIR/docs/MIRACAST-HELP.md"
+  local renderer="$PLUGIN_DIR/scripts/render_md_ansi.py"
   if [[ ! -f "$help" ]]; then
     emit '{"ok":false,"error":"MIRACAST-HELP.md missing"}'
     return 1
   fi
-  local viewer="less -R"
+
+  # Prefer glow when present; otherwise our stdlib ANSI renderer (bat shows raw MD).
+  local view_cmd
   if command -v glow >/dev/null 2>&1; then
-    viewer="glow -p"
-  elif command -v bat >/dev/null 2>&1; then
-    viewer="bat --paging=always --style=plain --language=markdown"
+    view_cmd=$(printf 'glow -p -w 72 %q' "$help")
+  elif [[ -f "$renderer" ]]; then
+    view_cmd=$(printf 'python3 %q %q | less -R' "$renderer" "$help")
   elif command -v mdcat >/dev/null 2>&1; then
-    viewer="mdcat"
+    view_cmd=$(printf 'mdcat %q | less -R' "$help")
+  else
+    view_cmd=$(printf 'less -R %q' "$help")
   fi
-  local cmd
-  cmd="$(printf '%s %q' "$viewer" "$help")"
-  if command -v omarchy-launch-floating-terminal-with-presentation >/dev/null 2>&1; then
-    # Launcher waits until the terminal exits — background so the panel/CLI returns.
-    omarchy-launch-floating-terminal-with-presentation "bash -lc $(printf '%q' "$cmd")" >/dev/null 2>&1 &
+
+  local app_id="org.omarchy.miracast-help"
+  # Compact float: default org.omarchy.terminal is 875x600 and overflows 960x540 logical.
+  if command -v hyprctl >/dev/null 2>&1; then
+    hyprctl eval "if omarchy_miracast_help_rule then omarchy_miracast_help_rule:set_enabled(false) end; omarchy_miracast_help_rule = hl.window_rule({ match = { class = \"${app_id}\" }, float = true, center = true, size = { 700, 440 } })" >/dev/null 2>&1 || true
+  fi
+
+  local launch_cmd
+  launch_cmd=$(printf 'bash -lc %q' "$view_cmd")
+  if command -v xdg-terminal-exec >/dev/null 2>&1; then
+    # Skip presentation wrapper (logo + done) — it pads height and uses the huge float class.
+    setsid uwsm-app -- xdg-terminal-exec --app-id="$app_id" --title="Miracast help" -e bash -lc "$launch_cmd" >/dev/null 2>&1 &
     disown || true
-    emit '{"ok":true,"opened":"floating-terminal"}'
+    emit '{"ok":true,"opened":"floating-terminal","size":[700,440]}'
+  elif command -v foot >/dev/null 2>&1; then
+    setsid foot --app-id="$app_id" --title="Miracast help" -w 700x440 -e bash -lc "$launch_cmd" >/dev/null 2>&1 &
+    disown || true
+    emit '{"ok":true,"opened":"foot","size":[700,440]}'
   elif command -v xdg-open >/dev/null 2>&1; then
     xdg-open "$help" >/dev/null 2>&1 &
     emit '{"ok":true,"opened":"xdg-open"}'
