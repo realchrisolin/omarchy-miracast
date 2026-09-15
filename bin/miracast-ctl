@@ -2591,6 +2591,8 @@ if isinstance(st, dict) and st.get("phase") == "streaming":
             spec = importlib.util.spec_from_file_location("pick_p2p_channel", pick_path)
             pick = importlib.util.module_from_spec(spec)
             assert spec.loader is not None
+            # dataclasses require the module to be in sys.modules during exec.
+            sys.modules["pick_p2p_channel"] = pick
             spec.loader.exec_module(pick)
             text = pick.fetch_nmcli_wifi_list()
             sightings = pick.parse_nmcli_wifi_list(text)
