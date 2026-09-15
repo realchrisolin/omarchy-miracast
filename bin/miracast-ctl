@@ -2459,7 +2459,12 @@ if live_path:
         mismatch.append(f"quality live={live_qual} settings={qual}")
     detail = f"live path={live_path} rc={live_rc} qp={live_qp} quality={live_qual}"
     if mismatch:
-        add("encode_live", "warn", "live encode differs from settings — reconnect", "; ".join(mismatch) + " | " + detail)
+        add(
+            "encode_live",
+            "warn",
+            "live encode differs from settings — run restart-capture or change PRESET again",
+            "; ".join(mismatch) + " | " + detail,
+        )
     else:
         add("encode_live", "ok", "live encode matches settings", detail)
 else:
@@ -2562,6 +2567,70 @@ if isinstance(st, dict) and st.get("phase") == "streaming":
         add("link", "warn", "P2P is 20 MHz — prefer DMA-BUF CQP / capped QVBR", detail)
     else:
         add("link", "ok", "Casting; link widths recorded", detail)
+
+    # RF: GO 2.4 channel vs pick-p2p-channel score (after st is loaded)
+    try:
+        import importlib.util
+
+        pick_path = Path(plugin_dir) / "scripts" / "pick-p2p-channel.py"
+        go_ch = None
+        r_go = run(
+            [
+                "bash",
+                "-lc",
+                "iw dev 2>/dev/null | awk '/Interface p2p-/{iface=$2} /type P2P-GO/{print iface; exit}'",
+            ]
+        )
+        go_iface = (r_go.stdout or "").strip()
+        if go_iface:
+            r_info = run(["iw", "dev", go_iface, "info"])
+            m = re.search(r"channel\s+(\d+)", r_info.stdout or "")
+            if m:
+                go_ch = int(m.group(1))
+        if go_ch is not None and go_ch <= 14 and pick_path.is_file():
+            spec = importlib.util.spec_from_file_location("pick_p2p_channel", pick_path)
+            pick = importlib.util.module_from_spec(spec)
+            assert spec.loader is not None
+            spec.loader.exec_module(pick)
+            text = pick.fetch_nmcli_wifi_list()
+            sightings = pick.parse_nmcli_wifi_list(text)
+            sight_24 = [s for s in sightings if getattr(s, "freq_mhz", 3000) < 3000]
+            if sight_24:
+                cur = pick.score_channel(go_ch, sight_24)
+                best = None
+                for ch in pick.CANDIDATES_24GHZ:
+                    cs = pick.score_channel(ch, sight_24)
+                    if best is None or cs.score < best.score:
+                        best = cs
+                if (
+                    best is not None
+                    and cur.score > best.score * 1.25
+                    and (cur.score - best.score) >= 15
+                ):
+                    add(
+                        "radio_channel",
+                        "warn",
+                        f"P2P on 2.4 ch {go_ch} (score {cur.score:.0f}) is noisier than ch {best.channel} (score {best.score:.0f})",
+                        f"go={go_iface} cur_score={cur.score} best_ch={best.channel} best_score={best.score} aps={len(sight_24)}",
+                    )
+                else:
+                    add(
+                        "radio_channel",
+                        "ok",
+                        f"P2P 2.4 ch {go_ch} score looks OK vs pick ranking",
+                        f"go={go_iface} score={cur.score} best_ch={best.channel if best else '?'} best_score={best.score if best else '?'}",
+                    )
+            else:
+                add(
+                    "radio_channel",
+                    "ok",
+                    "no 2.4 AP scan data for channel score",
+                    f"go_ch={go_ch}",
+                )
+        elif go_ch is not None and go_ch >= 32:
+            add("radio_channel", "ok", f"P2P on 5 GHz ch {go_ch}", f"go={go_iface}")
+    except Exception as e:
+        add("radio_channel", "warn", "channel score probe failed", str(e)[:160])
 
 # --- workspaces ---
 try:
@@ -3290,13 +3359,15 @@ if iqf:
     lines.append(f"FLUXCAST_WFD_VAAPI_I_QFACTOR={iqf}")
 else:
     lines.append("FLUXCAST_WFD_VAAPI_I_QFACTOR=")
+# Explicit 0/1 in encode.env (empty looked like a bug). FluxCast treats only
+# 1/true/yes/on as damage-aware (omit -D); 0 keeps continuous -D.
 if dmg.lower() in ("0", "false", "no", "off"):
-    lines.append("FLUXCAST_WFD_WF_RECORDER_DAMAGE=")
+    lines.append("FLUXCAST_WFD_WF_RECORDER_DAMAGE=0")
 else:
     lines.append("FLUXCAST_WFD_WF_RECORDER_DAMAGE=1")
 
 env_path.write_text("\n".join(lines) + "\n")
-print(f"rc={rc} bitrate={stream_br} peak={br} quality={qual} encode={cap}")
+print(f"rc={rc} bitrate={stream_br} peak={br} quality={qual} encode={cap} damage={dmg}")
 PY
 }
 

@@ -828,11 +828,11 @@ Item {
             if (root.captureFallback)
               root.actionStatus = "RENDER ENGINE fell back to "
                   + root.captureEncodeLabel(root.captureEncodeActive)
+            else if (data.restarted || data.captureRestarted)
+              root.actionStatus = "RENDER ENGINE: " + label + " (applied)"
             else if (data.needsReconnect)
               root.actionStatus = "RENDER ENGINE: " + label
                   + " — reconnect to apply quality knobs"
-            else if (data.restarted)
-              root.actionStatus = "RENDER ENGINE: " + label
             else
               root.actionStatus = "RENDER ENGINE saved (" + label + ")"
           }
@@ -857,7 +857,9 @@ Item {
           } else {
             if (data.encodeProfile) root.encodeProfile = String(data.encodeProfile)
             var label = root.encodeProfileLabel(root.encodeProfile)
-            if (data.needsReconnect)
+            if (data.captureRestarted)
+              root.actionStatus = "PRESET QUALITY: " + label + " (applied)"
+            else if (data.needsReconnect)
               root.actionStatus = "PRESET QUALITY " + label + " — reconnect to apply"
             else
               root.actionStatus = "PRESET QUALITY: " + label
