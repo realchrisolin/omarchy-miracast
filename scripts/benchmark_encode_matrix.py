@@ -479,8 +479,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument(
         "--settle",
         type=float,
-        default=3.0,
-        help="seconds to wait after streaming before sampling",
+        default=8.0,
+        help="seconds to wait after streaming before sampling (default 8)",
     )
     ap.add_argument("--no-audio", action="store_true")
     ap.add_argument(
