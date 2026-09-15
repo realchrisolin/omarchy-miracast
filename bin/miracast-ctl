@@ -1480,10 +1480,12 @@ else:
   fi
   # Independent desktops: numeric 1-10 stay on the laptop; Extend uses named
   # ext-1..ext-10 (see omarchy-hyprland-workspace-focus).
-  # With persist, keep an already-occupied cast desktop when switching sinks.
-  # Still seed empty heads.
+  # Always re-pin (matrix reconnects / Persist can strand ext-* on eDP).
+  # With persist + occupied cast head, skip only the "create fresh ext-1" focus
+  # path inside seed — pin still runs.
   if [[ "$preserve" == "1" ]] && headless_has_occupied_workspaces "$headless"; then
-    disconnect_log "connect-time skip seed (persist display; occupied workspaces on $headless)"
+    disconnect_log "connect-time pin workspaces only (persist; occupied on $headless)"
+    pin_extend_workspaces "$headless" || true
   else
     seed_extend_workspaces "$headless" || true
   fi
@@ -1660,6 +1662,47 @@ if primary and primary != mon:
 PY
 }
 
+# Bidirectional pin: ext-* on cast head, numeric/other on the laptop.
+# Repeated Persist reconnects (e.g. benchmark matrix) can strand ext-1 on eDP
+# and leave a numeric workspace on the TV — repair that every connect.
+pin_extend_workspaces() {
+  local cast="${1:-}" primary
+  [[ -n "$cast" ]] || return 0
+  primary="$(primary_monitor_name)"
+  [[ -n "$primary" && "$cast" != "$primary" ]] || return 0
+
+  python3 - "$cast" "$primary" <<'PY' 2>/dev/null || true
+import json, subprocess, sys
+cast, primary = sys.argv[1], sys.argv[2]
+
+def move(workspace: str, monitor: str) -> None:
+    expr = f'hl.dsp.workspace.move({{ workspace = "{workspace}", monitor = "{monitor}" }})'
+    subprocess.run(
+        ["hyprctl", "dispatch", expr],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+    )
+
+try:
+    spaces = json.loads(subprocess.check_output(["hyprctl", "-j", "workspaces"], text=True))
+except Exception:
+    raise SystemExit
+for ws in spaces:
+    name = str(ws.get("name") or "")
+    mon = str(ws.get("monitor") or "")
+    if not name or name.startswith("special"):
+        continue
+    if name.startswith("ext-") or name.startswith("name:ext-"):
+        # Named Extend desktops belong on the cast head.
+        ws_arg = name if name.startswith("name:") else f"name:{name}"
+        if mon != cast:
+            move(ws_arg, cast)
+        continue
+    # Numeric / other workspaces belong on the laptop, not the TV.
+    if mon == cast:
+        move(name, primary)
+PY
+}
+
 # Park named ext-1 on the cast output and move numeric workspaces back to eDP
 # so SUPER+N never shares identity across displays.
 seed_extend_workspaces() {
@@ -1668,28 +1711,7 @@ seed_extend_workspaces() {
   primary="$(primary_monitor_name)"
   [[ -n "$primary" && "$cast" != "$primary" ]] || return 0
 
-  python3 - "$cast" "$primary" <<'PY' 2>/dev/null || true
-import json, subprocess, sys
-src, dst = sys.argv[1], sys.argv[2]
-try:
-    spaces = json.loads(subprocess.check_output(["hyprctl", "-j", "workspaces"], text=True))
-except Exception:
-    raise SystemExit
-for ws in spaces:
-    if str(ws.get("monitor") or "") != src:
-        continue
-    name = str(ws.get("name") or "")
-    if name.startswith("ext-") or name.startswith("name:ext-"):
-        continue
-    target = name if name else str(ws.get("id") or "")
-    if not target:
-        continue
-    expr = f'hl.dsp.workspace.move({{ workspace = "{target}", monitor = "{dst}" }})'
-    subprocess.run(
-        ["hyprctl", "dispatch", expr],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
-    )
-PY
+  pin_extend_workspaces "$cast" || true
 
   prev_ws="$(hyprctl -j monitors 2>/dev/null | python3 -c '
 import json, sys
