@@ -24,8 +24,8 @@ Optional: **UFW** (if active, ports below must be allowed).
 | **Stop / Reconnect** | End cast, or reconnect last device |
 
 Also under Miracast: **Persist display**, **Automatically switch audio**
-(switches default output only after streaming starts), and **ADVANCED
-SETTINGS** (stream / engine / quality / radio).
+(only after streaming starts), and **ADVANCED SETTINGS**
+(stream / engine / quality / radio).
 
 ## Firewall ports
 
