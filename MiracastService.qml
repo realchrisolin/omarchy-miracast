@@ -27,6 +27,20 @@ Item {
   property string capturePath: ""
   property string encoder: ""
   property bool captureFallback: false
+  // Miracast P2P Wi-Fi radio: "auto" or managed iface (e.g. wlan1).
+  property string p2pWifiInterface: "auto"
+  property string p2pWifiResolved: ""
+  property var p2pWifiRadios: []
+  // Human adapter name for the resolved P2P Wi-Fi iface (from list_p2p_radios).
+  readonly property string p2pWifiAdapterName: {
+    var want = String(p2pWifiResolved || "")
+    var radios = p2pWifiRadios || []
+    for (var i = 0; i < radios.length; i++) {
+      if (radios[i] && String(radios[i].iface) === want)
+        return String(radios[i].adapterName || radios[i].driver || "")
+    }
+    return ""
+  }
 
   property bool ready: false
   property bool running: false
@@ -54,7 +68,18 @@ Item {
   readonly property string ctl: pluginDir !== "" ? (pluginDir + "/bin/miracast-ctl") : "miracast-ctl"
   // Background status polls must NOT count as busy — they run every 2s while
   // streaming and would grey out Miracast action buttons via enabled:!busy.
-  readonly property bool busy: doctorProcess.running || scanProcess.running || startProcess.running || stopProcess.running || firewallProcess.running || modeProcess.running || positionProcess.running || streamModeProcess.running || captureEncodeProcess.running || preserveDisplayProcess.running
+  readonly property bool busy: doctorProcess.running || scanProcess.running || startProcess.running || stopProcess.running || firewallProcess.running || modeProcess.running || positionProcess.running || streamModeProcess.running || captureEncodeProcess.running || preserveDisplayProcess.running || p2pWifiProcess.running
+  // Pill values: Auto + each discovered managed iface.
+  readonly property var p2pWifiValues: {
+    var out = ["auto"]
+    var radios = p2pWifiRadios || []
+    for (var i = 0; i < radios.length; i++) {
+      var iface = radios[i] && radios[i].iface ? String(radios[i].iface) : ""
+      if (iface !== "" && out.indexOf(iface) < 0)
+        out.push(iface)
+    }
+    return out
+  }
   readonly property bool active: Model.miracastIsActive(phase)
   readonly property bool connecting: phase === "connecting" || phase === "dhcp" || phase === "rtsp" || phase === "scanning"
   readonly property bool streaming: phase === "streaming"
@@ -198,6 +223,32 @@ Item {
         return String(streamModes[i].label || value)
     }
     return value
+  }
+
+  function p2pWifiLabel(id) {
+    var key = String(id || "")
+    if (key === "" || key === "auto")
+      return "Auto"
+    var radios = p2pWifiRadios || []
+    for (var i = 0; i < radios.length; i++) {
+      if (radios[i] && String(radios[i].iface) === key) {
+        // Keep pills short: iface name only. Details live in list-p2p-radios /
+        // tooltips later; "P2P busy" was confusing next to Auto on one radio.
+        return key
+      }
+    }
+    return key
+  }
+
+  function setP2pWifiInterface(next) {
+    var value = String(next || "auto")
+    if (value === "") value = "auto"
+    if (p2pWifiProcess.running || stopProcess.running) return
+    if (value === p2pWifiInterface) return
+    p2pWifiInterface = value
+    actionStatus = "RADIO: " + p2pWifiLabel(value)
+    p2pWifiProcess.command = [ctl, "set-p2p-wifi-interface", value]
+    p2pWifiProcess.running = true
   }
 
   function captureEncodeLabel(id) {
@@ -578,6 +629,12 @@ Item {
           if (data.encoder) root.encoder = String(data.encoder)
           else if (!root.streaming) root.encoder = ""
           root.captureFallback = data.captureFallback === true
+          if (data.p2pWifiInterface !== undefined && data.p2pWifiInterface !== null)
+            root.p2pWifiInterface = String(data.p2pWifiInterface || "auto")
+          if (data.p2pWifiResolved !== undefined && data.p2pWifiResolved !== null)
+            root.p2pWifiResolved = String(data.p2pWifiResolved || "")
+          if (data.p2pWifiRadios)
+            root.p2pWifiRadios = data.p2pWifiRadios
           if (root.captureFallback && root.streaming
               && String(root.actionStatus).indexOf("RENDER ENGINE") < 0)
             root.actionStatus = "RENDER ENGINE fell back to "
@@ -652,6 +709,32 @@ Item {
           pendingRestartTimer.restart()
         } else {
           root.actionStatus = "Stopped"
+        }
+        root.refresh()
+      }
+    }
+  }
+
+  Process {
+    id: p2pWifiProcess
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        try {
+          var data = JSON.parse(String(text || "{}"))
+          if (data.ok === false) {
+            root.lastError = String(data.error || "Failed to set P2P Wi-Fi iface")
+            root.actionStatus = root.lastError
+          } else {
+            if (data.p2pWifiInterface)
+              root.p2pWifiInterface = String(data.p2pWifiInterface)
+            if (data.resolved !== undefined)
+              root.p2pWifiResolved = String(data.resolved || "")
+            root.actionStatus = "RADIO: " + root.p2pWifiLabel(root.p2pWifiInterface)
+            root.lastError = ""
+          }
+        } catch (e) {
+          root.lastError = "RADIO parse failed"
         }
         root.refresh()
       }

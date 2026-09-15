@@ -157,14 +157,22 @@ function inferExtendPosition(displays) {
   return dy < 0 ? "above" : "below"
 }
 
-function miracastPhaseLabel(phase) {
+function miracastPhaseLabel(phase, iface, adapterName) {
   var value = String(phase || "idle")
   if (value === "idle") return "Idle"
   if (value === "scanning") return "Scanning"
   if (value === "connecting") return "Connecting"
   if (value === "dhcp") return "Waiting for IP"
   if (value === "rtsp") return "Starting session"
-  if (value === "streaming") return "Mirroring"
+  if (value === "streaming") {
+    var ifc = String(iface || "").trim()
+    var adapter = String(adapterName || "").trim()
+    if (ifc !== "" && adapter !== "")
+      return "Casting on " + ifc + " (" + adapter + ")"
+    if (ifc !== "")
+      return "Casting on " + ifc
+    return "Casting"
+  }
   if (value === "error") return "Error"
   return value
 }
@@ -178,7 +186,7 @@ function miracastPhaseHint(phase, message) {
   if (value === "connecting") return "Forming Wi‑Fi Direct group"
   if (value === "dhcp") return "P2P is up — waiting for DHCP / RTSP"
   if (value === "rtsp") return "Negotiating Miracast media"
-  if (value === "streaming") return "Desktop is mirroring"
+  if (value === "streaming") return "Desktop is casting"
   if (value === "error") return "Cast failed — check doctor / firewall"
   return "Ready"
 }

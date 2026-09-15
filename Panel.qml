@@ -39,12 +39,14 @@ Panel {
   //   "monitorScale" - scale pills for one display; selectedIndex = pill index,
   //                  scaleFocusMonitor names the target output.
   //   "miracastMode" / "miracastPos" / "miracastStream" / "miracastEncode"
-  //   / "miracast" / "miracastPeers"
+  //   / "miracastRadio" / "miracast" / "miracastPeers"
   //   "textsize"   - global shell/GTK/terminal text size (not per-display).
   readonly property var miracastModeValues: ["mirror", "extend"]
   // Display order ← ↑ ↓ → (left, above, below, right).
   readonly property var miracastPosValues: ["left", "above", "below", "right"]
   readonly property var miracastEncodeValues: Model.miracastCaptureEncodeValues()
+  readonly property var miracastRadioValues: (miracast && miracast.p2pWifiValues)
+    ? miracast.p2pWifiValues : ["auto"]
   readonly property var miracastStreamModeIds: {
     var out = []
     var modes = (miracast && miracast.streamModes) ? miracast.streamModes : []
@@ -118,6 +120,7 @@ Panel {
       list.push("miracastEncode")
     }
     list.push("miracast")
+    if (miracastRadioValues.length > 0) list.push("miracastRadio")
     if (miracast && miracast.peers && miracast.peers.length > 0) list.push("miracastPeers")
     list.push("textsize")
     return list
@@ -135,6 +138,7 @@ Panel {
     if (section === "miracastPos") return miracastPosValues.length
     if (section === "miracastStream") return miracastStreamModeIds.length
     if (section === "miracastEncode") return miracastEncodeValues.length
+    if (section === "miracastRadio") return miracastRadioValues.length
     if (section === "miracast") return 0    // action row sentinel at -1
     if (section === "miracastPeers")
       return (miracast && miracast.peers) ? miracast.peers.length : 0
@@ -147,6 +151,7 @@ Panel {
     return section === "textsize" || section === "monitorBrightness" || section === "monitorScale"
       || section === "miracast" || section === "miracastMode" || section === "miracastPos"
       || section === "miracastStream" || section === "miracastEncode"
+      || section === "miracastRadio"
   }
 
   function sectionFirstIndex(section) {
@@ -156,6 +161,8 @@ Panel {
     if (section === "miracastStream") return Math.max(0, miracastStreamModeIds.indexOf(miracast.streamMode))
     if (section === "miracastEncode")
       return Math.max(0, miracastEncodeValues.indexOf(miracast.captureEncodeActive))
+    if (section === "miracastRadio")
+      return Math.max(0, miracastRadioValues.indexOf(miracast.p2pWifiInterface || "auto"))
     if (section === "monitorScale") return Math.max(0, activeScaleIndexFor(displayByName(scaleFocusMonitor)))
     return 0
   }
@@ -384,6 +391,13 @@ Panel {
       if (encodeNext < 0) encodeNext = 0
       if (encodeNext > miracastEncodeValues.length - 1) encodeNext = miracastEncodeValues.length - 1
       selectedIndex = encodeNext
+      return
+    }
+    if (focusSection === "miracastRadio") {
+      var radioNext = selectedIndex + delta
+      if (radioNext < 0) radioNext = 0
+      if (radioNext > miracastRadioValues.length - 1) radioNext = miracastRadioValues.length - 1
+      selectedIndex = radioNext
     }
   }
 
@@ -422,6 +436,10 @@ Panel {
     }
     if (focusSection === "miracastEncode" && selectedIndex >= 0 && selectedIndex < miracastEncodeValues.length) {
       miracast.setCaptureEncode(miracastEncodeValues[selectedIndex])
+      return
+    }
+    if (focusSection === "miracastRadio" && selectedIndex >= 0 && selectedIndex < miracastRadioValues.length) {
+      miracast.setP2pWifiInterface(miracastRadioValues[selectedIndex])
       return
     }
     if (focusSection === "monitors" && selectedIndex >= 0 && selectedIndex < displays.length) {
@@ -1012,7 +1030,8 @@ Panel {
           else if (root.focusSection === "textsize") root.adjustTextSize(dx)
           else if (root.focusSection === "monitors" || root.focusSection === "monitorScale"
                    || root.focusSection === "miracastMode" || root.focusSection === "miracastPos"
-                   || root.focusSection === "miracastStream" || root.focusSection === "miracastEncode")
+                   || root.focusSection === "miracastStream" || root.focusSection === "miracastEncode"
+                   || root.focusSection === "miracastRadio")
             root.moveCursorH(dx)
         }
       }
@@ -1154,144 +1173,212 @@ Panel {
               height: Style.space(8)
             }
 
-            Item {
+            // MIRACAST section: slightly more air between header / STATUS /
+            // CONTROLS / RADIO than the panel default (cap ~15px).
+            Column {
               width: parent.width
-              implicitHeight: Math.max(miracastHeader.implicitHeight, miracastPhase.implicitHeight)
+              spacing: Style.space(10)
 
-              DenseSectionLabel {
-                id: miracastHeader
-                text: "MIRACAST"
-                foreground: root.bar.foreground
-                fontFamily: root.bar.fontFamily
-                anchors.left: parent.left
-                anchors.verticalCenter: parent.verticalCenter
+            DenseSectionLabel {
+              id: miracastHeader
+              text: "MIRACAST"
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+            }
+
+            // ---- STATUS (indented under MIRACAST, above CONTROLS) ----
+            Column {
+              x: Style.space(10)
+              width: parent.width - Style.space(10)
+              spacing: Style.space(4)
+
+              Text {
+                text: "STATUS"
+                color: Qt.darker(root.bar.foreground, 1.25)
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
               }
 
               Text {
                 id: miracastPhase
-                text: Model.miracastPhaseLabel(miracast.phase).toUpperCase()
+                width: parent.width
+                text: Model.miracastPhaseLabel(
+                        miracast.phase,
+                        miracast.p2pWifiResolved,
+                        miracast.p2pWifiAdapterName).toUpperCase()
                 color: miracast.active ? root.bar.foreground : Qt.darker(root.bar.foreground, 1.4)
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.caption
                 font.bold: true
-                anchors.right: parent.right
-                anchors.rightMargin: Style.space(6)
-                anchors.verticalCenter: parent.verticalCenter
+                wrapMode: Text.WordWrap
               }
-            }
 
-            Text {
-              // Hero already shows the peer name while streaming — skip the
-              // duplicate "Connected to …" line to save vertical space.
-              visible: {
-                if (miracast.streaming) return false
-                if (miracast.connecting) return true
-                return miracast.connectedLabel !== ""
-              }
-              width: parent.width
-              text: {
-                if (miracast.connecting)
-                  return "Connecting to " + (miracast.connectedLabel || "Miracast sink") + "…"
-                if (miracast.connectedLabel !== "")
-                  return "Last device: " + miracast.connectedLabel
-                return ""
-              }
-              color: root.bar.foreground
-              font.family: root.bar.fontFamily
-              font.pixelSize: Style.font.bodySmall
-              wrapMode: Text.WordWrap
-            }
-
-            Text {
-              // While connected, the line above is enough — don't also show
-              // idle/doctor hints like "Ready to cast".
-              readonly property string detail: {
-                if (miracast.lastError !== "" && miracast.actionStatus === "")
-                  return miracast.lastError
-                if (miracast.actionStatus !== "") {
-                  if (miracast.active && String(miracast.actionStatus).indexOf("Ready") === 0)
-                    return ""
-                  return miracast.actionStatus
+              Text {
+                // Hero already shows the peer name while streaming — skip the
+                // duplicate "Connected to …" line to save vertical space.
+                visible: {
+                  if (miracast.streaming) return false
+                  if (miracast.connecting) return true
+                  return miracast.connectedLabel !== ""
                 }
-                if (miracast.active)
+                width: parent.width
+                text: {
+                  if (miracast.connecting)
+                    return "Connecting to " + (miracast.connectedLabel || "Miracast sink") + "…"
+                  if (miracast.connectedLabel !== "")
+                    return "Last device: " + miracast.connectedLabel
                   return ""
-                return miracast.statusText
+                }
+                color: root.bar.foreground
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                wrapMode: Text.WordWrap
               }
-              visible: detail !== ""
-              width: parent.width
-              text: detail
-              color: miracast.lastError !== "" && miracast.actionStatus === ""
-                     ? (root.bar.urgent || root.bar.foreground)
-                     : Qt.darker(root.bar.foreground, 1.4)
-              font.family: root.bar.fontFamily
-              font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
+
+              Text {
+                // While connected, the phase line is enough — don't also show
+                // idle/doctor hints like "Ready to cast".
+                readonly property string detail: {
+                  if (miracast.lastError !== "" && miracast.actionStatus === "")
+                    return miracast.lastError
+                  if (miracast.actionStatus !== "") {
+                    if (miracast.active && String(miracast.actionStatus).indexOf("Ready") === 0)
+                      return ""
+                    return miracast.actionStatus
+                  }
+                  if (miracast.active)
+                    return ""
+                  return miracast.statusText
+                }
+                visible: detail !== ""
+                width: parent.width
+                text: detail
+                color: miracast.lastError !== "" && miracast.actionStatus === ""
+                       ? (root.bar.urgent || root.bar.foreground)
+                       : Qt.darker(root.bar.foreground, 1.4)
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
             }
 
-            CursorSurface {
-              id: miracastActionsRow
-              width: parent.width
-              implicitHeight: miracastActions.implicitHeight + Style.spacing.controlGap
-              hasCursor: root.cursorActive && root.focusSection === "miracast" && root.selectedIndex === -1
-              onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(miracastActionsRow)
-              foreground: root.bar.foreground
-              outline: true
+            // ---- CONTROLS (indented under MIRACAST) ----
+            Column {
+              x: Style.space(10)
+              width: parent.width - Style.space(10)
+              spacing: Style.space(4)
 
-              Row {
-                id: miracastActions
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                anchors.leftMargin: Style.space(6)
-                anchors.rightMargin: Style.space(6)
-                spacing: Style.space(6)
-
-                PanelActionButton {
-                  iconText: "󰍉"
-                  tooltipText: "Scan sinks (S)"
-                  foreground: root.bar.foreground
-                  fontFamily: root.bar.fontFamily
-                  enabled: !miracast.busy
-                  onClicked: miracast.scanPeers()
-                }
-                PanelActionButton {
-                  iconText: "󰈀"
-                  tooltipText: "Open firewall (F)"
-                  foreground: root.bar.foreground
-                  fontFamily: root.bar.fontFamily
-                  enabled: !miracast.busy
-                  onClicked: miracast.openFirewall()
-                }
-                PanelActionButton {
-                  iconText: "󰒓"
-                  tooltipText: "Doctor (D)"
-                  foreground: root.bar.foreground
-                  fontFamily: root.bar.fontFamily
-                  enabled: !miracast.busy
-                  onClicked: miracast.runDoctor()
-                }
-                Item { width: Style.space(8); height: 1 }
-                PanelActionButton {
-                  iconText: miracast.active ? "󰓛" : "󰑐"
-                  tooltipText: miracast.active
-                    ? "Stop (X)"
-                    : ("Reconnect to last device"
-                       + (miracast.connectedLabel !== ""
-                          ? " (" + miracast.connectedLabel + ")"
-                          : "")
-                       + " (C)")
-                  foreground: root.bar.foreground
-                  fontFamily: root.bar.fontFamily
-                  enabled: !miracast.busy
-                  onClicked: miracast.active ? miracast.stopCast() : miracast.startCast("")
-                }
+              Text {
+                text: "CONTROLS"
+                color: Qt.darker(root.bar.foreground, 1.25)
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
               }
 
-              HoverHandler {
-                onHoveredChanged: if (hovered && !root.reflowingText) {
-                  root.cursorActive = true
-                  root.focusSection = "miracast"
-                  root.selectedIndex = -1
+              CursorSurface {
+                id: miracastActionsRow
+                width: parent.width
+                implicitHeight: miracastActions.implicitHeight + Style.spacing.controlGap
+                hasCursor: root.cursorActive && root.focusSection === "miracast" && root.selectedIndex === -1
+                onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(miracastActionsRow)
+                foreground: root.bar.foreground
+                outline: true
+
+                Row {
+                  id: miracastActions
+                  anchors.left: parent.left
+                  anchors.right: parent.right
+                  anchors.verticalCenter: parent.verticalCenter
+                  anchors.leftMargin: Style.space(6)
+                  anchors.rightMargin: Style.space(6)
+                  spacing: Style.space(6)
+
+                  PanelActionButton {
+                    iconText: "󰍉"
+                    tooltipText: "Scan sinks (S)"
+                    foreground: root.bar.foreground
+                    fontFamily: root.bar.fontFamily
+                    enabled: !miracast.busy
+                    onClicked: miracast.scanPeers()
+                  }
+                  PanelActionButton {
+                    iconText: "󰈀"
+                    tooltipText: "Open firewall (F)"
+                    foreground: root.bar.foreground
+                    fontFamily: root.bar.fontFamily
+                    enabled: !miracast.busy
+                    onClicked: miracast.openFirewall()
+                  }
+                  PanelActionButton {
+                    iconText: "󰒓"
+                    tooltipText: "Doctor (D)"
+                    foreground: root.bar.foreground
+                    fontFamily: root.bar.fontFamily
+                    enabled: !miracast.busy
+                    onClicked: miracast.runDoctor()
+                  }
+                  Item { width: Style.space(8); height: 1 }
+                  PanelActionButton {
+                    iconText: miracast.active ? "󰓛" : "󰑐"
+                    tooltipText: miracast.active
+                      ? "Stop (X)"
+                      : ("Reconnect to last device"
+                         + (miracast.connectedLabel !== ""
+                            ? " (" + miracast.connectedLabel + ")"
+                            : "")
+                         + " (C)")
+                    foreground: root.bar.foreground
+                    fontFamily: root.bar.fontFamily
+                    enabled: !miracast.busy
+                    onClicked: miracast.active ? miracast.stopCast() : miracast.startCast("")
+                  }
+                }
+
+                HoverHandler {
+                  onHoveredChanged: if (hovered && !root.reflowingText) {
+                    root.cursorActive = true
+                    root.focusSection = "miracast"
+                    root.selectedIndex = -1
+                  }
+                }
+              }
+            }
+
+            // ---- RADIO (indented under MIRACAST, after CONTROLS) ----
+            Column {
+              x: Style.space(10)
+              width: parent.width - Style.space(10)
+              spacing: Style.space(4)
+              visible: root.miracastRadioValues.length > 0
+
+              Text {
+                text: "RADIO"
+                color: Qt.darker(root.bar.foreground, 1.25)
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
+
+              Grid {
+                id: miracastRadioRow
+                width: parent.width
+                columns: Math.min(root.miracastRadioValues.length, 3)
+                spacing: Style.spacing.xs
+                readonly property real cellWidth: columns > 0
+                  ? (width - spacing * (columns - 1)) / columns
+                  : 0
+
+                Repeater {
+                  model: root.miracastRadioValues
+                  MiracastRadioPill {
+                    required property string modelData
+                    required property int index
+                    radioValue: modelData
+                    radioIndex: index
+                    width: miracastRadioRow.cellWidth
+                  }
                 }
               }
             }
@@ -1356,6 +1443,7 @@ Panel {
                 }
               }
             }
+            } // MIRACAST section column
           }
 
           // ---------- Text size (global) ----------
@@ -1587,6 +1675,32 @@ Panel {
       root.cursorActive = true
       root.focusSection = "miracastEncode"
       root.selectedIndex = encodePill.encodeIndex
+    }
+  }
+
+  component MiracastRadioPill: Button {
+    id: radioPill
+    required property string radioValue
+    required property int radioIndex
+
+    text: miracast.p2pWifiLabel(radioValue)
+    fontSize: Style.font.caption
+    foreground: root.bar.foreground
+    fontFamily: root.bar.fontFamily
+    horizontalPadding: Style.spacing.sm
+    verticalPadding: Style.spacing.controlPaddingY
+    bordered: true
+
+    active: (miracast.p2pWifiInterface || "auto") === radioValue
+    hasCursor: root.cursorActive && root.focusSection === "miracastRadio" && root.selectedIndex === radioIndex
+    enabled: !miracast.busy
+
+    onClicked: miracast.setP2pWifiInterface(radioValue)
+    onHovered: function(isHovered) {
+      if (!isHovered || root.reflowingText) return
+      root.cursorActive = true
+      root.focusSection = "miracastRadio"
+      root.selectedIndex = radioPill.radioIndex
     }
   }
 

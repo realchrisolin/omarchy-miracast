@@ -185,16 +185,42 @@ LAT_FILE="$LOG_DIR/latency.jsonl"
 # Resolve symlinks (e.g. ~/.local/bin/miracast-ctl → checkout) so scripts/ works.
 PLUGIN_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 
+# Resolve managed Wi-Fi iface for Miracast P2P (settings p2pWifiInterface / auto).
+resolve_p2p_wifi_iface() {
+  local prefer settings script
+  settings="$(read_settings)"
+  prefer="$(python3 -c 'import json,sys
+s=json.loads(sys.argv[1])
+print(str(s.get("p2pWifiInterface") or "auto").strip() or "auto")
+' "$settings" 2>/dev/null || echo auto)"
+  prefer="${FLUXCAST_WFD_INTERFACE:-$prefer}"
+  script="$PLUGIN_DIR/scripts/list_p2p_radios.py"
+  if [[ -f "$script" ]]; then
+    python3 "$script" --resolve --prefer "$prefer" 2>/dev/null || true
+    return 0
+  fi
+  # Fallback: first non-p2p wireless iface
+  for d in /sys/class/net/*; do
+    [[ -e "$d/wireless" || -e "$d/phy80211" ]] || continue
+    b="$(basename "$d")"
+    [[ "$b" == p2p-* ]] && continue
+    echo "$b"
+    return 0
+  done
+}
+
 # When MCC is available, tell wpa_supplicant not to prefer the STA shared freq.
 ensure_p2p_ignore_shared_freq() {
-  local out
+  local out iface
+  iface="$(resolve_p2p_wifi_iface)"
+  [[ -n "$iface" ]] || iface="wlp0s20f3"
   # Prefer sudo -n (session NOPASSWD / keep-alive). Never pkexec here.
   if sudo -n true 2>/dev/null; then
-    out="$(sudo -n wpa_cli -i wlp0s20f3 set p2p_ignore_shared_freq 1 2>/dev/null || true)"
+    out="$(sudo -n wpa_cli -i "$iface" set p2p_ignore_shared_freq 1 2>/dev/null || true)"
   else
-    out="$(wpa_cli -i wlp0s20f3 set p2p_ignore_shared_freq 1 2>/dev/null || true)"
+    out="$(wpa_cli -i "$iface" set p2p_ignore_shared_freq 1 2>/dev/null || true)"
   fi
-  echo "[miracast-ctl] p2p_ignore_shared_freq set: ${out:-unknown}"
+  echo "[miracast-ctl] p2p_ignore_shared_freq set on $iface: ${out:-unknown}"
 }
 
 # Scan Wi-Fi occupancy and pick a quiet 5 GHz P2P channel (else the quietest).
@@ -343,8 +369,12 @@ defaults = {
     "vaapiQuality": "5",
     # FLUXCAST_WFD_VBV_MULTIPLIER — CBR VBV as fraction of bitrate (~seconds).
     "vbvMultiplier": "0.5",
-    # Post-PLAY CSA to a quiet channel (MCC). Default false = SCC.
+    # Post-PLAY CSA to a quiet channel (MCC). Default false = SCC: radio A/B
+    # showed 0 retry spikes on SCC vs 10 on MCC bw20.
     "p2pQuietCsa": False,
+    # Managed Wi-Fi iface for Miracast P2P: "auto" or e.g. "wlan1".
+    # Auto prefers P2P-GO-capable radios that are not already connected.
+    "p2pWifiInterface": "auto",
 }
 try:
     data = json.load(open(path))
@@ -405,7 +435,7 @@ if preset == "movie":
     data["vaapiRcMode"] = "CQP"
     data["vaapiQp"] = 18
     data["vaapiGop"] = 60
-    # quality 5: pipe CBR A/B — q2 choppier; q7+tight VBV locked up.
+    # quality 5: pipe CBR A/B on hotyeah — q2 was choppier; q7+tight VBV locked up.
     data["vaapiQuality"] = "5"
     data["vaapiBitrate"] = str(data.get("vaapiBitrate") or "28M")  # unused for CQP
     data["wfRecorderDamage"] = "0"  # continuous -D
@@ -2283,16 +2313,47 @@ EOS
   fi
 }
 
+cmd_list_p2p_radios() {
+  local script="$PLUGIN_DIR/scripts/list_p2p_radios.py"
+  local settings prefer
+  settings="$(read_settings)"
+  prefer="$(python3 -c 'import json,sys
+s=json.loads(sys.argv[1])
+print(str(s.get("p2pWifiInterface") or "auto").strip() or "auto")
+' "$settings" 2>/dev/null || echo auto)"
+  if [[ ! -f "$script" ]]; then
+    emit '{"ok":false,"radios":[],"error":"list_p2p_radios.py missing"}'
+    return 1
+  fi
+  python3 "$script" --prefer "$prefer" 2>/dev/null || emit '{"ok":false,"radios":[],"error":"list_p2p_radios failed"}'
+}
+
+cmd_set_p2p_wifi_interface() {
+  local value="${1:-auto}"
+  value="$(printf '%s' "$value" | tr -d '\r\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  [[ -n "$value" ]] || value="auto"
+  if [[ "$value" != "auto" ]] && [[ ! -e "/sys/class/net/$value" ]]; then
+    # Allow setting before hotplug; warn but still persist.
+    echo "[miracast-ctl] warning: iface $value not present yet (will use when available)" >>"$LOG_DIR/cast.log" || true
+  fi
+  write_settings "p2pWifiInterface=$value" >/dev/null
+  local resolved
+  resolved="$(resolve_p2p_wifi_iface)"
+  emit "{\"ok\":true,\"p2pWifiInterface\":\"$value\",\"resolved\":\"${resolved:-}\"}"
+}
+
 cmd_scan() {
   # Allowed while casting: scanner uses short p2p_find without flush and aborts
   # if the live P2P group drops (see scripts/scan_miracast_sinks.py).
   local timeout_s="${MIRACAST_SCAN_TIMEOUT:-5}"
   local scanner="$PLUGIN_DIR/scripts/scan_miracast_sinks.py"
+  local wifi_iface
+  wifi_iface="$(resolve_p2p_wifi_iface)"
   # Fast path: lean NM/wpa_cli scanner (no FluxCast cold start). Default 5s,
   # early-exit when WFD peers appear. Override: MIRACAST_SCAN_TIMEOUT=8.
   if [[ -f "$scanner" ]]; then
     local out
-    out="$(python3 "$scanner" --timeout "$timeout_s" 2>/dev/null || true)"
+    out="$(FLUXCAST_WFD_INTERFACE="${wifi_iface:-}" python3 "$scanner" --timeout "$timeout_s" ${wifi_iface:+--iface "$wifi_iface"} 2>/dev/null || true)"
     if [[ -n "$out" ]] && python3 -c 'import json,sys; json.loads(sys.argv[1])' "$out" 2>/dev/null; then
       python3 - "$out" "$PEERS_FILE" <<'PY'
 import json, sys
@@ -2342,7 +2403,13 @@ PY
     return 1
   fi
   local out
-  out="$(cd "$root" && PYTHONUNBUFFERED=1 python3 -u src/main.py --protocol wfd --wfd-scan --wfd-p2p-backend nm --wfd-timeout "$timeout_s" 2>/dev/null || true)"
+  local wifi_iface_fb scan_iface_args=()
+  wifi_iface_fb="$(resolve_p2p_wifi_iface)"
+  [[ -n "$wifi_iface_fb" ]] && scan_iface_args=(--wfd-interface "$wifi_iface_fb")
+  out="$(cd "$root" && FLUXCAST_LIST_P2P_RADIOS="$PLUGIN_DIR/scripts/list_p2p_radios.py" \
+    FLUXCAST_WFD_INTERFACE="${wifi_iface_fb:-}" \
+    PYTHONUNBUFFERED=1 python3 -u src/main.py --protocol wfd --wfd-scan --wfd-p2p-backend nm \
+    --wfd-timeout "$timeout_s" "${scan_iface_args[@]}" 2>/dev/null || true)"
   python3 - "$out" "$PEERS_FILE" <<'PY'
 import json, re, sys
 text, peers_path = sys.argv[1], sys.argv[2]
@@ -2592,6 +2659,44 @@ attach_radio_channel_fields() {
   python3 "$PLUGIN_DIR/scripts/attach_radio_channel_fields.py"
 }
 
+# Merge P2P Wi-Fi radio list into status JSON (stdin→stdout).
+# Must use python3 -c so the JSON pipe stays on stdin (a heredoc would steal it).
+attach_p2p_wifi_fields() {
+  python3 -c '
+import json, subprocess, sys
+from pathlib import Path
+settings_path, script = sys.argv[1], sys.argv[2]
+try:
+    data = json.loads(sys.stdin.read() or "{}")
+except Exception:
+    data = {}
+if not isinstance(data, dict):
+    data = {}
+try:
+    settings = json.load(open(settings_path))
+except Exception:
+    settings = {}
+prefer = str(settings.get("p2pWifiInterface") or "auto").strip() or "auto"
+data["p2pWifiInterface"] = prefer
+radios = []
+resolved = ""
+if Path(script).is_file():
+    try:
+        out = subprocess.check_output(
+            [sys.executable, script, "--prefer", prefer],
+            text=True, timeout=4,
+        )
+        payload = json.loads(out)
+        radios = payload.get("radios") or []
+        resolved = str(payload.get("resolved") or "")
+    except Exception:
+        pass
+data["p2pWifiRadios"] = radios
+data["p2pWifiResolved"] = resolved
+print(json.dumps(data, separators=(",", ":")))
+' "$SETTINGS_FILE" "$PLUGIN_DIR/scripts/list_p2p_radios.py"
+}
+
 cmd_set_capture_encode() {
   local value="${1:-}"
   case "$value" in
@@ -2822,7 +2927,7 @@ cmd_status() {
   if is_running; then
     local pid
     pid="$(cat "$PID_FILE")"
-    python3 - "$STATUS_FILE" "$pid" "$settings" "$link_up" <<'PY' | enrich_peer_name | attach_stream_mode_fields | attach_capture_encode_fields | attach_radio_channel_fields | attach_orphan_extend_heads
+    python3 - "$STATUS_FILE" "$pid" "$settings" "$link_up" <<'PY' | enrich_peer_name | attach_stream_mode_fields | attach_capture_encode_fields | attach_radio_channel_fields | attach_p2p_wifi_fields | attach_orphan_extend_heads
 import json, sys
 path, pid, settings_raw, link_up = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 try:
@@ -2857,7 +2962,7 @@ print(json.dumps(data, separators=(",", ":")))
 PY
     return 0
   fi
-  python3 - "$STATUS_FILE" "$settings" "$link_up" <<'PY' | enrich_peer_name | attach_stream_mode_fields | attach_capture_encode_fields | attach_radio_channel_fields | attach_orphan_extend_heads
+  python3 - "$STATUS_FILE" "$settings" "$link_up" <<'PY' | enrich_peer_name | attach_stream_mode_fields | attach_capture_encode_fields | attach_radio_channel_fields | attach_p2p_wifi_fields | attach_orphan_extend_heads
 import json, sys
 path, settings_raw, link_up = sys.argv[1], sys.argv[2], sys.argv[3]
 try:
@@ -3699,6 +3804,14 @@ print(str(s.get("vbvMultiplier") or "0.5").strip() or "0.5")
     # pause (screen lock / Extend position move).
     export FLUXCAST_CAPTURE_PAUSE_FILE="$CAPTURE_PAUSED_FILE"
     clear_capture_paused
+    local wifi_iface="" wfd_iface_args=()
+    wifi_iface="$(resolve_p2p_wifi_iface)"
+    if [[ -n "$wifi_iface" ]]; then
+      wfd_iface_args=(--wfd-interface "$wifi_iface")
+      export FLUXCAST_WFD_INTERFACE="$wifi_iface"
+      echo "[miracast-ctl] P2P Wi-Fi iface=$wifi_iface" >>"$LOG_DIR/cast.log"
+    fi
+    export FLUXCAST_LIST_P2P_RADIOS="$PLUGIN_DIR/scripts/list_p2p_radios.py"
     python3 -u src/main.py \
       --protocol wfd \
       --wfd-peer "$peer" \
@@ -3708,6 +3821,7 @@ print(str(s.get("vbvMultiplier") or "0.5").strip() or "0.5")
       --wfd-p2p-backend nm \
       --wfd-go-intent "$go_intent" \
       "${p2p_channel_args[@]}" \
+      "${wfd_iface_args[@]}" \
       --fps "$fps" \
       --output-res "$output_res" \
       --bitrate "$bitrate" \
@@ -3751,9 +3865,9 @@ except Exception: print("")' "$STATUS_FILE" 2>/dev/null || true)"
         saw_play=1
         missing_link=0
         # Quiet-channel CSA (MCC) vs stay-on-STA (SCC).
-        # Default SCC: radio A/B — MCC bw20 had retry storms; SCC had none.
-        # Override: settings p2pQuietCsa=true, or MIRACAST_P2P_QUIET_CSA=1 /
-        # MIRACAST_SKIP_P2P_CSA=1.
+        # Default SCC: radio A/B 2026-09-14 — MCC bw20 had 10 retry spikes / 90s;
+        # SCC had 0. Override: settings p2pQuietCsa=true, or
+        # MIRACAST_P2P_QUIET_CSA=1 / MIRACAST_SKIP_P2P_CSA=1.
         local _do_csa=0
         if [[ "${MIRACAST_SKIP_P2P_CSA:-}" =~ ^(1|true|yes)$ ]]; then
           _do_csa=0
@@ -3842,6 +3956,8 @@ Commands:
   set-stream-mode <id>   # e.g. 1280x720p30 / 1920x1080p60
   set-capture-encode dmabuf|vaapi|cpu   # RENDER METHOD preference
   set-cast-preset desktop|movie   # CQP desktop vs CBR movie encode
+  list-p2p-radios                 # Wi-Fi ifaces for Miracast P2P
+  set-p2p-wifi-interface auto|IFACE
   get-extend-position
   set-extend-position right|left|above|below
   restart-capture [quick]
@@ -3977,6 +4093,8 @@ main() {
     set-stream-mode|set_stream_mode) cmd_set_stream_mode "$@" ;;
     set-capture-encode|set_capture_encode) cmd_set_capture_encode "$@" ;;
     set-cast-preset|set_cast_preset) cmd_set_cast_preset "$@" ;;
+    list-p2p-radios|list_p2p_radios) cmd_list_p2p_radios "$@" ;;
+    set-p2p-wifi-interface|set_p2p_wifi_interface) cmd_set_p2p_wifi_interface "$@" ;;
     get-extend-position|get_extend_position) cmd_get_extend_position "$@" ;;
     set-extend-position|set_extend_position) cmd_set_extend_position "$@" ;;
     restart-capture|restart_capture) cmd_restart_capture "$@" ;;

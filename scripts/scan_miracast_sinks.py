@@ -87,11 +87,13 @@ def _wfd_rtsp_port(ies: list[int]) -> int:
     return 7236
 
 
-def _nm_p2p_path() -> Optional[str]:
+def _nm_p2p_path(prefer_iface: Optional[str] = None) -> Optional[str]:
+    """Return WifiP2P device path, preferring p2p-dev-<prefer_iface> when set."""
     try:
         raw = _gdbus_get(NM_DEST, NM_PATH, NM_DEST, "Devices")
     except Exception:
         return None
+    paths = []
     for path in _object_paths(raw):
         try:
             dtype = _gdbus_get(NM_DEST, path, "org.freedesktop.NetworkManager.Device", "DeviceType")
@@ -99,12 +101,25 @@ def _nm_p2p_path() -> Optional[str]:
             continue
         # NM_DEVICE_TYPE_WIFI_P2P = 30
         if re.search(r"\b30\b|uint32 30", dtype):
-            return path
-    return None
+            paths.append(path)
+    if not paths:
+        return None
+    if prefer_iface:
+        needle = f"p2p-dev-{prefer_iface}"
+        for path in paths:
+            try:
+                iface = _parse_string(
+                    _gdbus_get(NM_DEST, path, "org.freedesktop.NetworkManager.Device", "Interface")
+                )
+            except Exception:
+                continue
+            if iface == needle or (iface and prefer_iface in iface):
+                return path
+    return paths[0]
 
 
-def scan_nm(timeout: int) -> list[dict[str, Any]]:
-    path = _nm_p2p_path()
+def scan_nm(timeout: int, wifi_iface: Optional[str] = None) -> list[dict[str, Any]]:
+    path = _nm_p2p_path(wifi_iface)
     if not path:
         raise RuntimeError("No NetworkManager Wi-Fi P2P device")
     iface = _parse_string(
@@ -211,7 +226,17 @@ def scan_nm(timeout: int) -> list[dict[str, Any]]:
             pass
 
 
-def _wifi_iface() -> Optional[str]:
+def _wifi_iface(prefer: Optional[str] = None) -> Optional[str]:
+    """Resolve managed Wi-Fi iface (P2P-GO preferred, idle preferred)."""
+    prefer = (prefer or os.environ.get("FLUXCAST_WFD_INTERFACE") or "").strip()
+    try:
+        from list_p2p_radios import resolve_iface
+
+        return resolve_iface(prefer or "auto")
+    except Exception:
+        pass
+    if prefer and prefer.lower() not in ("auto", "default"):
+        return prefer
     for path in sorted(os.listdir("/sys/class/net")):
         base = f"/sys/class/net/{path}"
         if os.path.exists(f"{base}/wireless") or os.path.exists(f"{base}/phy80211"):
@@ -221,8 +246,8 @@ def _wifi_iface() -> Optional[str]:
     return None
 
 
-def scan_wpa(timeout: int) -> list[dict[str, Any]]:
-    iface = _wifi_iface()
+def scan_wpa(timeout: int, wifi_iface: Optional[str] = None) -> list[dict[str, Any]]:
+    iface = wifi_iface or _wifi_iface()
     if not iface:
         raise RuntimeError("No Wi-Fi interface for wpa_cli")
     # Prefer sudo -n (same as fingerprint); fall back to plain wpa_cli.
@@ -463,9 +488,14 @@ def collect_peers_readonly() -> list[dict[str, Any]]:
     return list(by_mac.values())
 
 
-def scan_wpa_safe(timeout: int, *, watch_groups: Optional[list[str]] = None) -> list[dict[str, Any]]:
+def scan_wpa_safe(
+    timeout: int,
+    *,
+    watch_groups: Optional[list[str]] = None,
+    wifi_iface: Optional[str] = None,
+) -> list[dict[str, Any]]:
     """p2p_find without flush; abort if a watched P2P group iface disappears."""
-    iface = _wifi_iface()
+    iface = wifi_iface or _wifi_iface()
     if not iface:
         raise RuntimeError("No Wi-Fi interface for wpa_cli")
     watch = list(watch_groups or [])
@@ -567,15 +597,21 @@ def _filter_miracast_sinks(peers: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [p for p in peers if p.get("wfd") is True]
 
 
-def scan(timeout: int = 5) -> tuple[list[dict[str, Any]], str, dict[str, Any]]:
+def scan(
+    timeout: int = 5,
+    *,
+    wifi_iface: Optional[str] = None,
+) -> tuple[list[dict[str, Any]], str, dict[str, Any]]:
     """Return (peers, source, meta). Works while a cast is active."""
     active = _session_active()
     groups_before = _group_ifaces()
     cached = collect_peers_readonly()
+    resolved = wifi_iface or _wifi_iface()
     meta: dict[str, Any] = {
         "session_active": active,
         "live_discovery": False,
         "group_ifaces": groups_before,
+        "wifi_iface": resolved,
     }
     errors: list[str] = []
 
@@ -583,12 +619,12 @@ def scan(timeout: int = 5) -> tuple[list[dict[str, Any]], str, dict[str, Any]]:
     # Active: still allow short finds (no flush); watch group iface; merge cache.
     if not active:
         try:
-            peers = scan_nm(timeout)
+            peers = scan_nm(timeout, wifi_iface=resolved)
             return peers, "NetworkManager", {**meta, "live_discovery": True}
         except Exception as exc:
             errors.append(f"NM: {exc}")
         try:
-            peers = scan_wpa_safe(timeout, watch_groups=[])
+            peers = scan_wpa_safe(timeout, watch_groups=[], wifi_iface=resolved)
             return peers, "wpa_cli", {**meta, "live_discovery": True}
         except Exception as exc:
             errors.append(f"wpa_cli: {exc}")
@@ -601,13 +637,15 @@ def scan(timeout: int = 5) -> tuple[list[dict[str, Any]], str, dict[str, Any]]:
     discovered: list[dict[str, Any]] = []
     source = "cache+live"
     try:
-        discovered = scan_wpa_safe(min(timeout, 5), watch_groups=groups_before)
+        discovered = scan_wpa_safe(
+            min(timeout, 5), watch_groups=groups_before, wifi_iface=resolved
+        )
         meta["live_discovery"] = True
         source = "wpa_cli+cache"
     except Exception as exc:
         errors.append(f"wpa_cli: {exc}")
         try:
-            discovered = scan_nm(min(timeout, 5))
+            discovered = scan_nm(min(timeout, 5), wifi_iface=resolved)
             if not _group_still_up(groups_before):
                 raise RuntimeError("P2P group dropped during NM scan")
             meta["live_discovery"] = True
@@ -630,10 +668,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--timeout", type=int, default=5, help="discovery seconds (default 5)")
     p.add_argument("--json", action="store_true", help="print JSON (default)")
     p.add_argument("--all", action="store_true", help="include non-WFD P2P peers")
+    p.add_argument(
+        "--iface",
+        default="",
+        help="managed Wi-Fi iface or auto (default: smart pick / FLUXCAST_WFD_INTERFACE)",
+    )
     args = p.parse_args(argv)
     t0 = time.monotonic()
+    prefer = (args.iface or "").strip() or None
     try:
-        peers, source, meta = scan(args.timeout)
+        peers, source, meta = scan(args.timeout, wifi_iface=_wifi_iface(prefer) if prefer else None)
     except Exception as exc:
         print(json.dumps({"ok": False, "peers": [], "error": str(exc)}, separators=(",", ":")))
         return 1
@@ -653,6 +697,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "elapsed_ms": elapsed_ms,
                 "session_active": meta.get("session_active"),
                 "live_discovery": meta.get("live_discovery"),
+                "wifi_iface": meta.get("wifi_iface"),
                 "warning": meta.get("warning"),
             },
             separators=(",", ":"),
