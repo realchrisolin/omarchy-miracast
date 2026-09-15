@@ -265,15 +265,42 @@ Item {
     var key = String(id || "")
     if (key === "" || key === "auto")
       return "Auto"
-    var radios = p2pWifiRadios || []
-    for (var i = 0; i < radios.length; i++) {
-      if (radios[i] && String(radios[i].iface) === key) {
-        // Keep pills short: iface name only. Details live in list-p2p-radios /
-        // tooltips later; "P2P busy" was confusing next to Auto on one radio.
-        return key
-      }
-    }
     return key
+  }
+
+  // Adapter name for a pill value: Auto → currently resolved radio; else that iface.
+  function p2pWifiDeviceName(id) {
+    var key = String(id || "")
+    var radios = p2pWifiRadios || []
+    var want = ""
+    if (key === "" || key === "auto")
+      want = String(p2pWifiResolved || "")
+    else
+      want = key
+    if (want === "") {
+      // Auto before resolve: fall back to the sole / preferred GO radio.
+      for (var i = 0; i < radios.length; i++) {
+        if (radios[i] && radios[i].p2pGo)
+          return String(radios[i].adapterName || radios[i].driver || "").trim()
+      }
+      if (radios.length > 0 && radios[0])
+        return String(radios[0].adapterName || radios[0].driver || "").trim()
+      return ""
+    }
+    for (var j = 0; j < radios.length; j++) {
+      if (radios[j] && String(radios[j].iface) === want)
+        return String(radios[j].adapterName || radios[j].driver || "").trim()
+    }
+    return ""
+  }
+
+  // Two-line RADIO pill: title + "(device name)" underneath when known.
+  function p2pWifiPillText(id) {
+    var title = p2pWifiLabel(id)
+    var device = p2pWifiDeviceName(id)
+    if (device === "")
+      return title
+    return title + "\n(" + device + ")"
   }
 
   function setP2pWifiInterface(next) {

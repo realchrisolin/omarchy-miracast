@@ -24,26 +24,53 @@ why upstream merges matter): see **[BUILD.md](BUILD.md)**.
 
 ## Install
 
-### Plugin
+You need three pieces: this **Display** plugin, OS packages, and a **FluxCast**
+tree with the WFD patches this panel expects. The bar label stays **Display**.
+
+### 1. Packages
 
 ```bash
-# From a clone of this repo
-omarchy plugin validate .
-# Copy or clone into your Omarchy plugins dir, e.g.
-#   ~/.config/omarchy/plugins/<you>.monitor
-# Omarchy assigns the local plugin id when cloning; the bar label stays "Display".
+omarchy pkg add dnsmasq wf-recorder xorg-xrandr ffmpeg
 ```
 
-Disable stock Display if the clone does not replace it automatically:
+Also needed (usually already present on Omarchy): NetworkManager, PipeWire /
+WirePlumber or PulseAudio, `iw`, `nmcli`, Python 3. Optional: `ufw` so
+**Check & fix** can open Miracast ports for you.
+
+### 2. Install the plugin
+
+**From git (recommended for users):**
 
 ```bash
-# Ensure shell.json points at your cloned Display plugin id
+omarchy plugin add https://github.com/realchrisolin/omarchy-miracast.git --enable
 ```
 
-Validate / soft-reload:
+That clones into `~/.config/omarchy/plugins/<id>/` (id comes from
+`manifest.json`, e.g. `realchrisolin.monitor`), places the bar widget, and enables it.
+Disable the stock Display widget if it is still enabled:
 
 ```bash
-omarchy plugin validate ~/.config/omarchy/plugins/<you>.monitor
+omarchy plugin disable omarchy.monitor
+omarchy plugin list   # expect your *.monitor enabled, omarchy.monitor disabled
+```
+
+**From a local checkout (developers):** keep one git tree and symlink it so edits
+hot-reload without copying:
+
+```bash
+git clone https://github.com/realchrisolin/omarchy-miracast.git ~/code/other/omarchy-miracast
+mkdir -p ~/.config/omarchy/plugins
+ln -sfn ~/code/other/omarchy-miracast ~/.config/omarchy/plugins/realchrisolin.monitor
+
+omarchy plugin validate ~/.config/omarchy/plugins/realchrisolin.monitor
+omarchy plugin enable realchrisolin.monitor --section right   # or left / center
+omarchy plugin disable omarchy.monitor
+```
+
+Confirm `~/.config/omarchy/shell.json` bar layout references your plugin id
+(e.g. `"id": "realchrisolin.monitor"`), not `omarchy.monitor`. Soft-reload:
+
+```bash
 omarchy-shell shell rescanPlugins
 ```
 
@@ -54,41 +81,67 @@ rm -rf ~/.cache/quickshell/qmlcache
 omarchy restart shell
 ```
 
-### Dependencies
+### 3. FluxCast
+
+Point Miracast at a FluxCast **source tree** (not an AppImage alone). Prefer a
+fork that already includes the Omarchy WFD work (encode.env reload, LPCM,
+pipe/DMA-BUF, SIGUSR1 restart), e.g.
+[realchrisolin/fluxcast](https://github.com/realchrisolin/fluxcast)
+`feat/wfd-hw-encode-modes`, or apply `patches/fluxcast/` onto upstream
+[IlyaP358/fluxcast](https://github.com/IlyaP358/fluxcast) — see
+[`patches/fluxcast/APPLY.md`](patches/fluxcast/APPLY.md).
 
 ```bash
-omarchy pkg add dnsmasq wf-recorder xorg-xrandr ffmpeg
+git clone https://github.com/realchrisolin/fluxcast.git ~/code/other/fluxcast
+cd ~/code/other/fluxcast && git checkout feat/wfd-hw-encode-modes   # if using that fork
 ```
 
-Plus a [FluxCast](https://github.com/IlyaP358/fluxcast) source tree (or a fork
-such as `realchrisolin/fluxcast` with the WFD encode / SIGUSR1 work):
+`miracast-ctl` resolves FluxCast in this order:
+
+1. `$FLUXCAST_ROOT` (environment)
+2. `fluxcastRoot` in `~/.config/omarchy-miracast/settings.json` (`~/…` or `$HOME/…` OK)
+3. Sibling `../fluxcast` next to this plugin checkout (e.g. `~/code/other/fluxcast` beside `~/code/other/omarchy-miracast`)
 
 ```bash
-# Preferred: env (portable — use $HOME, not /home/<user>/…):
+# Portable — prefer $HOME, not a hard-coded /home/<user>/…
 export FLUXCAST_ROOT="${FLUXCAST_ROOT:-$HOME/code/other/fluxcast}"
-# Or parent dir: CODE_OTHER=$HOME/code/other → sibling …/fluxcast is discovered.
-# Optional: settings.json "fluxcastRoot" with ~/ or $HOME/...
+# Or persist:
+#   { "fluxcastRoot": "$HOME/code/other/fluxcast" }  in settings.json
 ```
 
-If you previously used an AppImage extract under
+If an old AppImage extract still lives under
 `vendor/squashfs-root/usr/src/fluxcast`, replace that directory with a
-**symlink** to the git checkout so scripts and settings cannot drift.
+**symlink** to the git checkout so paths cannot drift.
 
-Apply the included performance / stream-mode / capture-rebind patches only if
-you are not already running that checkout (see `patches/fluxcast/APPLY.md`).
+### 4. Optional: `miracast-ctl` on PATH
 
-## Settings
-
-### CLI on PATH
-
-The Display panel runs `pluginDir/bin/miracast-ctl` directly. For a terminal:
+The panel always runs `pluginDir/bin/miracast-ctl`. For a terminal:
 
 ```bash
 mkdir -p ~/.local/bin
-ln -sfn "$PWD/bin/miracast-ctl" ~/.local/bin/miracast-ctl   # from the checkout root
-# ~/.local/bin must be on PATH (Omarchy usually already has it)
+ln -sfn ~/.config/omarchy/plugins/realchrisolin.monitor/bin/miracast-ctl ~/.local/bin/miracast-ctl
+# ~/.local/bin is usually already on PATH on Omarchy
 miracast-ctl status
+miracast-ctl doctor
 ```
+
+### 5. Smoke-check
+
+```bash
+miracast-ctl doctor          # or: Check & fix in the Display panel
+miracast-ctl scan            # nearby Miracast sinks
+```
+
+Put the TV/dongle in Miracast / screen-mirroring receive mode, then **Scan** and
+connect from the Display panel. Day-to-day tips (audio, channels, 2.4-only
+dongles): panel **Info**, or [`docs/MIRACAST-HELP.md`](docs/MIRACAST-HELP.md).
+
+**Hardware note:** many cheap Miracast sticks are **2.4 GHz-only** (e.g. Realtek
+8192CU). With laptop Wi‑Fi on 5 GHz that means MCC — occasional brief glitches
+are expected; a dual-band sink is the lasting RF fix. Doctor warns as `radio_mcc`
+when this is active.
+
+## Settings
 
 `status` JSON includes live radio fields (no SSIDs): `staChannel`, `p2pChannel`,
 `staWidthMHz`, `p2pRole`, `radioMcc` (true when STA and P2P channels differ).

@@ -8,8 +8,8 @@ import "Model.js" as Model
 
 Panel {
   id: root
-  moduleName: "colin.monitor"
-  ipcTarget: "colin.monitor"
+  moduleName: "realchrisolin.monitor"
+  ipcTarget: "realchrisolin.monitor"
   manageIpc: false
 
   // manageIpc: false so this panel can own the single IpcHandler the target
@@ -573,7 +573,7 @@ Panel {
   }
 
   IpcHandler {
-    target: "colin.monitor"
+    target: "realchrisolin.monitor"
 
     function brightness(percent: string): string { return root.brightnessIpc(percent) }
     function state(): string { return root.stateIpc() }
@@ -2009,7 +2009,8 @@ Panel {
     required property string radioValue
     required property int radioIndex
 
-    text: miracast.p2pWifiLabel(radioValue)
+    // Title on first line, "(adapter name)" on the second (Qt Text honors \n).
+    text: miracast.p2pWifiPillText(radioValue)
     fontSize: Style.font.caption
     foreground: root.bar.foreground
     fontFamily: root.bar.fontFamily
