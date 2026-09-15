@@ -45,9 +45,27 @@ def _load(name: str, path: Path):
 
 
 def _run(cmd: list[str], timeout: Optional[float] = None) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        cmd, capture_output=True, text=True, timeout=timeout, check=False
-    )
+    try:
+        return subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout, check=False
+        )
+    except subprocess.TimeoutExpired as exc:
+        # Kill the hung child so the next cell can reconnect cleanly.
+        if exc.process is not None:
+            try:
+                exc.process.kill()
+                exc.process.wait(timeout=5)
+            except Exception:
+                pass
+        return subprocess.CompletedProcess(
+            cmd,
+            returncode=124,
+            stdout=(exc.stdout or b"").decode() if isinstance(exc.stdout, bytes) else (exc.stdout or ""),
+            stderr=(
+                ((exc.stderr or b"").decode() if isinstance(exc.stderr, bytes) else (exc.stderr or ""))
+                + f"\n[matrix] timed out after {timeout}s"
+            ),
+        )
 
 
 def _ctl(*args: str, timeout: Optional[float] = 120.0) -> subprocess.CompletedProcess:
@@ -142,8 +160,15 @@ def _apply_cell(presets_mod: Any, engine: str, tier: str) -> dict[str, Any]:
 
 
 def _reconnect(peer: str, peer_name: str, mode: str, with_audio: bool) -> bool:
-    """Full stop/start so FluxCast reloads encode env."""
+    """Full stop/start so FluxCast reloads encode env.
+
+    ``miracast-ctl start`` can block longer than a hard timeout even after
+    streaming is up. Launch it in the background and key success off
+    ``status.phase == streaming`` instead.
+    """
     args = [
+        "bash",
+        str(CTL),
         "start",
         "--peer",
         peer,
@@ -156,14 +181,34 @@ def _reconnect(peer: str, peer_name: str, mode: str, with_audio: bool) -> bool:
     ]
     if with_audio:
         args.append("--with-audio")
-    # start() stops with keep-workspaces when preserve is on
     print("[matrix] reconnecting Miracast…", file=sys.stderr, flush=True)
-    # Long timeout: P2P + RTSP
-    _ctl(*args, timeout=180.0)
-    ok = _wait_streaming(150.0)
-    if not ok:
-        print("[matrix] WARNING: not streaming after reconnect", file=sys.stderr)
-    return ok
+    proc = subprocess.Popen(
+        args,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    ok = _wait_streaming(180.0)
+    if ok:
+        # Prefer a clean start exit, but do not fail the cell if start lingers.
+        try:
+            proc.wait(timeout=45)
+        except subprocess.TimeoutExpired:
+            print(
+                "[matrix] start still running after streaming — continuing",
+                file=sys.stderr,
+                flush=True,
+            )
+        return True
+
+    print("[matrix] WARNING: not streaming after reconnect", file=sys.stderr)
+    try:
+        proc.kill()
+        proc.wait(timeout=10)
+    except Exception:
+        pass
+    _ctl("stop", "--keep-workspaces", timeout=60.0)
+    return False
 
 
 def _record_cell(
@@ -260,7 +305,14 @@ def run_matrix(
         try:
             _write_settings(snapshot["settings"])
             _write_capture_encode(snapshot["capture_encode"])
-            _reconnect(snapshot["peer"], snapshot["peer_name"], snapshot["mode"], audio)
+            if not _reconnect(
+                snapshot["peer"], snapshot["peer_name"], snapshot["mode"], audio
+            ):
+                print(
+                    "[matrix] restore reconnect did not reach streaming "
+                    "(settings files were still rewritten)",
+                    file=sys.stderr,
+                )
         except Exception as exc:
             print(f"[matrix] restore failed: {exc}", file=sys.stderr)
 
