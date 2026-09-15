@@ -1470,25 +1470,33 @@ Panel {
               width: parent.width - Style.space(10)
               spacing: Style.space(4)
 
-              Row {
+              // Use Item+Row (not MouseArea-in-Row anchors) so the header
+              // always lays out and receives clicks — same pattern as Persist.
+              Item {
                 width: parent.width
-                spacing: Style.spacing.sm
+                implicitHeight: advancedHeaderRow.implicitHeight
 
-                Text {
-                  text: root.advancedSettingsExpanded ? "󰅀" : "󰅂"
-                  color: root.bar.foreground
-                  font.family: root.bar.fontFamily
-                  font.pixelSize: Style.font.body
-                  verticalAlignment: Text.AlignVCenter
-                }
+                Row {
+                  id: advancedHeaderRow
+                  width: parent.width
+                  spacing: Style.spacing.sm
 
-                Text {
-                  text: "ADVANCED SETTINGS"
-                  color: Qt.darker(root.bar.foreground, 1.25)
-                  font.family: root.bar.fontFamily
-                  font.pixelSize: Style.font.caption
-                  font.bold: true
-                  verticalAlignment: Text.AlignVCenter
+                  Text {
+                    text: root.advancedSettingsExpanded ? "󰅀" : "󰅂"
+                    color: root.bar.foreground
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.body
+                    verticalAlignment: Text.AlignVCenter
+                  }
+
+                  Text {
+                    text: "ADVANCED SETTINGS"
+                    color: Qt.darker(root.bar.foreground, 1.25)
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                    verticalAlignment: Text.AlignVCenter
+                  }
                 }
 
                 MouseArea {
