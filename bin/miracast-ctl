@@ -2313,6 +2313,45 @@ EOS
   fi
 }
 
+cmd_benchmark() {
+  # Offline capability probes (+ optional results.tsv). --apply writes settings.
+  local apply=0 json=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --apply|apply) apply=1 ;;
+      --json|json) json=1 ;;
+      -h|--help)
+        cat <<'EOF'
+Usage: miracast-ctl benchmark [--apply] [--json]
+
+Offline auto-tune (no live cast):
+  - probe supported render engines (dmabuf / vaapi / cpu)
+  - pick P2P Wi-Fi radio (idle P2P-GO preferred)
+  - apply validated encode knobs (quality 5, VBV 0.5, SCC)
+  - optionally merge docs/benchmarks/results.tsv via recommend-cast-profile
+
+--apply writes settings.json, state/capture-encode, and recommended-cast.env
+EOF
+        return 0
+        ;;
+      *)
+        emit "{\"ok\":false,\"error\":\"unknown benchmark flag: $1\"}"
+        return 1
+        ;;
+    esac
+    shift
+  done
+  local script="$PLUGIN_DIR/scripts/auto_tune_miracast.py"
+  if [[ ! -f "$script" ]]; then
+    emit '{"ok":false,"error":"auto_tune_miracast.py missing"}'
+    return 1
+  fi
+  local args=()
+  [[ "$apply" == 1 ]] && args+=(--apply)
+  [[ "$json" == 1 ]] && args+=(--json)
+  python3 "$script" "${args[@]}"
+}
+
 cmd_list_p2p_radios() {
   local script="$PLUGIN_DIR/scripts/list_p2p_radios.py"
   local settings prefer
@@ -3958,6 +3997,7 @@ Commands:
   set-cast-preset desktop|movie   # CQP desktop vs CBR movie encode
   list-p2p-radios                 # Wi-Fi ifaces for Miracast P2P
   set-p2p-wifi-interface auto|IFACE
+  benchmark [--apply] [--json]        # offline auto-tune (engines + radio + knobs)
   get-extend-position
   set-extend-position right|left|above|below
   restart-capture [quick]
@@ -4095,6 +4135,7 @@ main() {
     set-cast-preset|set_cast_preset) cmd_set_cast_preset "$@" ;;
     list-p2p-radios|list_p2p_radios) cmd_list_p2p_radios "$@" ;;
     set-p2p-wifi-interface|set_p2p_wifi_interface) cmd_set_p2p_wifi_interface "$@" ;;
+    benchmark|auto-tune|auto_tune) cmd_benchmark "$@" ;;
     get-extend-position|get_extend_position) cmd_get_extend_position "$@" ;;
     set-extend-position|set_extend_position) cmd_set_extend_position "$@" ;;
     restart-capture|restart_capture) cmd_restart_capture "$@" ;;
