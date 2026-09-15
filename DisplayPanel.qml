@@ -120,14 +120,14 @@ Panel {
       list.push("miracastMode")
       if (miracast && miracast.mode === "extend") list.push("miracastPos")
     }
-    // STREAM / RENDER / PRESET QUALITY under MIRACAST → ADVANCED SETTINGS.
+    // STREAM / RENDER / PRESET QUALITY / RADIO under MIRACAST → ADVANCED SETTINGS.
     if (root.advancedSettingsExpanded) {
       if (miracastStreamModeIds.length > 0) list.push("miracastStream")
       list.push("miracastEncode")
       list.push("miracastEncodeProfile")
+      if (miracastRadioValues.length > 0) list.push("miracastRadio")
     }
     list.push("miracast")
-    if (miracastRadioValues.length > 0) list.push("miracastRadio")
     if (miracast && miracast.peers && miracast.peers.length > 0) list.push("miracastPeers")
     list.push("textsize")
     return list
@@ -1613,41 +1613,39 @@ Panel {
                     }
                   }
                 }
-              }
-            }
 
-            // ---- RADIO (indented under MIRACAST, after CONTROLS) ----
-            Column {
-              x: Style.space(10)
-              width: parent.width - Style.space(10)
-              spacing: Style.space(4)
-              visible: root.miracastRadioValues.length > 0
+                Column {
+                  width: parent.width
+                  spacing: Style.space(4)
+                  visible: root.miracastRadioValues.length > 0
 
-              Text {
-                text: "RADIO"
-                color: Qt.darker(root.bar.foreground, 1.25)
-                font.family: root.bar.fontFamily
-                font.pixelSize: Style.font.caption
-                font.bold: true
-              }
+                  Text {
+                    text: "RADIO"
+                    color: Qt.darker(root.bar.foreground, 1.25)
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                  }
 
-              Grid {
-                id: miracastRadioRow
-                width: parent.width
-                columns: Math.min(root.miracastRadioValues.length, 3)
-                spacing: Style.spacing.xs
-                readonly property real cellWidth: columns > 0
-                  ? (width - spacing * (columns - 1)) / columns
-                  : 0
+                  Grid {
+                    id: miracastRadioRow
+                    width: parent.width
+                    columns: Math.min(root.miracastRadioValues.length, 3)
+                    spacing: Style.spacing.xs
+                    readonly property real cellWidth: columns > 0
+                      ? (width - spacing * (columns - 1)) / columns
+                      : 0
 
-                Repeater {
-                  model: root.miracastRadioValues
-                  MiracastRadioPill {
-                    required property string modelData
-                    required property int index
-                    radioValue: modelData
-                    radioIndex: index
-                    width: miracastRadioRow.cellWidth
+                    Repeater {
+                      model: root.miracastRadioValues
+                      MiracastRadioPill {
+                        required property string modelData
+                        required property int index
+                        radioValue: modelData
+                        radioIndex: index
+                        width: miracastRadioRow.cellWidth
+                      }
+                    }
                   }
                 }
               }

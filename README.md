@@ -144,7 +144,7 @@ controls). To restore single-row accordion behavior:
 
 While connected, the Miracast display row shows **CAST MODE** / **EXTEND
 POSITION** (← ↑ ↓ → when Extend) and **SCALE**. Under **MIRACAST** (below **CONTROLS**): collapsible **ADVANCED SETTINGS**
-(**STREAM MODE**, **RENDER ENGINE**, **PRESET QUALITY**), then **RADIO**.
+(**STREAM MODE**, **RENDER ENGINE**, **PRESET QUALITY**, **RADIO**).
 Scan / doctor / firewall / Stop stay under **CONTROLS**. Only the focused
 display row expands nested brightness/scale/cast controls.
 
