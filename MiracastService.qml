@@ -151,6 +151,8 @@ Item {
     scanProcess.running = true
   }
 
+  // CLI / scripts: floating terminal help. The Display panel Info button uses
+  // a themed in-shell card instead (see DisplayPanel helpOpen).
   function showInfo() {
     if (infoProcess.running) return
     actionStatus = "Opening Miracast help…"

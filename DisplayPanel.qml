@@ -69,6 +69,8 @@ Panel {
   readonly property bool onlyExpandFocusedDisplay: !!(miracast && miracast.onlyExpandFocusedDisplay)
   // MIRACAST → ADVANCED SETTINGS (STREAM / RENDER / PRESET QUALITY).
   property bool advancedSettingsExpanded: false
+  // Themed Miracast help card (Info button / I). Separate from the terminal CLI.
+  property bool helpOpen: false
   // Which monitor's scale-pill row currently has keyboard focus.
   property string scaleFocusMonitor: ""
   // After open, wait for a fresh monitor-state read before expanding — otherwise
@@ -564,6 +566,8 @@ Panel {
     function toggle() { root.toggle() }
     function show() { root.open() }
     function hide() { root.close() }
+    function openHelp() { root.open(); root.helpOpen = true }
+    function closeHelp() { root.helpOpen = false }
   }
 
   function refresh() {
@@ -813,25 +817,26 @@ Panel {
   // with j/k ready to navigate. Keep a default landing point, but don't paint
   // the cursor until hover or the first navigation key.
   onOpenedChanged: {
-    if (opened) {
-      // Defer accordion expand until monitor-state returns fresh focus.
-      root.syncExpandToFocusPending = true
-      refresh()
-      miracast.refresh()
-      if (showDisplaysSection) {
-        focusSection = "monitors"
-        selectedIndex = 0
-      } else if (showMiracastSessionControls) {
-        focusSection = "miracastMode"
-        selectedIndex = Math.max(0, miracastModeValues.indexOf(miracast.mode))
-      } else {
-        focusSection = "miracast"
-        selectedIndex = -1
-      }
-      cursorActive = false
-    } else {
+    if (!opened) {
+      root.helpOpen = false
       root.syncExpandToFocusPending = false
+      return
     }
+    // Defer accordion expand until monitor-state returns fresh focus.
+    root.syncExpandToFocusPending = true
+    refresh()
+    miracast.refresh()
+    if (showDisplaysSection) {
+      focusSection = "monitors"
+      selectedIndex = 0
+    } else if (showMiracastSessionControls) {
+      focusSection = "miracastMode"
+      selectedIndex = Math.max(0, miracastModeValues.indexOf(miracast.mode))
+    } else {
+      focusSection = "miracast"
+      selectedIndex = -1
+    }
+    cursorActive = false
   }
 
   onBrightnessAvailableChanged: clampCursor()
@@ -1070,7 +1075,7 @@ Panel {
       onTextKey: function(t) {
         if (t === "s" || t === "S") miracast.scanPeers()
         else if (t === "d" || t === "D") miracast.runDoctor(true)
-        else if (t === "i" || t === "I") miracast.showInfo()
+        else if (t === "i" || t === "I") root.helpOpen = !root.helpOpen
         else if (t === "c" || t === "C") miracast.startCast("")
         else if (t === "m" || t === "M") miracast.setMode("mirror")
         else if (t === "e" || t === "E") miracast.setMode("extend")
@@ -1343,7 +1348,7 @@ Panel {
                     foreground: root.bar.foreground
                     fontFamily: root.bar.fontFamily
                     enabled: true
-                    onClicked: miracast.showInfo()
+                    onClicked: root.helpOpen = !root.helpOpen
                   }
                   Item { width: Style.space(8); height: 1 }
                   PanelActionButton {
@@ -1740,6 +1745,69 @@ Panel {
           Item {
             width: parent.width
             height: Style.space(4)
+          }
+        }
+      }
+    }
+  }
+
+  // Themed floating help window — Close / Esc. Separate from the Display
+  // KeyboardPanel so it does not fight the bar popout coordinator.
+  // CLI `miracast-ctl info` still opens the terminal viewer.
+  FloatingWindow {
+    id: helpWindow
+    title: "Miracast help"
+    color: Color.popups.background
+    implicitWidth: 480
+    implicitHeight: 520
+    minimumSize: Qt.size(360, 320)
+    visible: false
+
+    onVisibleChanged: {
+      if (!visible && root.helpOpen)
+        root.helpOpen = false
+    }
+
+    Connections {
+      target: root
+      function onHelpOpenChanged() {
+        if (root.helpOpen) {
+          helpWindow.visible = true
+          Qt.callLater(function() {
+            if (root.helpOpen && helpCatcher)
+              helpCatcher.forceActiveFocus()
+          })
+        } else if (helpWindow.visible) {
+          helpWindow.visible = false
+        }
+      }
+    }
+
+    FocusScope {
+      anchors.fill: parent
+      focus: true
+
+      PanelKeyCatcher {
+        id: helpCatcher
+        anchors.fill: parent
+        onCloseRequested: root.helpOpen = false
+        onTextKey: function(t) {
+          if (t === "i" || t === "I") root.helpOpen = false
+        }
+
+        ScrollView {
+          id: helpScroll
+          anchors.fill: parent
+          anchors.margins: Style.space(14)
+          clip: true
+          ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+          ScrollBar.vertical.policy: ScrollBar.AsNeeded
+
+          MiracastHelpPopup {
+            width: helpScroll.availableWidth
+            foreground: root.bar ? root.bar.foreground : Color.foreground
+            fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+            onCloseRequested: root.helpOpen = false
           }
         }
       }

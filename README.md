@@ -276,7 +276,7 @@ connect or disconnect — those calls have frozen the primary display for
 |-----|--------|
 | S | Scan sinks |
 | D | Check & fix (diagnose; open UFW ports if needed) |
-| I | Miracast help (floating guide) |
+| I | Miracast help (themed card; CLI uses terminal) |
 | C | Connect last device / reconnect |
 | X | Stop cast |
 | M | Mirror mode |

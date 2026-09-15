@@ -20,7 +20,7 @@ Optional: **UFW** (if active, ports below must be allowed).
 |--------|--------|
 | **Scan** | Find nearby sinks |
 | **Check & fix** | Diagnose; open UFW ports if blocked |
-| **Info** | This help |
+| **Info** | Themed help card in the panel (CLI: terminal guide) |
 | **Stop / Reconnect** | End cast, or reconnect last device |
 
 Also under Miracast: **Persist display**, **Automatically switch audio**
