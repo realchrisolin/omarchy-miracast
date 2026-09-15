@@ -182,6 +182,8 @@ miracast-ctl benchmark --engines dmabuf,vaapi --tiers high,medium
 # Matrix reconnect warning: 10s countdown; Ctrl+C cancels; -y/--yes/--force skips
 ./scripts/pick-p2p-channel.py --json --band 5
 ./scripts/test_pick_p2p_channel.py
+./scripts/test_p2p_channel_integration.sh   # pick score smoke (+ cast CSA unless SKIP_CAST=1)
+SKIP_CAST=1 ./scripts/test_p2p_channel_integration.sh
 ./scripts/test_attach_radio_channel_fields.py
 ./scripts/test_list_p2p_radios.py
 ./scripts/test_auto_tune_miracast.py
@@ -189,7 +191,8 @@ miracast-ctl benchmark --engines dmabuf,vaapi --tiers high,medium
 ./scripts/test_miracast_ctl_encode_cli.sh   # set-render-engine / set-quality (+ aliases)
 ./scripts/bench_p2p_channel.sh              # SCC vs MCC TX A/B → docs/benchmarks/
 miracast-ctl list-p2p-radios
-miracast-ctl pick-channel
+miracast-ctl pick-channel --band 2.4 --json
+miracast-ctl pick-channel                   # default --band 5
 miracast-ctl status   # staChannel / p2pChannel / radioMcc / p2pWifiResolved
 # Live check while streaming:
 iw dev   # STA channel vs P2P-GO channel

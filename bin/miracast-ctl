@@ -4829,7 +4829,7 @@ Commands:
   firewall-open                 # open UFW Miracast ports (also invoked by doctor --fix)
   info|help-doc                 # open Miracast help (floating terminal)
   scan [fluxcast-root]
-  pick-channel [--json]   # quiet 5 GHz P2P channel (else quietest)
+  pick-channel [--json] [--band 2.4|5]   # scored quiet/quietest channel
   start --peer MAC [--peer-name NAME] [--mode mirror|extend] [--monitor NAME]
         [--fluxcast-root DIR] [--go-intent N] [--fps N] [--bitrate RATE]
         [--output-res WxH] [--with-audio|--no-audio] [--no-firewall]
@@ -4949,9 +4949,16 @@ except Exception: print("")
 cmd_pick_channel() {
   local script="$PLUGIN_DIR/scripts/pick-p2p-channel.py"
   local want_json=0
+  local band=5
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --json) want_json=1; shift ;;
+      --band)
+        shift
+        band="${1:-5}"
+        [[ -n "$band" ]] || { emit '{"ok":false,"error":"--band needs 2.4|5|both"}'; return 1; }
+        shift
+        ;;
       *) shift ;;
     esac
   done
@@ -4960,9 +4967,9 @@ cmd_pick_channel() {
     return 1
   fi
   if [[ "$want_json" == "1" ]]; then
-    python3 "$script" --json --band 5
+    python3 "$script" --json --band "$band"
   else
-    python3 "$script" --band 5
+    python3 "$script" --band "$band"
   fi
 }
 

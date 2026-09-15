@@ -239,8 +239,8 @@ miracast-ctl benchmark --apply              # write settings.json + recommended-
 miracast-ctl set-render-engine dmabuf|vaapi|cpu
 miracast-ctl list-p2p-radios                # Auto / iface + P2P-GO / STA flags
 miracast-ctl set-p2p-wifi-interface auto|IFACE
-miracast-ctl pick-channel                   # quiet 5 GHz P2P target (else quietest)
-miracast-ctl pick-channel --json
+miracast-ctl pick-channel                   # scored quiet/quietest (default 5 GHz)
+miracast-ctl pick-channel --band 2.4 --json
 ./scripts/bench_p2p_channel.sh              # SCC vs MCC TX A/B
 ```
 

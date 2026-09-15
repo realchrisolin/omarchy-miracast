@@ -1644,6 +1644,7 @@ Panel {
                     font.bold: true
                   }
 
+
                   Grid {
                     id: miracastRadioRow
                     width: parent.width

@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Integration: after PLAY, P2P-GO must not share the STA primary channel
-# (quiet-channel CSA / MCC path).
+# Integration checks for P2P channel picking / CSA.
+#
+# Always runs a smoke check that pick-p2p-channel.py emits scored JSON
+# (--band 2.4 and --band 5). Optionally starts a cast and asserts the
+# quiet-CSA / MCC path (GO channel ≠ STA) unless SKIP_CAST=1.
 #
 # Defaults read the last peer from settings.json. Override with env:
 #   PEER=aa:bb:... PEER_NAME=Sink STA_DEV=wlp0s20f3 ./scripts/test_p2p_channel_integration.sh
+#   SKIP_CAST=1   # smoke only (no connect)
 #
 # Exit 0 on pass. Does not unmanage p2p-dev or restart NetworkManager.
 set -euo pipefail
@@ -11,18 +15,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 CTL="${CTL:-$PLUGIN_ROOT/bin/miracast-ctl}"
+PICK="${PICK:-$SCRIPT_DIR/pick-p2p-channel.py}"
 SETTINGS="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-miracast/settings.json"
 STATUS_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-miracast"
 STA_DEV="${STA_DEV:-wlp0s20f3}"
 MODE="${MODE:-extend}"
 TIMEOUT_S="${TIMEOUT_S:-90}"
-
-if [[ -z "${PEER:-}" && -f "$SETTINGS" ]]; then
-  PEER="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("lastPeerMac",""))' "$SETTINGS")"
-  PEER_NAME="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("lastPeerName","") or "Sink")' "$SETTINGS")"
-fi
-PEER="${PEER:?set PEER= or connect once so settings.json has lastPeerMac}"
-PEER_NAME="${PEER_NAME:-Sink}"
+SKIP_CAST="${SKIP_CAST:-0}"
 
 assert_sta() {
   nmcli -t -f DEVICE,STATE device | rg -q "^${STA_DEV}:connected" \
@@ -36,6 +35,49 @@ p2p_go_iface() {
 channel_of() {
   iw dev "$1" info 2>/dev/null | awk '/channel/{print $2; exit}'
 }
+
+# --- Smoke: picker JSON includes channel + score (no cast required) ----------
+smoke_pick_scores() {
+  local band="$1"
+  echo "[integration] smoke: pick-p2p-channel --json --band $band"
+  [[ -f "$PICK" ]] || { echo "[integration] FAIL: missing $PICK"; return 1; }
+  python3 "$PICK" --json --band "$band" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+ok=d.get("ok")
+ch=d.get("channel")
+score=d.get("score")
+cands=d.get("candidates") or []
+if ok is not True:
+  print("[integration] FAIL: pick ok!=True", d, file=sys.stderr); sys.exit(1)
+if not isinstance(ch, int):
+  print("[integration] FAIL: pick channel not int", ch, file=sys.stderr); sys.exit(1)
+if not isinstance(score, (int, float)):
+  print("[integration] FAIL: pick score missing", score, file=sys.stderr); sys.exit(1)
+if not isinstance(cands, list) or not cands:
+  print("[integration] FAIL: pick candidates empty", file=sys.stderr); sys.exit(1)
+# Each candidate should expose score for ranking (“quietest”)
+for c in cands:
+  if not isinstance(c, dict) or "score" not in c or "channel" not in c:
+    print("[integration] FAIL: candidate lacks score/channel", c, file=sys.stderr); sys.exit(1)
+print(f"[integration] smoke ok band={sys.argv[1]} ch={ch} score={score} n_cands={len(cands)}")
+' "$band"
+}
+
+smoke_pick_scores 2.4
+smoke_pick_scores 5
+
+if [[ "$SKIP_CAST" == "1" || "$SKIP_CAST" == "true" ]]; then
+  echo "[integration] SKIP_CAST=1 — smoke only PASS"
+  exit 0
+fi
+
+if [[ -z "${PEER:-}" && -f "$SETTINGS" ]]; then
+  PEER="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("lastPeerMac",""))' "$SETTINGS")"
+  PEER_NAME="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("lastPeerName","") or "Sink")' "$SETTINGS")"
+fi
+PEER="${PEER:?set PEER= or connect once so settings.json has lastPeerMac (or SKIP_CAST=1)}"
+PEER_NAME="${PEER_NAME:-Sink}"
 
 # Log sink display name only (never echo PEER MAC in pass/fail banners).
 echo "[integration] sink=${PEER_NAME} mode=$MODE"
