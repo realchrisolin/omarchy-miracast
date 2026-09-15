@@ -274,12 +274,19 @@ class WlrootsMixin:
             ]
             desc = f"{rc} qp={qp}, gop={gop}, quality={quality}"
         else:
-            br = (os.environ.get("FLUXCAST_WFD_VAAPI_BITRATE", "") or "").strip()
-            if not br:
-                br = meta.get("effective_bitrate") or self.config.bitrate or "12M"
-            # AVOption name is ``b`` (bits/s), not ``bitrate``. Set before
-            # rc_mode so CBR validation sees a target.
-            br_bits = _bitrate_to_kbits(br) * 1000
+            # Target = stream bitrate; VAAPI_BITRATE = peak for QVBR/VBR.
+            # Always set maxrate so 20 MHz Miracast P2P stays ≤ ~12 Mbps.
+            target = (os.environ.get("FLUXCAST_WFD_BITRATE", "") or "").strip()
+            if not target:
+                target = meta.get("effective_bitrate") or self.config.bitrate or "10M"
+            peak = (os.environ.get("FLUXCAST_WFD_VAAPI_BITRATE", "") or "").strip()
+            if not peak:
+                peak = target
+            br_bits = _bitrate_to_kbits(target) * 1000
+            peak_bits = _bitrate_to_kbits(peak) * 1000
+            if peak_bits < br_bits:
+                peak_bits = br_bits
+                peak = target
             params = [
                 "-p", f"b={br_bits}",
                 "-p", f"rc_mode={rc}",
@@ -289,7 +296,20 @@ class WlrootsMixin:
                 "-p", "profile=constrained_baseline",
                 "-p", f"framerate={self.config.fps}",
             ]
-            desc = f"{rc} bitrate={br}, gop={gop}, quality={quality}"
+            if rc == "QVBR":
+                qp = (os.environ.get("FLUXCAST_WFD_VAAPI_QP", "") or "18").strip() or "18"
+                params.extend(["-p", f"qp={qp}", "-p", f"maxrate={peak_bits}"])
+                desc = (
+                    f"{rc} qp={qp} b={target} max={peak}, gop={gop}, quality={quality}"
+                )
+            elif rc in ("VBR", "AVBR"):
+                params.extend(["-p", f"maxrate={peak_bits}"])
+                desc = f"{rc} b={target} max={peak}, gop={gop}, quality={quality}"
+            elif rc == "CBR":
+                params.extend(["-p", f"maxrate={br_bits}"])
+                desc = f"{rc} bitrate={target}, gop={gop}, quality={quality}"
+            else:
+                desc = f"{rc} bitrate={target}, gop={gop}, quality={quality}"
         return params, desc
 
     def _start_wf_recorder_lpcm(self, wf_recorder: str, monitor) -> None:
