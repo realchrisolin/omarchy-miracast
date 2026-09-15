@@ -518,6 +518,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "sta_channel": result.sta_channel,
         "sta_width_mhz": result.sta_width_mhz,
         "sta_block": result.sta_block,
+        "ap_sightings": len(sightings),
         "candidates": [asdict(c) for c in result.candidates],
     }
     if args.json:

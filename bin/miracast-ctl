@@ -345,20 +345,21 @@ apply_p2p_quiet_csa() {
   local csa_bw="${MIRACAST_P2P_CSA_BW:-20}"
   [[ "$csa_bw" =~ ^(20|40|80)$ ]] || csa_bw=20
   echo "[miracast-ctl] CSA: moving GO $go ch ${cur_ch:-?} → $want_ch (${freq} MHz, bw=${csa_bw})" >>"$LOG_DIR/cast.log"
-  local csa_out=""
-  if csa_out="$(sudo -n wpa_cli -i "$go" chan_switch 5 "$freq" "bandwidth=$csa_bw" 2>&1)"; then
-    echo "[miracast-ctl] CSA wpa_cli: $csa_out" >>"$LOG_DIR/cast.log"
+  # wpa_cli often prints FAIL once then succeeds on retry (seen on iwlwifi 2.4).
+  local csa_out="" attempt=1
+  for attempt in 1 2 3; do
+    csa_out="$(sudo -n wpa_cli -i "$go" chan_switch 5 "$freq" "bandwidth=$csa_bw" 2>&1 || true)"
+    echo "[miracast-ctl] CSA wpa_cli try=${attempt}: ${csa_out:-empty}" >>"$LOG_DIR/cast.log"
     sleep 1
     cur_ch="$(iw dev "$go" info 2>/dev/null | awk '/channel/{print $2; exit}')"
-    echo "[miracast-ctl] CSA result: GO $go now ch ${cur_ch:-unknown} (wanted $want_ch)" >>"$LOG_DIR/cast.log"
-    [[ "$cur_ch" == "$want_ch" ]]
-  else
-    echo "[miracast-ctl] CSA failed for $go → ch $want_ch (${csa_out:-no output})" >>"$LOG_DIR/cast.log"
-    # Channel may still have moved; record observed freq for debugging.
-    cur_ch="$(iw dev "$go" info 2>/dev/null | awk '/channel/{print $2; exit}')"
-    echo "[miracast-ctl] CSA result: GO $go now ch ${cur_ch:-unknown} (wanted $want_ch, cli failed)" >>"$LOG_DIR/cast.log"
-    return 1
-  fi
+    if [[ "$cur_ch" == "$want_ch" ]]; then
+      echo "[miracast-ctl] CSA result: GO $go now ch $cur_ch (wanted $want_ch)" >>"$LOG_DIR/cast.log"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "[miracast-ctl] CSA failed for $go → ch $want_ch (still ch ${cur_ch:-unknown})" >>"$LOG_DIR/cast.log"
+  return 1
 }
 
 # Optional local FluxCast checkout. Prefer FLUXCAST_ROOT in the environment.

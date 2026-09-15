@@ -41,13 +41,18 @@ smoke_pick_scores() {
   local band="$1"
   echo "[integration] smoke: pick-p2p-channel --json --band $band"
   [[ -f "$PICK" ]] || { echo "[integration] FAIL: missing $PICK"; return 1; }
+  # ALLOW_EMPTY_SCAN=1 skips the 2.4 AP-count check (offline CI without Wi‑Fi).
+  ALLOW_EMPTY_SCAN="${ALLOW_EMPTY_SCAN:-0}" \
   python3 "$PICK" --json --band "$band" | python3 -c '
-import json,sys
+import json,sys,os
+band=sys.argv[1]
+allow_empty=os.environ.get("ALLOW_EMPTY_SCAN","0") in ("1","true","yes")
 d=json.load(sys.stdin)
 ok=d.get("ok")
 ch=d.get("channel")
 score=d.get("score")
 cands=d.get("candidates") or []
+sightings=d.get("ap_sightings")
 if ok is not True:
   print("[integration] FAIL: pick ok!=True", d, file=sys.stderr); sys.exit(1)
 if not isinstance(ch, int):
@@ -60,7 +65,13 @@ if not isinstance(cands, list) or not cands:
 for c in cands:
   if not isinstance(c, dict) or "score" not in c or "channel" not in c:
     print("[integration] FAIL: candidate lacks score/channel", c, file=sys.stderr); sys.exit(1)
-print(f"[integration] smoke ok band={sys.argv[1]} ch={ch} score={score} n_cands={len(cands)}")
+# Empty nmcli scans produce score=0 “vacuous quietest” — fail for 2.4 unless allowed.
+if band in ("2.4", "2.4ghz", "24") and not allow_empty:
+  if not isinstance(sightings, int):
+    print("[integration] FAIL: ap_sightings missing from pick JSON", file=sys.stderr); sys.exit(1)
+  if sightings < 1:
+    print("[integration] FAIL: nmcli returned zero 2.4 GHz APs (vacuous score=0 pick)", file=sys.stderr); sys.exit(1)
+print(f"[integration] smoke ok band={band} ch={ch} score={score} n_cands={len(cands)} ap_sightings={sightings}")
 ' "$band"
 }
 
