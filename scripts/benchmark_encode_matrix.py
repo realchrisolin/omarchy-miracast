@@ -245,15 +245,45 @@ def _record_cell(
         "returncode": r.returncode,
         "stderr_tail": (r.stderr or "")[-500:],
     }
-    # record_live prints JSON summary on stdout
+    # record_live prints JSON summary on stdout (may be large; parse resiliently)
     text = (r.stdout or "").strip()
-    try:
-        # last JSON object in stdout
-        start = text.rfind("{")
+    summary = None
+    if text:
+        start = text.find("{")
         if start >= 0:
-            out["summary"] = json.loads(text[start:])
-    except Exception:
-        out["summary_raw"] = text[-1000:]
+            blob = text[start:]
+            try:
+                summary = json.loads(blob)
+            except json.JSONDecodeError:
+                # Truncated or trailing noise — recover private path and load file.
+                m = re.search(r'"private"\s*:\s*"([^"]+)"', blob)
+                if m and Path(m.group(1)).is_file():
+                    try:
+                        priv = json.loads(Path(m.group(1)).read_text())
+                        met = priv.get("metrics") or {}
+                        summary = {
+                            "ok": True,
+                            "private": m.group(1),
+                            "stem": priv.get("stem"),
+                            "tx_mbps_max": met.get("tx_mbps_max"),
+                            "quality": ((priv.get("quality") or {}).get("criteria") or {}).get(
+                                "overall"
+                            ),
+                            "encode": {
+                                "profile": (priv.get("encode") or {})
+                                .get("settings", {})
+                                .get("encodeProfile"),
+                                "engine": (priv.get("encode") or {})
+                                .get("settings", {})
+                                .get("captureEncode"),
+                            },
+                        }
+                    except Exception:
+                        summary = None
+                if summary is None:
+                    out["summary_raw"] = blob[-1500:]
+    if summary is not None:
+        out["summary"] = summary
     return out
 
 
@@ -337,8 +367,25 @@ def run_matrix(
                         }
                     )
                     continue
+                # Wait until streaming is solid — start can report connecting
+                # briefly after phase flips, which empties TX/CPU samples.
+                for _ in range(15):
+                    if _status().get("phase") == "streaming":
+                        break
+                    time.sleep(1.0)
                 if settle > 0:
                     time.sleep(settle)
+                if _status().get("phase") != "streaming":
+                    cells.append(
+                        {
+                            "engine": engine,
+                            "tier": tier,
+                            "ok": False,
+                            "error": "not streaming when record started",
+                            "applied": applied,
+                        }
+                    )
+                    continue
                 cell = _record_cell(
                     engine=engine,
                     tier=tier,
