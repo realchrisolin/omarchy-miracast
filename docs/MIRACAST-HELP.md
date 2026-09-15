@@ -54,11 +54,19 @@ list above in nftables/firewalld/your router policy as needed.
 
 ## Tips for a good picture
 
-- **20 MHz** budget ≈ **14 Mbps** video (Intel WiDi 1080p range 3–20; corruption seen above ~22).  
-- **DMA-BUF High** = **CQP qp=18** (bitrate RC undershoots ~0.5–3 Mbps on this Intel+wf-recorder path).  
-- **VAAPI pipe High** = **14 Mbps CBR** when you want a hard cap. qp=16 CQP can spike past the link.  
+- **20 MHz** budget ≈ **14–16 Mbps** video (corruption seen above ~22).  
+- Prefer **VAAPI pipe High** (CBR) for a hard bitrate cap; DMA-BUF High uses CQP.  
 - After changing engine or preset quality, **reconnect** so encode settings reload.  
 - Keep eDP and Miracast desktops separate (`ext-*` on the TV, numbers on the laptop).
+
+## Wi‑Fi channel (“quiet” picking)
+
+Default is **SCC** (same channel as home Wi‑Fi). Opt-in **quiet CSA** can move
+P2P after PLAY. “Quiet” is only a **score threshold**; channels are ranked by
+an interference **score** from nearby APs (lower is better). That ranking has
+matched real Miracast TX retries on 2.4 GHz (e.g. ch 11 better than ch 1 when
+the home AP and strong neighbors sit on/near ch 1). See README § P2P channel.
+Inspect: `miracast-ctl pick-channel` or `./scripts/pick-p2p-channel.py --json --band 2.4`.
 
 ---
 

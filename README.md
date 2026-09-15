@@ -250,6 +250,8 @@ streaming — runs a ~25s live TX/retry/CPU sample to refine the advice.
 Use `--offline-only` to skip the live sample. `--apply` writes settings
 (once per machine, or after adding a USB Wi‑Fi dongle).
 
+### P2P channel (SCC vs quiet CSA)
+
 By default Miracast uses **SCC**: force the P2P GO onto the **STA primary
 channel** (`p2p_ignore_shared_freq=0`, `--wfd-p2p-channel=<STA>`), and after
 PLAY align with CSA if negotiation landed elsewhere. Set `p2pQuietCsa: true`
@@ -257,7 +259,25 @@ PLAY align with CSA if negotiation landed elsewhere. Set `p2pQuietCsa: true`
 If STA is 5 GHz but the sink/GO stays on 2.4 (common with 2.4-only dongles
 like Realtek 8192CU), cross-band CSA is skipped and a quieter **2.4** channel
 is used instead — true 5 GHz SCC is impossible with those sinks.
-See [BUILD.md](BUILD.md) § P2P channel (SCC vs quiet CSA).
+
+**How “quiet” channel picking works** (`scripts/pick-p2p-channel.py`): the
+label *quiet* is only a score threshold (default ≤ 5). What actually ranks
+channels is a numeric **interference score** (lower is better): visible APs
+from `nmcli` add cost on their channel and bleed into neighbors; stronger APs
+cost more. When nothing is under the threshold (typical on 2.4 GHz), the
+picker chooses the **lowest score** (“quietest”). That ranking is what
+matters — and it has matched real Miracast **TX retry** rates on-device
+(2026-09-15, AX201 + 2.4-only dongle: among `{1,6,11}`, ch 11 best / fewest
+retries, ch 1 worst because the home 2.4 AP and strong adjacent BSS sit
+there). Inspect scores with:
+
+```bash
+./scripts/pick-p2p-channel.py --json --band 2.4
+miracast-ctl pick-channel
+```
+
+Developer wiring (CSA commands, tests) lives in [BUILD.md](BUILD.md) § P2P
+channel.
 
 ## Virtual output lifecycle (eDP safety)
 
