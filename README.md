@@ -203,8 +203,9 @@ Software cursors stay on (required for a visible pointer in screencopy).
 override per sink in the Display panel (`sinkScales`).
 
 ```bash
-miracast-ctl benchmark                          # offline: engines + radio + knobs (dry-run)
-miracast-ctl benchmark --apply                  # write settings.json + recommended-cast.env
+miracast-ctl benchmark                      # probes + live sample if streaming
+miracast-ctl benchmark --offline-only       # capability-only (no live sample)
+miracast-ctl benchmark --apply              # write settings.json + recommended-cast.env
 miracast-ctl set-capture-encode dmabuf|vaapi|cpu
 miracast-ctl list-p2p-radios                # Auto / iface + P2P-GO / STA flags
 miracast-ctl set-p2p-wifi-interface auto|IFACE
@@ -213,10 +214,11 @@ miracast-ctl pick-channel --json
 ./scripts/bench_p2p_channel.sh              # SCC vs MCC TX A/B
 ```
 
-`benchmark` probes VAAPI/`wf-recorder` support and P2P-GO radios (no live cast),
-merges `docs/benchmarks/results.tsv` when present, and recommends
-`captureEncode`, radio Auto-resolve, quality/VBV, and SCC. Use `--apply` once
-per machine (or after adding a USB Wi‑Fi dongle).
+`benchmark` probes VAAPI/`wf-recorder` support and P2P-GO radios, merges
+`docs/benchmarks/results.tsv` when present, and — if a cast is already
+streaming — runs a ~25s live TX/retry/CPU sample to refine the advice.
+Use `--offline-only` to skip the live sample. `--apply` writes settings
+(once per machine, or after adding a USB Wi‑Fi dongle).
 
 By default Miracast stays on the **STA channel (SCC)** — one radio, no
 channel hop. Set `p2pQuietCsa: true` (or `MIRACAST_P2P_QUIET_CSA=1`) to

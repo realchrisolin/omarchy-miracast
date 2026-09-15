@@ -168,7 +168,9 @@ avoided the retry storms seen when CSA moved P2P to a 20 MHz “quiet” channel
    `p2p-dev-*`.
 
 ```bash
-miracast-ctl benchmark --apply                  # offline engines + radio + knobs → settings
+miracast-ctl benchmark --offline-only       # engines + radio + knobs (fast)
+miracast-ctl benchmark                      # + ~25s live TX/retry/CPU if streaming
+miracast-ctl benchmark --apply              # write settings.json + recommended-cast.env
 ./scripts/pick-p2p-channel.py --json --band 5
 ./scripts/test_pick_p2p_channel.py
 ./scripts/test_attach_radio_channel_fields.py

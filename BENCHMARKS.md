@@ -177,7 +177,18 @@ JSON/IGT logs under [`docs/benchmarks/`](docs/benchmarks/).
 
 Score [`results.tsv`](docs/benchmarks/results.tsv) (and optional
 [`lpcm_damage_ab.tsv`](docs/benchmarks/lpcm_damage_ab.tsv)) and pick the
-lowest-cost **available** capture+encode combo on this machine:
+lowest-cost **available** capture+encode combo on this machine.
+
+For a one-shot machine tune (engines + radio + validated knobs, plus a short
+live TX/retry/CPU sample when already streaming), prefer:
+
+```bash
+miracast-ctl benchmark                # dry-run; ~25s live sample if casting
+miracast-ctl benchmark --apply        # write settings.json + recommended-cast.env
+miracast-ctl benchmark --offline-only # skip live sample
+```
+
+Lower-level profile scoring only:
 
 ```bash
 # Dry-run: print winner + write docs/benchmarks/recommended.env
