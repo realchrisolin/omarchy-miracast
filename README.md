@@ -131,7 +131,7 @@ Override in `~/.config/omarchy-miracast/settings.json` (merged with
 | `vaapiAsyncDepth` | `2` | Pipe `async_depth` (from profile). |
 | `sinkScales` | `{}` | Per-sink Extend scale, keyed by MAC (overrides default) |
 | `defaultExtendScale` | `1` | Extend scale when a sink has no `sinkScales` entry — **1** is cheapest for Hyprland |
-| `onlyExpandFocusedDisplay` | `false` | Display panel: `false` expands all outputs; `true` = accordion (focused only) |
+| `onlyExpandFocusedDisplay` | `true` | Display panel accordion: only the **focused** output expands nested controls |
 
 ### Display panel expansion
 
@@ -143,9 +143,10 @@ controls). To restore single-row accordion behavior:
 ```
 
 While connected, the Miracast display row shows **CAST MODE** / **EXTEND
-POSITION** (← ↑ ↓ → when Extend) and **SCALE**. Under **MIRACAST** (below
-**CONTROLS**): **STREAM MODE**, **RENDER ENGINE**, and **PRESET QUALITY**, then
-**RADIO**. Scan / doctor / firewall / Stop stay under **CONTROLS**.
+POSITION** (← ↑ ↓ → when Extend) and **SCALE**. Under **MIRACAST** (below **CONTROLS**): collapsible **ADVANCED SETTINGS**
+(**STREAM MODE**, **RENDER ENGINE**, **PRESET QUALITY**), then **RADIO**.
+Scan / doctor / firewall / Stop stay under **CONTROLS**. Only the focused
+display row expands nested brightness/scale/cast controls.
 
 With focus on the CAST MODE / EXTEND POSITION row and Extend active, vim
 **hjkl** set position: **h** ← left, **j** ↓ below, **k** ↑ above, **l** → right.
@@ -177,7 +178,7 @@ FluxCast falls back toward CPU; the **active** pill follows the resolved path
 
 Independent of render engine: **High** / **Medium** / **Low**. Knobs are looked
 up per engine in `scripts/encode_quality_presets.py` (DMA-BUF high ≠ VAAPI-pipe
-high). Shown under **MIRACAST** below **CONTROLS**.
+high). Under **MIRACAST → ADVANCED SETTINGS** (collapsed by default).
 
 ```bash
 miracast-ctl set-quality high|medium|low

@@ -16,7 +16,8 @@ Item {
   property string mode: "mirror"   // mirror | extend
   property string extendPosition: "right"  // right | left | above | below
   // Display panel expansion: false = expand all outputs; true = focused only.
-  property bool onlyExpandFocusedDisplay: false
+  // Accordion: only the focused display row shows nested controls.
+  property bool onlyExpandFocusedDisplay: true
   // Keep the same Extend headless + workspaces when switching Miracast sinks.
   property bool preserveDisplayAcrossMonitors: true
   // Switch default audio to Miracast at PLAY (hold speakers during handshake).

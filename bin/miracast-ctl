@@ -344,7 +344,7 @@ defaults = {
     # Preferred Miracast stream mode id, e.g. "1280x720p30".
     "streamMode": "1280x720p30",
     # Display panel: false = expand all outputs; true = accordion (focused only).
-    "onlyExpandFocusedDisplay": False,
+    "onlyExpandFocusedDisplay": True,
     # When true (default), switching Miracast sinks keeps the same Extend
     # headless + workspaces (only retargets P2P/FluxCast). When false, stop
     # migrates windows to the laptop and the next connect seeds a fresh ext-*.
@@ -3245,7 +3245,7 @@ def _as_bool(v, default=False):
     if isinstance(v, bool):
         return v
     return str(v).strip().lower() in ("1", "true", "yes", "on")
-data["onlyExpandFocusedDisplay"] = _as_bool(settings.get("onlyExpandFocusedDisplay"), False)
+data["onlyExpandFocusedDisplay"] = _as_bool(settings.get("onlyExpandFocusedDisplay"), True)
 data["preserveDisplayAcrossMonitors"] = _as_bool(
     settings.get("preserveDisplayAcrossMonitors"), True
 )
@@ -3288,7 +3288,7 @@ def _as_bool(v, default=False):
     if isinstance(v, bool):
         return v
     return str(v).strip().lower() in ("1", "true", "yes", "on")
-data["onlyExpandFocusedDisplay"] = _as_bool(settings.get("onlyExpandFocusedDisplay"), False)
+data["onlyExpandFocusedDisplay"] = _as_bool(settings.get("onlyExpandFocusedDisplay"), True)
 data["preserveDisplayAcrossMonitors"] = _as_bool(
     settings.get("preserveDisplayAcrossMonitors"), True
 )
