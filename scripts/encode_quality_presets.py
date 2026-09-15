@@ -54,14 +54,14 @@ TIERS = ("high", "medium", "low")
 PRESETS: dict[str, dict[str, dict[str, Any]]] = {
     "dmabuf": {
         # CQP only — bitrate RC undershoots ~0.5–3 Mbps on DMA-BUF+Intel.
-        # qp=18 + quality=1: max encode effort at the qp that stays ~12–17 Mbps
-        # live. qp=17 peaked ~32 Mbps on-device (over 20 MHz); qp=16 worse.
+        # qp=18/quality=1 looked sharp but session peaks hit ~28–35 Mbps and
+        # corrupted the TV on 20 MHz. qp=19/quality=2 + stronger i_qfactor keeps
+        # more headroom while staying near the prior “good” look.
         "high": {
             "vaapiRcMode": "CQP",
-            "vaapiQp": 18,
-            "vaapiQuality": "1",
-            # Slightly coarser I-frames → lower IDR spikes on 20 MHz.
-            "vaapiIQfactor": "1.2",
+            "vaapiQp": 19,
+            "vaapiQuality": "2",
+            "vaapiIQfactor": "1.3",
             "vaapiBitrate": "14M",
             "bitrate": "14M",
             "vaapiGop": 30,

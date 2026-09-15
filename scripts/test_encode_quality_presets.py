@@ -46,8 +46,9 @@ class EncodeQualityPresetsTest(unittest.TestCase):
         dma = self.mod.resolve_preset("dmabuf", "high")
         pipe = self.mod.resolve_preset("vaapi", "high")
         self.assertEqual(dma["vaapiRcMode"], "CQP")
-        self.assertEqual(dma["vaapiQp"], 18)
-        self.assertEqual(dma["vaapiQuality"], "1")
+        self.assertEqual(dma["vaapiQp"], 19)
+        self.assertEqual(dma["vaapiQuality"], "2")
+        self.assertEqual(dma["vaapiIQfactor"], "1.3")
         self.assertEqual(pipe["vaapiRcMode"], "CBR")
         self.assertEqual(pipe["bitrate"], "14M")
 
@@ -58,8 +59,8 @@ class EncodeQualityPresetsTest(unittest.TestCase):
         self.mod.apply_to_settings(data, tier="high", engine="dmabuf")
         self.assertEqual(data["captureEncode"], "dmabuf")
         self.assertEqual(data["vaapiRcMode"], "CQP")
-        self.assertEqual(data["vaapiQp"], 18)
-        self.assertEqual(data["vaapiQuality"], "1")
+        self.assertEqual(data["vaapiQp"], 19)
+        self.assertEqual(data["vaapiQuality"], "2")
 
 
 if __name__ == "__main__":
