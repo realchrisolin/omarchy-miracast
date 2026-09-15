@@ -33,12 +33,14 @@ Reliable maximize-quality envelope (1080p30 + ~1.5 Mbps LPCM):
     bit_rate/bufsize set on the codec context (Intel BRC + DMA-BUF path)
 
   Presets:
-  - **DMA-BUF**: **CQP** (only RC that fills bits on this path). High uses **qp=18**
-    quality=2 — on-device ~7–14 Mbps typical; sharper than starved CBR, calmer than qp=16.
-  - **VAAPI pipe / CPU**: **CBR 14/10/6 Mbps** (ffmpeg BRC works; hard 20 MHz cap).
+  - **DMA-BUF**: **CQP** (only RC that fills bits on this path). High uses **qp=19**
+    quality=2 + i_qfactor=1.3 — safer on 20 MHz after qp=18 peaks corrupted the TV.
+  - **VAAPI pipe / CPU**: **CBR 12/10/6 Mbps** (ffmpeg BRC works; hard cap).
+    High uses **12M + quality=4 + async=1** — quality=1/async=2 hung the pipe
+    every ~20–60s on-device (bufs_size storm → audio-only TX).
 
-  ``bitrate`` / ``vaapiBitrate`` document the 20 MHz budget (used by pipe CBR;
-  informational for DMA-BUF CQP).
+  ``bitrate`` / ``vaapiBitrate`` are the pipe CBR target (=maxrate); informational
+  for DMA-BUF CQP.
 """
 
 from __future__ import annotations
@@ -89,15 +91,17 @@ PRESETS: dict[str, dict[str, dict[str, Any]]] = {
         },
     },
     "vaapi": {
-        # Pipe — same CBR envelope (maximize within 20 MHz).
+        # Pipe — hard CBR cap (ffmpeg BRC works). quality=1 + async=2 hung the
+        # VAAPI pipe every ~20–60s (wf-recorder bufs_size 5→16, TX→~1.8 Mbps
+        # audio-only). quality=4 + async=1 soaked 3 min with no bufs_size.
         "high": {
             "vaapiRcMode": "CBR",
             "vaapiQp": 18,
-            "vaapiQuality": "2",
-            "vaapiBitrate": "14M",
-            "bitrate": "14M",
+            "vaapiQuality": "4",
+            "vaapiBitrate": "12M",
+            "bitrate": "12M",
             "vaapiGop": 30,
-            "vaapiAsyncDepth": 2,
+            "vaapiAsyncDepth": 1,
         },
         "medium": {
             "vaapiRcMode": "CBR",
@@ -106,7 +110,7 @@ PRESETS: dict[str, dict[str, dict[str, Any]]] = {
             "vaapiBitrate": "10M",
             "bitrate": "10M",
             "vaapiGop": 30,
-            "vaapiAsyncDepth": 2,
+            "vaapiAsyncDepth": 1,
         },
         "low": {
             "vaapiRcMode": "CBR",
@@ -122,9 +126,9 @@ PRESETS: dict[str, dict[str, dict[str, Any]]] = {
         "high": {
             "vaapiRcMode": "CBR",
             "vaapiQp": 18,
-            "vaapiQuality": "2",
-            "vaapiBitrate": "14M",
-            "bitrate": "14M",
+            "vaapiQuality": "1",
+            "vaapiBitrate": "16M",
+            "bitrate": "16M",
             "vaapiGop": 30,
             "vaapiAsyncDepth": 2,
         },
