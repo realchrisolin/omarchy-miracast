@@ -1329,15 +1329,17 @@ Panel {
                   }
                   PanelActionButton {
                     iconText: "󰈀"
-                    tooltipText: "Open firewall (F)"
+                    tooltipText: miracast.firewallActionUseful
+                      ? "Open UFW Miracast ports (F)"
+                      : "Firewall already OK (Doctor)"
                     foreground: root.bar.foreground
                     fontFamily: root.bar.fontFamily
-                    enabled: !miracast.busy
+                    enabled: !miracast.busy && miracast.firewallActionUseful
                     onClicked: miracast.openFirewall()
                   }
                   PanelActionButton {
                     iconText: "󰒓"
-                    tooltipText: "Doctor (D)"
+                    tooltipText: "Doctor (D): tools, engines, encode, audio, radio, workspaces"
                     foreground: root.bar.foreground
                     fontFamily: root.bar.fontFamily
                     enabled: !miracast.busy

@@ -150,10 +150,16 @@ Item {
 
   function openFirewall() {
     if (firewallProcess.running) return
+    if (doctor && doctor.firewall_needs_open === false) {
+      actionStatus = "Firewall already OK — nothing to open"
+      return
+    }
     actionStatus = "Opening UFW Miracast ports…"
     firewallProcess.command = [ctl, "firewall-open"]
     firewallProcess.running = true
   }
+
+  readonly property bool firewallActionUseful: Model.miracastFirewallNeedsOpen(doctor)
 
   function setMode(nextMode) {
     var value = String(nextMode || "mirror")
@@ -883,7 +889,14 @@ Item {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        root.actionStatus = "Firewall rules requested"
+        try {
+          var data = JSON.parse(String(text || "{}"))
+          root.actionStatus = String(data.message || "Firewall rules requested")
+          if (data.firewall_needs_open !== undefined && root.doctor)
+            root.doctor.firewall_needs_open = data.firewall_needs_open === true
+        } catch (e) {
+          root.actionStatus = "Firewall rules requested"
+        }
         root.runDoctor()
       }
     }

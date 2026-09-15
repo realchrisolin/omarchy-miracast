@@ -2255,11 +2255,20 @@ except Exception:
 cmd_doctor() {
   local root
   root="$(resolve_fluxcast_root "${1:-}")"
-  python3 - "$root" <<'PY'
-import json, os, shutil, subprocess, sys
+  python3 - "$root" "$SETTINGS_FILE" "$STATE_DIR" "$PLUGIN_DIR" <<'PY'
+import json, os, re, shutil, subprocess, sys
+from pathlib import Path
 
-root = sys.argv[1]
+root, settings_path, state_dir, plugin_dir = sys.argv[1:5]
 checks = []
+
+UFW_NEEDED = [
+    "7236/tcp",
+    "67/udp",
+    "68/udp",
+    "19000:19100/udp",
+    "42000:42100/udp",
+]
 
 def add(name, status, message, detail=""):
     checks.append({"name": name, "status": status, "message": message, "detail": detail})
@@ -2267,54 +2276,180 @@ def add(name, status, message, detail=""):
 def which(name):
     return shutil.which(name) or ""
 
+def run(cmd, timeout=5.0):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except Exception as e:
+        r = subprocess.CompletedProcess(cmd, 1, "", str(e))
+        return r
+
+def load_settings():
+    try:
+        data = json.loads(Path(settings_path).read_text())
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+settings = load_settings()
+
+# --- core tools ---
 for bin_name, label in [
     ("nmcli", "NetworkManager CLI"),
     ("dnsmasq", "P2P DHCP server"),
     ("wf-recorder", "Wayland capture"),
     ("ffmpeg", "encoder"),
-    ("xrandr", "monitor detection"),
     ("iw", "Wi-Fi interfaces"),
     ("python3", "runtime"),
+    ("pw-cat", "PipeWire capture helper"),
 ]:
     path = which(bin_name)
     if path:
         add(bin_name, "ok", f"{label} found", path)
     else:
-        add(bin_name, "fail", f"{label} missing — install via omarchy pkg add", "")
+        # pw-cat is soft; xrandr removed (Wayland)
+        st = "warn" if bin_name == "pw-cat" else "fail"
+        add(bin_name, st, f"{label} missing", "")
 
-# FluxCast source
 main_py = os.path.join(root, "src", "main.py") if root else ""
 if root and os.path.isfile(main_py):
     add("fluxcast", "ok", "FluxCast source root ready", root)
 else:
     add("fluxcast", "fail", "FluxCast source root not found; set fluxcastRoot / FLUXCAST_ROOT", root or "")
 
-# UFW
-ufw = which("ufw")
-ufw_active = False
-ufw_detail = ""
-if ufw:
+# --- render engines ---
+dri = Path("/dev/dri")
+has_render = dri.is_dir() and any(dri.glob("renderD*"))
+ff = which("ffmpeg")
+wf = which("wf-recorder")
+has_h264_vaapi = False
+if ff:
+    r = run([ff, "-hide_banner", "-encoders"], timeout=8.0)
+    blob = (r.stdout or "") + (r.stderr or "")
+    has_h264_vaapi = "h264_vaapi" in blob
+vaapi_pipe = bool(has_render and has_h264_vaapi and ff)
+dmabuf = bool(vaapi_pipe and wf)
+engines = {"dmabuf": dmabuf, "vaapi": vaapi_pipe, "cpu": True}
+if dmabuf:
+    add("engines", "ok", "dmabuf + VAAPI pipe + cpu available", json.dumps(engines))
+elif vaapi_pipe:
+    add("engines", "warn", "VAAPI pipe + cpu only (no dmabuf/wf-recorder)", json.dumps(engines))
+else:
+    add("engines", "warn", "software encode only (no VAAPI)", json.dumps(engines))
+
+# --- encode profile vs live ---
+cap = str(settings.get("captureEncode") or "dmabuf")
+prof = str(settings.get("encodeProfile") or "medium")
+rc = str(settings.get("vaapiRcMode") or "")
+qp = settings.get("vaapiQp")
+qual = str(settings.get("vaapiQuality") or "")
+add(
+    "encode_settings",
+    "ok",
+    f"settings {cap}/{prof} rc={rc or '?'} qp={qp} quality={qual}",
+    "",
+)
+live_rc = live_qp = live_qual = ""
+live_path = ""
+for p in Path("/proc").iterdir():
+    if not p.name.isdigit():
+        continue
     try:
-        out = subprocess.check_output(["ufw", "status"], text=True, stderr=subprocess.DEVNULL)
-        ufw_detail = out.strip().splitlines()[0] if out.strip() else ""
-        ufw_active = "Status: active" in out
-    except Exception as e:
-        ufw_detail = str(e)
+        cmd = (p / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+    except Exception:
+        continue
+    if "wf-recorder" in cmd and "h264_vaapi" in cmd:
+        live_path = "dmabuf"
+        m = re.search(r"rc_mode=(\S+)", cmd)
+        if m:
+            live_rc = m.group(1)
+        m = re.search(r"qp=(\d+)", cmd)
+        if m:
+            live_qp = m.group(1)
+        m = re.search(r"quality=(\d+)", cmd)
+        if m:
+            live_qual = m.group(1)
+        break
+    if "ffmpeg" in cmd and "h264_vaapi" in cmd:
+        live_path = "pipe"
+        m = re.search(r"-rc_mode\s+(\S+)", cmd)
+        if m:
+            live_rc = m.group(1)
+        m = re.search(r"-qp\s+(\d+)", cmd)
+        if m:
+            live_qp = m.group(1)
+        m = re.search(r"-quality\s+(\d+)", cmd)
+        if m:
+            live_qual = m.group(1)
+        break
+if live_path:
+    mismatch = []
+    # settings captureEncode dmabuf|vaapi|cpu vs live dmabuf|pipe
+    if live_path == "dmabuf" and cap not in ("dmabuf",):
+        mismatch.append(f"path live=dmabuf settings={cap}")
+    if live_path == "pipe" and cap == "dmabuf":
+        mismatch.append(f"path live=pipe settings={cap}")
+    if rc and live_rc and rc.upper() != live_rc.upper():
+        mismatch.append(f"rc live={live_rc} settings={rc}")
+    if qp is not None and live_qp and str(qp) != str(live_qp):
+        mismatch.append(f"qp live={live_qp} settings={qp}")
+    if qual and live_qual and str(qual) != str(live_qual):
+        mismatch.append(f"quality live={live_qual} settings={qual}")
+    detail = f"live path={live_path} rc={live_rc} qp={live_qp} quality={live_qual}"
+    if mismatch:
+        add("encode_live", "warn", "live encode differs from settings — reconnect", "; ".join(mismatch) + " | " + detail)
+    else:
+        add("encode_live", "ok", "live encode matches settings", detail)
+else:
+    add("encode_live", "ok", "not casting (no live encoder process)", "")
+
+# --- audio ---
+auto_sw = settings.get("autoSwitchAudioOutput", True)
+auto_on = auto_sw in (True, 1, "1", "true", "True", "yes", "on")
+sinks = run(["pactl", "list", "short", "sinks"]).stdout or ""
+has_miracast_sink = any(line.split()[1] == "miracast" for line in sinks.splitlines() if len(line.split()) >= 2)
+def_sink = (run(["pactl", "get-default-sink"]).stdout or "").strip()
+hold = Path(state_dir) / "audio-default-hold"
+silence = Path(state_dir) / "audio-silence.pid"
+sil_ok = False
+if silence.is_file():
+    try:
+        sil_ok = Path(f"/proc/{silence.read_text().strip()}").exists()
+    except Exception:
+        sil_ok = False
+if has_miracast_sink:
+    msg = f"sink present; default={def_sink or '?'}; autoSwitch={'on' if auto_on else 'off'}"
+    if hold.is_file() and def_sink == "miracast":
+        add("audio", "warn", "handshake hold active but default is already Miracast", msg)
+    elif not sil_ok:
+        add("audio", "warn", "Miracast sink OK but silence feeder not running", msg)
+    else:
+        add("audio", "ok", "Miracast audio sink + feeder OK", msg)
+else:
+    add("audio", "ok", "Miracast sink not created yet (idle)", f"autoSwitch={'on' if auto_on else 'off'}")
+
+# --- firewall ---
+firewall_needs_open = False
+ufw = which("ufw")
+if ufw:
+    r = run(["ufw", "status"], timeout=8.0)
+    out = r.stdout or ""
+    ufw_detail = out.strip().splitlines()[0] if out.strip() else ""
+    ufw_active = "Status: active" in out
     if ufw_active:
-        needed = ["7236/tcp", "67/udp", "68/udp"]
-        missing = [p for p in needed if p not in out]
+        missing = [p for p in UFW_NEEDED if p not in out]
         if missing:
+            firewall_needs_open = True
             add("firewall", "warn", "UFW active but Miracast ports may be blocked", "missing=" + ",".join(missing))
         else:
             add("firewall", "ok", "UFW active with Miracast ports present", ufw_detail)
     else:
-        add("firewall", "ok", "UFW installed but inactive", ufw_detail)
+        add("firewall", "ok", "UFW installed but inactive (not managing traffic)", ufw_detail)
 else:
     add("firewall", "ok", "no ufw binary (nft/iptables not probed)", "")
 
-# P2P device
+# --- radio / P2P ---
 try:
-    out = subprocess.check_output(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE", "device"], text=True)
+    out = run(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE", "device"]).stdout or ""
     p2p = [ln for ln in out.splitlines() if ":wifi-p2p:" in ln]
     if p2p:
         add("p2p", "ok", "Wi-Fi P2P device visible", p2p[0])
@@ -2323,15 +2458,76 @@ try:
 except Exception as e:
     add("p2p", "fail", "nmcli device probe failed", str(e))
 
+try:
+    scripts = Path(plugin_dir) / "scripts" / "list_p2p_radios.py"
+    if scripts.is_file():
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("list_p2p_radios", scripts)
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)
+        radios = mod.list_radios()
+        go = [r for r in radios if r.get("p2pGo")]
+        detail = f"radios={len(radios)} p2pGo={len(go)}"
+        if go:
+            add("radio", "ok", f"{len(go)} P2P-GO capable radio(s)", detail)
+        elif radios:
+            add("radio", "warn", "Wi-Fi radios found but none advertise P2P-GO", detail)
+        else:
+            add("radio", "warn", "No Wi-Fi radios listed", detail)
+except Exception as e:
+    add("radio", "warn", "radio probe skipped", str(e)[:160])
+
+# status channels if casting
+try:
+    st = json.loads(Path(state_dir, "status.json").read_text()) if Path(state_dir, "status.json").is_file() else {}
+except Exception:
+    st = {}
+if isinstance(st, dict) and st.get("phase") == "streaming":
+    sw = st.get("staWidthMHz")
+    pw = st.get("p2pWidthMHz")
+    mcc = st.get("radioMcc")
+    detail = f"staWidth={sw} p2pWidth={pw} mcc={mcc}"
+    if pw and int(pw) <= 20:
+        add("link", "warn", "P2P is 20 MHz — prefer DMA-BUF CQP / capped QVBR", detail)
+    else:
+        add("link", "ok", "Casting; link widths recorded", detail)
+
+# --- workspaces ---
+try:
+    r = run(["hyprctl", "-j", "workspaces"], timeout=3.0)
+    spaces = json.loads(r.stdout or "[]")
+    bad = []
+    for ws in spaces:
+        name = str(ws.get("name") or "")
+        mon = str(ws.get("monitor") or "")
+        if name.startswith("ext-") and mon and mon != "persistent-miracast" and "miracast" not in mon.lower():
+            # allow non-persist peer-named heads
+            if not mon.startswith("WL-") and "miracast" not in mon.lower():
+                bad.append(f"{name} on {mon}")
+        if (not name.startswith("ext-") and not name.startswith("special")
+                and mon == "persistent-miracast"):
+            bad.append(f"{name} on persistent-miracast")
+    if bad:
+        add("workspaces", "warn", "ext-* / numeric pin looks wrong", "; ".join(bad[:6]))
+    else:
+        add("workspaces", "ok", "workspace pin looks OK (or cast head absent)", "")
+except Exception as e:
+    add("workspaces", "warn", "hyprctl workspaces probe failed", str(e)[:120])
+
 fails = sum(1 for c in checks if c["status"] == "fail")
 warns = sum(1 for c in checks if c["status"] == "warn")
 ready = fails == 0
+warn_names = [c["name"] for c in checks if c["status"] == "warn"]
 print(json.dumps({
     "ok": ready,
     "ready": ready,
     "fail_count": fails,
     "warn_count": warns,
+    "warn_names": warn_names,
+    "firewall_needs_open": firewall_needs_open,
     "fluxcast_root": root,
+    "engines": engines,
     "checks": checks,
 }, separators=(",", ":")))
 PY
@@ -2339,6 +2535,7 @@ PY
 
 cmd_firewall_open() {
   if ! command -v ufw >/dev/null 2>&1; then
+    emit '{"ok":true,"ufw":false,"message":"ufw not installed; nft/iptables not managed by this button","firewall_needs_open":false}'
     write_status "idle" "ufw not installed; nothing to open"
     return 0
   fi
@@ -2356,10 +2553,35 @@ EOS
 )
   if command -v omarchy-launch-floating-terminal-with-presentation >/dev/null 2>&1; then
     omarchy-launch-floating-terminal-with-presentation "bash -lc $(printf '%q' "$script")"
-    write_status "idle" "Opened UFW Miracast rules (via floating terminal)"
+    write_status "idle" "Opened UFW Miracast rules (via floating terminal — re-run Doctor after sudo)"
+    emit '{"ok":true,"ufw":true,"pending_sudo":true,"message":"UFW rules requested in floating terminal; run Doctor after approving sudo"}'
   else
     bash -lc "$script"
-    write_status "idle" "Opened UFW Miracast rules"
+    # Verify the same ports Doctor checks
+    local verify
+    verify="$(python3 - <<'PY'
+import json, shutil, subprocess
+needed = ["7236/tcp", "67/udp", "68/udp", "19000:19100/udp", "42000:42100/udp"]
+ufw = shutil.which("ufw")
+if not ufw:
+    print(json.dumps({"ok": True, "ufw": False, "firewall_needs_open": False, "message": "ufw missing after open"}))
+    raise SystemExit
+out = subprocess.check_output(["ufw", "status"], text=True, stderr=subprocess.DEVNULL)
+active = "Status: active" in out
+missing = [p for p in needed if p not in out] if active else []
+needs = bool(active and missing)
+print(json.dumps({
+    "ok": not needs,
+    "ufw": True,
+    "ufw_active": active,
+    "firewall_needs_open": needs,
+    "missing": missing,
+    "message": ("Miracast UFW ports verified" if not needs else "UFW still missing: " + ",".join(missing)),
+}, separators=(",", ":")))
+PY
+)"
+    echo "$verify"
+    write_status "idle" "$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("message",""))' "$verify")"
   fi
 }
 

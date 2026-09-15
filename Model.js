@@ -200,11 +200,24 @@ function miracastDoctorSummary(doctor) {
   if (!doctor) return "Doctor not run yet"
   if (doctor.ready === true) {
     var warns = typeof doctor.warn_count === "number" ? doctor.warn_count : 0
-    if (warns > 0) return "Ready with " + warns + " warning" + (warns === 1 ? "" : "s")
+    if (warns > 0) {
+      var names = doctor.warn_names
+      var hint = ""
+      if (names && names.length)
+        hint = " (" + names.slice(0, 3).join(", ") + (names.length > 3 ? "…" : "") + ")"
+      return "Ready with " + warns + " warning" + (warns === 1 ? "" : "s") + hint
+    }
     return "Ready to cast"
   }
   var fails = typeof doctor.fail_count === "number" ? doctor.fail_count : 0
   return fails + " blocking issue" + (fails === 1 ? "" : "s")
+}
+
+function miracastFirewallNeedsOpen(doctor) {
+  if (!doctor) return true
+  if (doctor.firewall_needs_open === true) return true
+  if (doctor.firewall_needs_open === false) return false
+  return true
 }
 
 function miracastPeerTitle(peer) {
@@ -305,6 +318,7 @@ if (typeof module !== "undefined") {
     miracastPhaseHint: miracastPhaseHint,
     miracastIsActive: miracastIsActive,
     miracastDoctorSummary: miracastDoctorSummary,
+    miracastFirewallNeedsOpen: miracastFirewallNeedsOpen,
     miracastPeerTitle: miracastPeerTitle,
     miracastPeerSubtitle: miracastPeerSubtitle,
     miracastBarGlyph: miracastBarGlyph,
