@@ -170,6 +170,24 @@ avoided the retry storms seen when CSA moved P2P to a 20 MHz “quiet” channel
    (`MIRACAST_P2P_CSA_BW=20|40|80`, default 20). Do **not** unmanage
    `p2p-dev-*`.
 
+#### How `pick-p2p-channel` scores channels
+
+“Quiet” is a **threshold label** (`score <=` default 5), not a claim that the
+air is empty. The real ranking key is the numeric **score** (lower is better):
+
+- Visible APs from `nmcli` contribute energy on their channel and bleed into
+  neighbors (`_neighbor_weight`: 2.4 GHz ±1…4, 5 GHz ±4/±8).
+- Stronger APs weigh more than weak ones.
+- If nothing is under the quiet threshold (common on 2.4 GHz), the picker
+  chooses the **lowest score** (“quietest”).
+
+That score order is what we care about in practice. On-device A/B
+(2026-09-15, Intel AX201 laptop + 2.4-only Miracast dongle, STA on 5 GHz):
+among `{1, 6, 11}`, picker scores lined up with measured Miracast **TX retry
+rates** (ch 11 best / lowest score / fewest retries; ch 1 worst — home 2.4 AP
+on ch 1 plus strong adjacent ch 2 BSS). So the heuristic tracks real delivery
+cost here, not just a friendly name.
+
 ```bash
 miracast-ctl benchmark --offline-only       # engines + radio + knobs (fast)
 miracast-ctl benchmark                      # + ~25s live TX/retry/CPU if streaming

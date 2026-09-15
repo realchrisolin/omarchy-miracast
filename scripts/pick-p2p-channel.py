@@ -8,6 +8,22 @@ Policy:
   3. Only fall back into the STA block if every off-block candidate is
      unavailable; then quiet / quietest within the block.
 
+Scoring (what "quiet" actually means):
+  "Quiet" is only a threshold label (score <= DEFAULT_QUIET_THRESHOLD).
+  The useful quantity is the numeric **score**: lower = less estimated
+  co-/adjacent-channel energy from visible APs.
+
+  - Co-channel APs count fully; neighbors are down-weighted
+    (``_neighbor_weight``: 2.4 GHz ±1..4, 5 GHz ±4/±8).
+  - Stronger APs add more to the score than weak ones.
+  - When no candidate is under the quiet threshold, pick the **lowest
+    score** ("quietest") — that ranking is what matters in dense RF.
+
+  On-device check (2026-09-15, AX201 + 2.4-only Miracast dongle, MCC with
+  5 GHz STA): among 2.4 candidates {1,6,11}, score order matched measured
+  Miracast TX retry rate (ch 11 best, ch 1 worst). So the model is not just
+  a naming convention — it tracked real delivery cost in that environment.
+
 Reads `nmcli -t device wifi list` by default. Pure scoring helpers are
 unit-tested without nmcli.
 
