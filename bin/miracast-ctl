@@ -287,9 +287,19 @@ apply_p2p_scc_align() {
   # Cross-band (2.4 GO → 5 GHz STA): many Miracast sinks cannot follow.
   if [[ -n "$cur_ch" && "$cur_ch" -le 14 && "$want_ch" -ge 32 ]]; then
     echo "[miracast-ctl] SCC align: GO on 2.4 ch $cur_ch but STA is 5 GHz ch $want_ch — sink likely 2.4-only; skipping cross-band CSA" >>"$LOG_DIR/cast.log"
-    alt="$(pick_p2p_channel 2.4 2>>"$LOG_DIR/cast.log" || true)"
+    local pref="" alt=""
+    # Sticky preferred 2.4 channel (from on-device A/B) beats AP-occupancy pick alone.
+    if [[ -f "$STATE_DIR/p2p-preferred-24.channel" ]]; then
+      pref="$(tr -d '[:space:]' <"$STATE_DIR/p2p-preferred-24.channel" 2>/dev/null || true)"
+    fi
+    alt="$pref"
+    if [[ ! "$alt" =~ ^[0-9]+$ ]]; then
+      alt="$(pick_p2p_channel 2.4 2>>"$LOG_DIR/cast.log" || true)"
+    else
+      echo "[miracast-ctl] SCC fallback: using sticky 2.4 ch $alt" >>"$LOG_DIR/cast.log"
+    fi
     if [[ "$alt" =~ ^[0-9]+$ ]] && [[ "$alt" != "$cur_ch" ]]; then
-      echo "[miracast-ctl] SCC fallback: CSA within 2.4 to quieter ch $alt" >>"$LOG_DIR/cast.log"
+      echo "[miracast-ctl] SCC fallback: CSA within 2.4 to ch $alt" >>"$LOG_DIR/cast.log"
       apply_p2p_quiet_csa "$alt" || true
     else
       echo "[miracast-ctl] SCC fallback: stay on 2.4 ch ${cur_ch:-?} (no better pick)" >>"$LOG_DIR/cast.log"
