@@ -380,6 +380,8 @@ defaults = {
     "vaapiBitrate": "12M",
     # ffmpeg h264_vaapi -quality (1–8; higher = faster/worse). Default 5.
     "vaapiQuality": "5",
+    # CQP I-frame qfactor (1.0 = same as P; >1 = coarser I → lower IDR spikes).
+    "vaapiIQfactor": "1.0",
     # FLUXCAST_WFD_VBV_MULTIPLIER — CBR VBV as fraction of bitrate (~seconds).
     "vbvMultiplier": "0.5",
     # Post-PLAY CSA to a quiet channel (MCC). Default false = SCC: radio A/B
@@ -3288,6 +3290,7 @@ try:
         out["encodeProfile"] = prof.get("encodeProfile")
         out["vaapiQp"] = prof.get("vaapiQp")
         out["vaapiQuality"] = prof.get("vaapiQuality")
+        out["vaapiIQfactor"] = prof.get("vaapiIQfactor")
         out["vaapiRcMode"] = prof.get("vaapiRcMode")
         out["vaapiBitrate"] = prof.get("vaapiBitrate")
 except Exception:
@@ -4460,7 +4463,16 @@ print(str(s.get("vaapiAsyncDepth") or "2").strip() or "2")
 ' "$settings" 2>/dev/null || echo 2)"
     _async="${FLUXCAST_WFD_VAAPI_ASYNC_DEPTH:-$_async}"
     export FLUXCAST_WFD_VAAPI_ASYNC_DEPTH="$_async"
-    echo "[miracast-ctl] VAAPI RC=$FLUXCAST_WFD_VAAPI_RC bitrate=$FLUXCAST_WFD_VAAPI_BITRATE quality=$FLUXCAST_WFD_VAAPI_QUALITY async=$_async profile=$(python3 -c 'import json,sys;print(json.loads(sys.argv[1]).get("encodeProfile","medium"))' "$settings" 2>/dev/null || echo medium) content=$(python3 -c 'import json,sys;print(json.loads(sys.argv[1]).get("castPreset","desktop"))' "$settings" 2>/dev/null || echo desktop)" >>"$LOG_DIR/cast.log"
+    _iqf="$(python3 -c 'import json,sys
+s=json.loads(sys.argv[1])
+print(str(s.get("vaapiIQfactor") or "").strip())
+' "$settings" 2>/dev/null || echo "")"
+    if [[ -n "$_iqf" ]]; then
+      export FLUXCAST_WFD_VAAPI_I_QFACTOR="$_iqf"
+    else
+      unset FLUXCAST_WFD_VAAPI_I_QFACTOR 2>/dev/null || true
+    fi
+    echo "[miracast-ctl] VAAPI RC=$FLUXCAST_WFD_VAAPI_RC bitrate=$FLUXCAST_WFD_VAAPI_BITRATE quality=$FLUXCAST_WFD_VAAPI_QUALITY async=$_async i_qfactor=${FLUXCAST_WFD_VAAPI_I_QFACTOR:-none} profile=$(python3 -c 'import json,sys;print(json.loads(sys.argv[1]).get("encodeProfile","medium"))' "$settings" 2>/dev/null || echo medium) content=$(python3 -c 'import json,sys;print(json.loads(sys.argv[1]).get("castPreset","desktop"))' "$settings" 2>/dev/null || echo desktop)" >>"$LOG_DIR/cast.log"
     # VBV multiplier (~seconds of CBR buffer). Default 0.5 validated on pipe.
     # Do not enable PIPE_LOW_LATENCY here (async=1/tiny queue caused lockups).
     _vbv="$(python3 -c 'import json,sys
