@@ -2445,7 +2445,14 @@ if ufw:
     else:
         add("firewall", "ok", "UFW installed but inactive (not managing traffic)", ufw_detail)
 else:
-    add("firewall", "ok", "no ufw binary (nft/iptables not probed)", "")
+    add(
+        "firewall",
+        "warn",
+        "ufw not installed — open Miracast ports in whatever firewall you use",
+        "Required: 7236/tcp (RTSP); 67,68/udp (DHCP); 19000-19100/udp (local RTP); "
+        "42000-42100/udp (sink RTP/RTCP). nft/iptables not managed by Doctor.",
+    )
+    firewall_needs_open = False  # no UFW button path; user must open manually
 
 # --- radio / P2P ---
 try:
@@ -2533,10 +2540,40 @@ print(json.dumps({
 PY
 }
 
+cmd_info() {
+  # Brief Miracast help in a floating terminal (or less in-place).
+  local help="$PLUGIN_DIR/docs/MIRACAST-HELP.md"
+  if [[ ! -f "$help" ]]; then
+    emit '{"ok":false,"error":"MIRACAST-HELP.md missing"}'
+    return 1
+  fi
+  local viewer="less -R"
+  if command -v glow >/dev/null 2>&1; then
+    viewer="glow -p"
+  elif command -v bat >/dev/null 2>&1; then
+    viewer="bat --paging=always --style=plain --language=markdown"
+  elif command -v mdcat >/dev/null 2>&1; then
+    viewer="mdcat"
+  fi
+  local cmd
+  cmd="$(printf '%s %q' "$viewer" "$help")"
+  if command -v omarchy-launch-floating-terminal-with-presentation >/dev/null 2>&1; then
+    # Launcher waits until the terminal exits — background so the panel/CLI returns.
+    omarchy-launch-floating-terminal-with-presentation "bash -lc $(printf '%q' "$cmd")" >/dev/null 2>&1 &
+    disown || true
+    emit '{"ok":true,"opened":"floating-terminal"}'
+  elif command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "$help" >/dev/null 2>&1 &
+    emit '{"ok":true,"opened":"xdg-open"}'
+  else
+    emit "{\"ok\":true,\"path\":$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$help"),\"message\":\"Open MIRACAST-HELP.md in a pager\"}"
+  fi
+}
+
 cmd_firewall_open() {
   if ! command -v ufw >/dev/null 2>&1; then
-    emit '{"ok":true,"ufw":false,"message":"ufw not installed; nft/iptables not managed by this button","firewall_needs_open":false}'
-    write_status "idle" "ufw not installed; nothing to open"
+    emit '{"ok":true,"ufw":false,"message":"ufw not installed — open Miracast ports manually (see Doctor / Info). Required: 7236/tcp; 67,68/udp; 19000-19100/udp; 42000-42100/udp","firewall_needs_open":false}'
+    write_status "idle" "ufw not installed; open Miracast ports manually (Info)"
     return 0
   fi
   # Prefer interactive sudo via floating terminal when needed
@@ -2552,9 +2589,11 @@ sudo ufw status | head -40
 EOS
 )
   if command -v omarchy-launch-floating-terminal-with-presentation >/dev/null 2>&1; then
-    omarchy-launch-floating-terminal-with-presentation "bash -lc $(printf '%q' "$script")"
-    write_status "idle" "Opened UFW Miracast rules (via floating terminal — re-run Doctor after sudo)"
-    emit '{"ok":true,"ufw":true,"pending_sudo":true,"message":"UFW rules requested in floating terminal; run Doctor after approving sudo"}'
+    # Background: launcher blocks until the sudo terminal closes.
+    omarchy-launch-floating-terminal-with-presentation "bash -lc $(printf '%q' "$script")" >/dev/null 2>&1 &
+    disown || true
+    write_status "idle" "Opened UFW Miracast rules (via floating terminal — re-run Check & fix after sudo)"
+    emit '{"ok":true,"ufw":true,"pending_sudo":true,"message":"UFW rules requested in floating terminal; run Check & fix after approving sudo"}'
   else
     bash -lc "$script"
     # Verify the same ports Doctor checks
@@ -4579,8 +4618,9 @@ usage() {
 Usage: miracast-ctl <command> [args]
 
 Commands:
-  doctor [fluxcast-root]
-  firewall-open
+  doctor [--fix] [fluxcast-root]  # diagnose; --fix also opens UFW when needed
+  firewall-open                 # open UFW Miracast ports (also invoked by doctor --fix)
+  info|help-doc                 # open Miracast help (floating terminal)
   scan [fluxcast-root]
   pick-channel [--json]   # quiet 5 GHz P2P channel (else quietest)
   start --peer MAC [--peer-name NAME] [--mode mirror|extend] [--monitor NAME]
@@ -4722,7 +4762,28 @@ main() {
   local cmd="${1:-}"
   shift || true
   case "$cmd" in
-    doctor) cmd_doctor "$@" ;;
+    doctor)
+      # doctor [--fix] — --fix also opens UFW when ports are missing.
+      # Emit a single JSON object so the panel Process collector can parse it.
+      local fix=0
+      if [[ "${1:-}" == "--fix" || "${1:-}" == "fix" ]]; then
+        fix=1
+        shift
+      fi
+      local doc_json
+      doc_json="$(cmd_doctor "$@")"
+      if [[ "$fix" == 1 ]]; then
+        local needs
+        needs="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print("1" if d.get("firewall_needs_open") else "0")' "$doc_json" 2>/dev/null || echo 0)"
+        if [[ "$needs" == 1 ]]; then
+          # Launch UFW open (may pop floating sudo); discard its JSON line.
+          cmd_firewall_open >/dev/null || true
+          doc_json="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); d["firewall_fix_started"]=True; print(json.dumps(d,separators=(",",":")))' "$doc_json")"
+        fi
+      fi
+      printf '%s\n' "$doc_json"
+      ;;
+    info|help-doc) cmd_info "$@" ;;
     firewall-open|firewall_open) cmd_firewall_open "$@" ;;
     scan) cmd_scan "$@" ;;
     pick-channel|pick_channel) cmd_pick_channel "$@" ;;

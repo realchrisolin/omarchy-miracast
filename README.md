@@ -145,7 +145,7 @@ controls). To restore single-row accordion behavior:
 While connected, the Miracast display row shows **CAST MODE** / **EXTEND
 POSITION** (← ↑ ↓ → when Extend) and **SCALE**. Under **MIRACAST** (below **CONTROLS**): collapsible **ADVANCED SETTINGS**
 (**STREAM MODE**, **RENDER ENGINE**, **PRESET QUALITY**, **RADIO**).
-Scan / doctor / firewall / Stop stay under **CONTROLS**. Only the focused
+Scan / Check & fix / Info / Stop stay under **CONTROLS**. Only the focused
 display row expands nested brightness/scale/cast controls.
 
 With focus on the CAST MODE / EXTEND POSITION row and Extend active, vim
@@ -275,8 +275,8 @@ connect or disconnect — those calls have frozen the primary display for
 | Key | Action |
 |-----|--------|
 | S | Scan sinks |
-| F | Open UFW ports |
-| D | Doctor |
+| D | Check & fix (diagnose; open UFW ports if needed) |
+| I | Miracast help (floating guide) |
 | C | Connect last device / reconnect |
 | X | Stop cast |
 | M | Mirror mode |

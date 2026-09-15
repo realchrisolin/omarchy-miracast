@@ -132,10 +132,13 @@ Item {
     statusProcess.running = true
   }
 
-  function runDoctor() {
+  // fix=true (panel Check & fix): diagnose + open UFW ports when missing.
+  // Startup / refresh uses fix=false so we never pop sudo on panel open.
+  function runDoctor(fix) {
     if (doctorProcess.running) return
-    actionStatus = "Running doctor…"
-    doctorProcess.command = [ctl, "doctor"]
+    var doFix = fix === true
+    actionStatus = doFix ? "Checking & fixing…" : "Running checks…"
+    doctorProcess.command = doFix ? [ctl, "doctor", "--fix"] : [ctl, "doctor"]
     doctorProcess.running = true
   }
 
@@ -148,6 +151,14 @@ Item {
     scanProcess.running = true
   }
 
+  function showInfo() {
+    if (infoProcess.running) return
+    actionStatus = "Opening Miracast help…"
+    infoProcess.command = [ctl, "info"]
+    infoProcess.running = true
+  }
+
+  // Kept for CLI parity / scripts; panel folds this into runDoctor(true).
   function openFirewall() {
     if (firewallProcess.running) return
     if (doctor && doctor.firewall_needs_open === false) {
@@ -897,7 +908,25 @@ Item {
         } catch (e) {
           root.actionStatus = "Firewall rules requested"
         }
-        root.runDoctor()
+        root.runDoctor(false)
+      }
+    }
+  }
+
+  Process {
+    id: infoProcess
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        try {
+          var data = JSON.parse(String(text || "{}"))
+          if (data.ok === false)
+            root.actionStatus = String(data.error || "Help failed to open")
+          else
+            root.actionStatus = "Miracast help opened"
+        } catch (e) {
+          root.actionStatus = "Miracast help opened"
+        }
       }
     }
   }

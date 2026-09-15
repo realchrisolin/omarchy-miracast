@@ -187,7 +187,7 @@ function miracastPhaseHint(phase, message) {
   if (value === "dhcp") return "P2P is up — waiting for DHCP / RTSP"
   if (value === "rtsp") return "Negotiating Miracast media"
   if (value === "streaming") return "Desktop is casting"
-  if (value === "error") return "Cast failed — check doctor / firewall"
+  if (value === "error") return "Cast failed — run Check & fix"
   return "Ready"
 }
 
@@ -197,7 +197,10 @@ function miracastIsActive(phase) {
 }
 
 function miracastDoctorSummary(doctor) {
-  if (!doctor) return "Doctor not run yet"
+  if (!doctor) return "Check & fix not run yet"
+  var suffix = ""
+  if (doctor.firewall_fix_started === true)
+    suffix = " — opening UFW ports (approve sudo if prompted)"
   if (doctor.ready === true) {
     var warns = typeof doctor.warn_count === "number" ? doctor.warn_count : 0
     if (warns > 0) {
@@ -205,12 +208,12 @@ function miracastDoctorSummary(doctor) {
       var hint = ""
       if (names && names.length)
         hint = " (" + names.slice(0, 3).join(", ") + (names.length > 3 ? "…" : "") + ")"
-      return "Ready with " + warns + " warning" + (warns === 1 ? "" : "s") + hint
+      return "Ready with " + warns + " warning" + (warns === 1 ? "" : "s") + hint + suffix
     }
-    return "Ready to cast"
+    return "Ready to cast" + suffix
   }
   var fails = typeof doctor.fail_count === "number" ? doctor.fail_count : 0
-  return fails + " blocking issue" + (fails === 1 ? "" : "s")
+  return fails + " blocking issue" + (fails === 1 ? "" : "s") + suffix
 }
 
 function miracastFirewallNeedsOpen(doctor) {

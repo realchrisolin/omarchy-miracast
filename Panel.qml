@@ -1069,8 +1069,8 @@ Panel {
       }
       onTextKey: function(t) {
         if (t === "s" || t === "S") miracast.scanPeers()
-        else if (t === "f" || t === "F") miracast.openFirewall()
-        else if (t === "d" || t === "D") miracast.runDoctor()
+        else if (t === "d" || t === "D") miracast.runDoctor(true)
+        else if (t === "i" || t === "I") miracast.showInfo()
         else if (t === "c" || t === "C") miracast.startCast("")
         else if (t === "m" || t === "M") miracast.setMode("mirror")
         else if (t === "e" || t === "E") miracast.setMode("extend")
@@ -1321,35 +1321,35 @@ Panel {
 
                   PanelActionButton {
                     iconText: "󰍉"
-                    tooltipText: "Scan sinks (S)"
+                    tooltipText: "Scan for Miracast sinks (S)"
                     foreground: root.bar.foreground
                     fontFamily: root.bar.fontFamily
                     enabled: !miracast.busy
                     onClicked: miracast.scanPeers()
                   }
                   PanelActionButton {
-                    iconText: "󰈀"
-                    tooltipText: miracast.firewallActionUseful
-                      ? "Open UFW Miracast ports (F)"
-                      : "Firewall already OK (Doctor)"
-                    foreground: root.bar.foreground
-                    fontFamily: root.bar.fontFamily
-                    enabled: !miracast.busy && miracast.firewallActionUseful
-                    onClicked: miracast.openFirewall()
-                  }
-                  PanelActionButton {
-                    iconText: "󰒓"
-                    tooltipText: "Doctor (D): tools, engines, encode, audio, radio, workspaces"
+                    // nf-md-bandage — Check & fix (diagnose + open UFW if needed)
+                    iconText: "󱣥"
+                    tooltipText: "Check & fix (D): diagnose Miracast; open UFW ports if blocked"
                     foreground: root.bar.foreground
                     fontFamily: root.bar.fontFamily
                     enabled: !miracast.busy
-                    onClicked: miracast.runDoctor()
+                    onClicked: miracast.runDoctor(true)
+                  }
+                  PanelActionButton {
+                    // nf-md-information-outline
+                    iconText: "󰋽"
+                    tooltipText: "Miracast help — requirements, ports, tips (I)"
+                    foreground: root.bar.foreground
+                    fontFamily: root.bar.fontFamily
+                    enabled: true
+                    onClicked: miracast.showInfo()
                   }
                   Item { width: Style.space(8); height: 1 }
                   PanelActionButton {
                     iconText: miracast.active ? "󰓛" : "󰑐"
                     tooltipText: miracast.active
-                      ? "Stop (X)"
+                      ? "Stop casting (X)"
                       : ("Reconnect to last device"
                          + (miracast.connectedLabel !== ""
                             ? " (" + miracast.connectedLabel + ")"
