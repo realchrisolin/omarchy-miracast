@@ -257,8 +257,14 @@ channel** (`p2p_ignore_shared_freq=0`, `--wfd-p2p-channel=<STA>`), and after
 PLAY align with CSA if negotiation landed elsewhere. Set `p2pQuietCsa: true`
 (or `MIRACAST_P2P_QUIET_CSA=1`) to CSA onto a quieter channel instead (MCC).
 If STA is 5 GHz but the sink/GO stays on 2.4 (common with 2.4-only dongles
-like Realtek 8192CU), cross-band CSA is skipped and a quieter **2.4** channel
-is used instead — true 5 GHz SCC is impossible with those sinks.
+like Realtek **8192CU** — WPS often reports `manufacturer=Realtek`,
+`model_name=8192CU`), cross-band CSA is skipped and a quieter **2.4** channel
+is used instead — true 5 GHz SCC is impossible with those sinks. That **MCC**
+setup (STA on 5 GHz + P2P on 2.4) is a known Miracast quality tax in vendor
+docs (Microsoft eCSA / multi-channel notes; ScreenBeam “DCM”); expect
+**occasional brief glitches** from 2.4 interference even when TX looks healthy.
+Mitigate with quiet-channel pick + bitrate headroom; fix properly with a
+**dual-band** sink.
 
 **How “quiet” channel picking works** (`scripts/pick-p2p-channel.py`): the
 label *quiet* is only a score threshold (default ≤ 5). What actually ranks
@@ -278,6 +284,14 @@ miracast-ctl pick-channel
 
 Developer wiring (CSA commands, tests) lives in [BUILD.md](BUILD.md) § P2P
 channel.
+
+**While streaming**, `scripts/miracast_link_watch.py` (started after PLAY) watches
+the link cheaply: sysfs TX bytes every ~8s, `iw station dump` every few ticks,
+and a **cached** `nmcli wifi list` score at most every ~3 minutes and only after
+sustained high retries / IDR bursts. Stall (TX &lt; ~3 Mbps for ~24s — often a
+wedged VAAPI pipe) → `restart-capture`. A clearly better 2.4 GHz score can CSA
+(5 min cooldown, max 2/hour, score margin). No forced Wi‑Fi rescans on the hot
+path.
 
 ## Virtual output lifecycle (eDP safety)
 

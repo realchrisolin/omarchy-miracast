@@ -2565,7 +2565,12 @@ if isinstance(st, dict) and st.get("phase") == "streaming":
     mcc = st.get("radioMcc")
     detail = f"staWidth={sw} p2pWidth={pw} mcc={mcc}"
     if pw and int(pw) <= 20:
-        add("link", "warn", "P2P is 20 MHz — prefer DMA-BUF CQP / capped QVBR", detail)
+        add(
+            "link",
+            "warn",
+            "P2P is 20 MHz — keep video ≤ ~12–14 Mbps (pipe CBR High / capped bitrate)",
+            detail,
+        )
     else:
         add("link", "ok", "Casting; link widths recorded", detail)
 
@@ -2633,6 +2638,38 @@ if isinstance(st, dict) and st.get("phase") == "streaming":
         elif go_ch is not None and go_ch >= 32:
             add("radio_channel", "ok", f"P2P on 5 GHz ch {go_ch}", f"go={go_iface}")
 
+        # Cross-band MCC: STA on 5 GHz + P2P stuck on 2.4 (typical 2.4-only
+        # sinks such as Realtek 8192CU). Industry Miracast docs treat this as a
+        # known quality tax — surface it so Check & fix explains occasional glitches.
+        if go_ch is not None and go_ch <= 14:
+            sta_ch = None
+            try:
+                if isinstance(st, dict) and st.get("staChannel") is not None:
+                    sta_ch = int(st.get("staChannel"))
+            except Exception:
+                sta_ch = None
+            if sta_ch is None:
+                try:
+                    r_iw = run(["iw", "dev"])
+                    cur_iface = None
+                    for line in (r_iw.stdout or "").splitlines():
+                        if line.strip().startswith("Interface "):
+                            cur_iface = line.split()[1]
+                        elif cur_iface and "type managed" in line:
+                            r_sinfo = run(["iw", "dev", cur_iface, "info"])
+                            ms = re.search(r"channel\s+(\d+)", r_sinfo.stdout or "")
+                            if ms:
+                                sta_ch = int(ms.group(1))
+                                break
+                except Exception:
+                    sta_ch = None
+            if sta_ch is not None and sta_ch >= 32:
+                add(
+                    "radio_mcc",
+                    "warn",
+                    f"P2P on 2.4 ch {go_ch} while STA on 5 GHz ch {sta_ch} (MCC) — expected with 2.4-only sinks; occasional glitches are normal",
+                    f"go={go_iface} go_ch={go_ch} sta_ch={sta_ch} tip=dual-band sink unlocks 5 GHz SCC",
+                )
     except Exception as e:
         add("radio_channel", "warn", "channel score probe failed", str(e)[:160])
 

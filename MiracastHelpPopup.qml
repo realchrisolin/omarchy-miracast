@@ -279,9 +279,10 @@ Item {
         spacing: Style.space(3)
         Repeater {
           model: [
-            "20 MHz budget ≈ 14–16 Mbps video. Prefer VAAPI pipe High (CBR) for a hard cap.",
+            "20 MHz P2P budget ≈ 12–14 Mbps video. VAAPI pipe High uses CBR ~12M (quality=4); avoid quality=1 (can hang the pipe).",
+            "2.4-only sinks (e.g. Realtek 8192CU) force MCC when laptop Wi‑Fi is on 5 GHz — occasional brief glitches are expected; a dual-band sink unlocks 5 GHz SCC.",
             "“Quiet” channel pick ranks AP interference scores (lower better); that ranking matched TX retries on-device.",
-            "After changing engine or preset quality, reconnect so encode settings reload.",
+            "After changing engine or preset quality, reconnect (or restart-capture) so encode settings reload.",
             "Keep eDP and Miracast desktops separate (ext-* on the TV, numbers on the laptop)."
           ]
           delegate: Text {
@@ -310,11 +311,13 @@ Item {
         spacing: Style.space(3)
         Repeater {
           model: [
-            "Run Check & fix and read STATUS (warnings name the area: audio, firewall, link, …).",
+            "Run Check & fix and read STATUS (warnings name the area: audio, firewall, link, radio_channel, …).",
             "Confirm the TV is in Miracast / screen-mirroring receive mode.",
             "If video is fine but silent: set Sound default to Miracast (or enable auto-switch) and raise that sink’s volume.",
             "If Doctor says live encode ≠ settings: reconnect.",
-            "Logs: ~/.local/state/omarchy-miracast/logs/cast.log"
+            "Frozen picture with audio still going: wait for auto restart-capture, or run miracast-ctl restart-capture.",
+            "Brief glitches with TX still healthy: usually 2.4 GHz RF / MCC — quieter channel, slightly lower bitrate, or a 5 GHz-capable sink.",
+            "Logs: ~/.local/state/omarchy-miracast/logs/cast.log / link-watch.log"
           ]
           delegate: Text {
             required property string modelData
