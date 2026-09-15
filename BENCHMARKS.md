@@ -225,8 +225,9 @@ damage-aware vs continuous `-D`.
 | Engine × tier (sketch) | RC | Notes |
 |------------------------|----|--------|
 | **vaapi / high** | QVBR qp18 quality **4** max 16M | Vetted pipe envelope on 20 MHz P2P |
-| **dmabuf / high** | QVBR qp**16** quality **3** max 16M | Sharper than pipe high at same peak |
-| **\*/ medium\|low** | tighter caps / higher qp | RF headroom |
+| **dmabuf / high** | **CQP** qp**16** quality **3** | QVBR on wf-recorder starved ~3 Mbps (looked like “very low”) |
+| **dmabuf / medium\|low** | CQP qp18 / qp22 | Same path; higher qp = softer |
+| **vaapi / medium\|low** | QVBR tighter caps | RF headroom |
 
 ```bash
 miracast-ctl set-quality high           # retarget knobs for current engine

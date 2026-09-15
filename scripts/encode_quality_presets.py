@@ -7,8 +7,8 @@ same recipe as VAAPI-pipe high.
 
 Vetted starting points (1080p30, ~20 MHz Miracast P2P):
   - pipe high ≈ QVBR qp18 quality4 max 16M (on-device A/B)
-  - DMA-BUF high uses sharper QP / more encode effort at the same peak cap
-  - pure CQP avoided as a default (Intel ignores maxrate; spikes on 20 MHz)
+  - DMA-BUF uses **CQP** (QVBR on wf-recorder starved ~3 Mbps → looks like
+    "very low"; CQP qp tracks picture quality; peaks OK enough on 20 MHz)
 """
 
 from __future__ import annotations
@@ -22,17 +22,19 @@ TIERS = ("high", "medium", "low")
 # bitrate = stream/target; vaapiBitrate = QVBR/CBR peak (FLUXCAST_WFD_VAAPI_BITRATE).
 PRESETS: dict[str, dict[str, dict[str, Any]]] = {
     "dmabuf": {
+        # CQP: qp is the quality dial. Do not use QVBR here — on-device it
+        # undershot ~3 Mbps at "high" and looked heavily pixelated.
         "high": {
-            "vaapiRcMode": "QVBR",
+            "vaapiRcMode": "CQP",
             "vaapiQp": 16,
             "vaapiQuality": "3",
-            "vaapiBitrate": "16M",
+            "vaapiBitrate": "16M",  # unused for CQP; kept for UI/env symmetry
             "bitrate": "12M",
             "vaapiGop": 30,
             "vaapiAsyncDepth": 2,
         },
         "medium": {
-            "vaapiRcMode": "QVBR",
+            "vaapiRcMode": "CQP",
             "vaapiQp": 18,
             "vaapiQuality": "4",
             "vaapiBitrate": "14M",
@@ -41,8 +43,8 @@ PRESETS: dict[str, dict[str, dict[str, Any]]] = {
             "vaapiAsyncDepth": 2,
         },
         "low": {
-            "vaapiRcMode": "QVBR",
-            "vaapiQp": 20,
+            "vaapiRcMode": "CQP",
+            "vaapiQp": 22,
             "vaapiQuality": "6",
             "vaapiBitrate": "12M",
             "bitrate": "8M",

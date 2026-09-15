@@ -26,13 +26,14 @@ class EncodeQualityPresetsTest(unittest.TestCase):
     def setUpClass(cls):
         cls.mod = _load()
 
-    def test_dmabuf_high_sharper_than_pipe_high(self):
+    def test_dmabuf_high_uses_cqp_sharper_than_pipe_high(self):
         dma = self.mod.resolve_preset("dmabuf", "high")
         pipe = self.mod.resolve_preset("vaapi", "high")
+        # DMA-BUF high is CQP (QVBR starved ~3 Mbps on-device); pipe stays QVBR.
+        self.assertEqual(dma["vaapiRcMode"], "CQP")
+        self.assertEqual(pipe["vaapiRcMode"], "QVBR")
         self.assertLess(int(dma["vaapiQp"]), int(pipe["vaapiQp"]))
         self.assertLessEqual(int(dma["vaapiQuality"]), int(pipe["vaapiQuality"]))
-        self.assertEqual(dma["vaapiRcMode"], "QVBR")
-        self.assertEqual(pipe["vaapiRcMode"], "QVBR")
 
     def test_apply_retargets_on_engine_change(self):
         data = {"captureEncode": "vaapi", "encodeProfile": "high"}
