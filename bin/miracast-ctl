@@ -11,6 +11,10 @@ AUDIO_SINK_MODULE_FILE="$STATE_DIR/audio-sink.module"
 AUDIO_SILENCE_PID_FILE="$STATE_DIR/audio-silence.pid"
 AUDIO_ROUTE_PID_FILE="$STATE_DIR/audio-route.pid"
 AUDIO_ROUTE_LAST_DEFAULT_FILE="$STATE_DIR/audio-route.last-default"
+# Hardware (or prior) default sink to restore until PLAY, and after teardown.
+AUDIO_PREV_DEFAULT_FILE="$STATE_DIR/audio-prev-default"
+# While present: do not allow Miracast to become/stay the default sink.
+AUDIO_DEFAULT_HOLD_FILE="$STATE_DIR/audio-default-hold"
 MIRACAST_AUDIO_SINK_NAME="miracast"
 MIRACAST_AUDIO_SINK_DESC="Miracast"
 STATUS_FILE="$STATE_DIR/status.json"
@@ -330,8 +334,8 @@ defaults = {
     # ffmpeg h264_vaapi -async_depth (pipe). From encode profile; default 2.
     "vaapiAsyncDepth": 2,
     # Mux audio into the WFD stream. When true, creates a PipeWire/Pulse null
-    # sink named "Miracast" so the sound panel can select it as default; WFD
-    # captures that sink's .monitor. Does not auto-switch the default sink.
+    # sink named "Miracast" for capture (miracast.monitor). Default output
+    # switches to Miracast only after PLAY / streaming (not during handshake).
     "audioEnabled": True,
     # Preferred Miracast stream mode id, e.g. "1280x720p30".
     "streamMode": "1280x720p30",
@@ -3261,12 +3265,73 @@ print(json.dumps(data, separators=(",", ":")))
 PY
 }
 
-# Create a selectable "Miracast" null sink for the sound panel. WFD captures
-# its .monitor. Does NOT change the default sink — user picks in the audio UI.
-# A route watcher then moves app streams to follow the default (see below).
+# Remember the non-Miracast default so WirePlumber cannot steal output to the
+# null sink before PLAY. Cleared when we intentionally switch at streaming.
+save_audio_prev_default() {
+  mkdir -p "$STATE_DIR"
+  local cur
+  cur="$(pactl get-default-sink 2>/dev/null || true)"
+  if [[ -n "$cur" && "$cur" != "$MIRACAST_AUDIO_SINK_NAME" ]]; then
+    printf '%s\n' "$cur" >"$AUDIO_PREV_DEFAULT_FILE"
+  fi
+}
+
+# While hold is set: if default is Miracast, restore the previous sink.
+hold_audio_default_until_play() {
+  [[ -f "$AUDIO_DEFAULT_HOLD_FILE" ]] || return 0
+  local cur prev
+  cur="$(pactl get-default-sink 2>/dev/null || true)"
+  [[ "$cur" == "$MIRACAST_AUDIO_SINK_NAME" ]] || return 0
+  prev=""
+  if [[ -f "$AUDIO_PREV_DEFAULT_FILE" ]]; then
+    prev="$(tr -d '[:space:]' <"$AUDIO_PREV_DEFAULT_FILE" 2>/dev/null || true)"
+  fi
+  if [[ -z "$prev" || "$prev" == "$MIRACAST_AUDIO_SINK_NAME" ]]; then
+    # Fall back to first non-miracast sink.
+    prev="$(pactl list short sinks 2>/dev/null | awk -v m="$MIRACAST_AUDIO_SINK_NAME" '$2 != m {print $2; exit}')"
+  fi
+  [[ -n "$prev" ]] || return 0
+  pactl set-default-sink "$prev" 2>/dev/null || true
+  echo "[miracast-ctl] held default sink at $prev until PLAY (WirePlumber had selected Miracast)" >>"$LOG_DIR/cast.log"
+}
+
+# After PLAY / streaming: make Miracast the default output and migrate streams.
+activate_miracast_audio_default() {
+  mkdir -p "$STATE_DIR" "$LOG_DIR"
+  rm -f "$AUDIO_DEFAULT_HOLD_FILE"
+  pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -qx "$MIRACAST_AUDIO_SINK_NAME" || return 0
+  local cur
+  cur="$(pactl get-default-sink 2>/dev/null || true)"
+  if [[ "$cur" != "$MIRACAST_AUDIO_SINK_NAME" ]]; then
+    # Refresh prev in case user changed speakers during connect.
+    if [[ -n "$cur" && "$cur" != "$MIRACAST_AUDIO_SINK_NAME" ]]; then
+      printf '%s\n' "$cur" >"$AUDIO_PREV_DEFAULT_FILE"
+    fi
+    pactl set-default-sink "$MIRACAST_AUDIO_SINK_NAME" 2>/dev/null || true
+    echo "[miracast-ctl] default sink → miracast (streaming / PLAY)" >>"$LOG_DIR/cast.log"
+  fi
+  sync_miracast_audio_routes || true
+}
+
+# Create a selectable "Miracast" null sink for capture. WirePlumber often
+# auto-switches the default to a new sink — we hold the previous default until
+# PLAY (see hold_audio_default_until_play / activate_miracast_audio_default).
 ensure_miracast_audio_sink() {
   mkdir -p "$STATE_DIR"
+  save_audio_prev_default || true
+  # Hold from create until PLAY so speakers stay default during handshake.
+  # (If somehow called while already streaming, skip hold.)
+  local _phase=""
+  _phase="$(python3 -c 'import json;from pathlib import Path
+try: print(json.loads(Path("'"$STATUS_FILE"'").read_text()).get("phase",""))
+except Exception: print("")' 2>/dev/null || true)"
+  if [[ "$_phase" != "streaming" ]]; then
+    : >"$AUDIO_DEFAULT_HOLD_FILE"
+  else
+    rm -f "$AUDIO_DEFAULT_HOLD_FILE"
+  fi
   if pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -qx "$MIRACAST_AUDIO_SINK_NAME"; then
+    hold_audio_default_until_play || true
     start_miracast_audio_route_watcher || true
     echo "$MIRACAST_AUDIO_SINK_NAME"
     return 0
@@ -3277,6 +3342,7 @@ ensure_miracast_audio_sink() {
     "sink_properties=device.description=$MIRACAST_AUDIO_SINK_DESC" 2>/dev/null || true)"
   if [[ -z "$mid" ]]; then
     echo "[miracast-ctl] failed to create Miracast audio sink" >>"$LOG_DIR/cast.log"
+    rm -f "$AUDIO_DEFAULT_HOLD_FILE"
     return 1
   fi
   printf '%s\n' "$mid" >"$AUDIO_SINK_MODULE_FILE"
@@ -3310,13 +3376,19 @@ ensure_miracast_audio_sink() {
         echo $! >"$AUDIO_SILENCE_PID_FILE"
         echo "[miracast-ctl] started silence feeder pid=$!" >>"$LOG_DIR/cast.log"
       fi
+      # WirePlumber often flips default → miracast as soon as the sink appears.
+      hold_audio_default_until_play || true
+      sleep 0.15
+      hold_audio_default_until_play || true
       start_miracast_audio_route_watcher || true
+      hold_audio_default_until_play || true
       echo "$MIRACAST_AUDIO_SINK_NAME"
       return 0
     fi
     sleep 0.1
   done
   echo "[miracast-ctl] Miracast audio sink did not appear" >>"$LOG_DIR/cast.log"
+  rm -f "$AUDIO_DEFAULT_HOLD_FILE"
   return 1
 }
 
@@ -3522,6 +3594,11 @@ PY
 }
 
 sync_miracast_audio_routes() {
+  # Before PLAY: keep speakers as default even if WirePlumber prefers Miracast.
+  if [[ -f "$AUDIO_DEFAULT_HOLD_FILE" ]]; then
+    hold_audio_default_until_play || true
+  fi
+
   local def
   def="$(pactl get-default-sink 2>/dev/null || true)"
   [[ -n "$def" ]] || return 0
@@ -3531,6 +3608,13 @@ sync_miracast_audio_routes() {
     last="$(tr -d '[:space:]' <"$AUDIO_ROUTE_LAST_DEFAULT_FILE" 2>/dev/null || true)"
   fi
   printf '%s\n' "$def" >"$AUDIO_ROUTE_LAST_DEFAULT_FILE"
+
+  # Still holding: never pull app streams onto Miracast.
+  if [[ -f "$AUDIO_DEFAULT_HOLD_FILE" ]]; then
+    pin_miracast_silence_feeder >/dev/null || true
+    pin_miracast_audio_capture >/dev/null || true
+    return 0
+  fi
 
   if [[ "$def" == "$MIRACAST_AUDIO_SINK_NAME" ]]; then
     # Default is Miracast: always pull app streams onto it (not only when the
@@ -3632,19 +3716,31 @@ stop_miracast_audio_route_watcher() {
 
 teardown_miracast_audio_sink() {
   stop_miracast_audio_route_watcher || true
+  rm -f "$AUDIO_DEFAULT_HOLD_FILE"
 
-  # Before removing the null sink, move any remaining app streams to the
-  # current default (or first hardware sink) so audio does not vanish/stick.
-  local dest
-  dest="$(pactl get-default-sink 2>/dev/null || true)"
+  # Prefer the sink we remembered from before PLAY / before Miracast default.
+  local dest=""
+  if [[ -f "$AUDIO_PREV_DEFAULT_FILE" ]]; then
+    dest="$(tr -d '[:space:]' <"$AUDIO_PREV_DEFAULT_FILE" 2>/dev/null || true)"
+  fi
+  if [[ -z "$dest" || "$dest" == "$MIRACAST_AUDIO_SINK_NAME" ]]; then
+    dest="$(pactl get-default-sink 2>/dev/null || true)"
+  fi
   if [[ -z "$dest" || "$dest" == "$MIRACAST_AUDIO_SINK_NAME" ]]; then
     dest="$(pactl list short sinks 2>/dev/null | awk -v m="$MIRACAST_AUDIO_SINK_NAME" '$2!=m{print $2; exit}')"
   fi
   if [[ -n "$dest" && "$dest" != "$MIRACAST_AUDIO_SINK_NAME" ]]; then
+    local cur
+    cur="$(pactl get-default-sink 2>/dev/null || true)"
+    if [[ "$cur" == "$MIRACAST_AUDIO_SINK_NAME" ]]; then
+      pactl set-default-sink "$dest" 2>/dev/null || true
+      echo "[miracast-ctl] default sink restored → $dest" >>"$LOG_DIR/cast.log" 2>/dev/null || true
+    fi
     local moved
     moved="$(migrate_sink_inputs "$MIRACAST_AUDIO_SINK_NAME" "$dest" || true)"
     echo "[miracast-ctl] teardown audio migrate → $dest: ${moved:-none}" >>"$LOG_DIR/cast.log" 2>/dev/null || true
   fi
+  rm -f "$AUDIO_PREV_DEFAULT_FILE"
 
   if [[ -f "$AUDIO_SILENCE_PID_FILE" ]]; then
     local spid
@@ -3919,8 +4015,7 @@ print("1" if v in (True,1,"1","true","yes","on") else "0")' "$settings")"
     else
       local sink_name=""
       if sink_name="$(ensure_miracast_audio_sink)"; then
-        # Capture the Miracast null-sink monitor so the sound panel can choose
-        # that device as default (we do not auto-switch the default).
+        # Capture miracast.monitor; default output flips to Miracast at PLAY.
         audio_args=(--wfd-audio-device "${sink_name}.monitor")
       else
         echo "[miracast-ctl] audio sink missing; falling back to default-sink monitor" >>"$LOG_DIR/cast.log"
@@ -4125,6 +4220,8 @@ except Exception: print("")' "$STATUS_FILE" 2>/dev/null || true)"
         write_status "streaming" "$action_word to $label" "peer=$peer" "peerName=$peer_name" "mode=$mode" "monitor=$monitor" "pid=$pid" "running=true" >/dev/null
         saw_play=1
         missing_link=0
+        # Default audio → Miracast only once the cast is actually streaming.
+        activate_miracast_audio_default || true
         # Quiet-channel CSA (MCC) vs stay-on-STA (SCC).
         # Default SCC: radio A/B 2026-09-14 — MCC bw20 had 10 retry spikes / 90s;
         # SCC had 0. Override: settings p2pQuietCsa=true, or
