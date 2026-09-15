@@ -10,6 +10,7 @@ variables set by `miracast-ctl`; damage-aware capture remains opt-in.
 | `src/wfd/power_plan.py` | Discover OS power profiles as ``power_plan_N`` (PPD/TLP-pd, platform_profile, system76-power, tuned) |
 | `src/wfd/hw_encode.py` | Optional VAAPI/QSV encode; capture-encode mode (DMA-BUF vs pipe); power-plan throttling |
 | `src/wfd/mode_state.py` | Persist sink-advertised stream modes for the UI (`FLUXCAST_WFD_MODE_STATE`) |
+| `src/wfd/modes.py` | Honor sink CHP (`0x02`) for M4 + encoder profile mapping |
 | `src/wfd/config.py` | `peer_address` for mode-state JSON |
 | `src/wfd/session.py` | SIGUSR1 capture rebind loop; peer MAC on media config; NM-path `--wfd-p2p-channel` |
 | `src/wfd/p2p/device.py` | P2P OperChannel for 2.4GHz + non-DFS 5GHz (quiet-channel picks) |
@@ -53,6 +54,7 @@ export FLUXCAST_ROOT="${FLUXCAST_ROOT:-$HOME/code/other/fluxcast}"
 cp patches/fluxcast/src/wfd/power_plan.py         "$FLUXCAST_ROOT/src/wfd/"
 cp patches/fluxcast/src/wfd/hw_encode.py          "$FLUXCAST_ROOT/src/wfd/"
 cp patches/fluxcast/src/wfd/mode_state.py         "$FLUXCAST_ROOT/src/wfd/"
+cp patches/fluxcast/src/wfd/modes.py              "$FLUXCAST_ROOT/src/wfd/"
 cp patches/fluxcast/src/wfd/config.py             "$FLUXCAST_ROOT/src/wfd/"
 cp patches/fluxcast/src/wfd/session.py            "$FLUXCAST_ROOT/src/wfd/"
 mkdir -p "$FLUXCAST_ROOT/src/wfd/p2p"

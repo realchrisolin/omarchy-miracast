@@ -27,9 +27,7 @@ from .message import (
 
 
 class _WFDRTSPHandler(socketserver.StreamRequestHandler):
-    # After this many consecutive unhealthy probes (~10s at 2s interval), stop
-    # so a permanently dead stock pipeline does not spam forever. Mid-rebind
-    # races should recover inside the grace window.
+    # Consecutive unhealthy probes before auto-rebind (probe interval ~2s).
     _UNHEALTHY_PROBE_GRACE = 5
 
     def handle(self) -> None:
@@ -52,12 +50,15 @@ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
         self.play_accepted_at: Optional[float] = None
         self.setup_ms: Optional[float] = None
         self.first_tx_reported = False
-        # Consecutive unhealthy sender probes; capped so a dead stock pipeline
-        # does not warn forever (see _UNHEALTHY_PROBE_GRACE).
+        # See _UNHEALTHY_PROBE_GRACE.
         self._unhealthy_probe_streak = 0
-        # PIDs alive but RTP barely moving (e.g. encoder backlog / frozen TV).
+        # Probes where PIDs are alive but iface TX bytes barely increase.
         self._stagnant_tx_streak = 0
         self._last_interval_tx: Optional[int] = None
+        # LPCM muxer counters — video vs audio (audio must not mask video death).
+        self._last_video_frames: Optional[int] = None
+        self._last_audio_frames: Optional[int] = None
+        self._video_stall_streak = 0
 
         if hasattr(self.server, "parent_server"):
             self.server.parent_server.has_connected_client = True  # type: ignore[attr-defined]
@@ -246,8 +247,8 @@ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
         name = self.pending.pop(msg.cseq, "UNKNOWN")
         if not msg.status.startswith("200"):
             if name == "M16_KEEPALIVE":
-                # Keep streaming, but stop rescheduling if the sink still
-                # rejects bare-Session keepalives.
+                # LG (or any TV) rejected our keepalive, STOP RESCHEDULING
+                # but keep the stream alive
                 print(
                     f"[FluxCast WFD RTSP] M16 keepalive rejected: {msg.status} "
                     "— disabling keepalive, stream continues."
@@ -285,9 +286,8 @@ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
             _caps = (audio or "").upper()
             _has_aac = "AAC" in _caps
             _has_lpcm = "LPCM" in _caps
-            # Match AOSP WifiDisplaySource codec policy: AAC when present,
-            # otherwise LPCM when that is all the sink has. Escape hatch:
-            # FLUXCAST_WFD_FORCE_AAC=1 keeps the DMA+AAC picture-only path.
+            # Prefer AAC when advertised; else LPCM-only. FLUXCAST_WFD_FORCE_AAC=1
+            # keeps AAC even if the sink lists only LPCM.
             _force_aac = (os.environ.get("FLUXCAST_WFD_FORCE_AAC") or "").strip() in (
                 "1",
                 "true",
@@ -309,14 +309,13 @@ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
                 self.negotiated_lpcm = True
                 print(
                     "[FluxCast WFD RTSP] TV advertised LPCM only; "
-                    "negotiating WFD LPCM (AOSP-style PIDs 0x1011/0x1100, "
-                    "stream_type 0x83)."
+                    "negotiating WFD LPCM (PIDs 0x1011/0x1100, stream_type 0x83)."
                 )
             elif audio and not _has_aac and _has_lpcm and _force_aac:
                 self.negotiated_lpcm = False
                 print(
                     "[FluxCast WFD RTSP] TV advertised LPCM only; "
-                    "FLUXCAST_WFD_FORCE_AAC=1 — stable DMA+AAC (likely silent)."
+                    "FLUXCAST_WFD_FORCE_AAC=1 — using AAC path."
                 )
             if _is_microsoft and audio:
                 print(f"[FluxCast WFD RTSP] Microsoft adapter audio caps: {audio}")
@@ -562,14 +561,9 @@ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
         """Send RTSP GET_PARAMETER (M16) on the existing TCP connection."""
         if not self._keepalive_active:
             return
-        # Always keep the M16 chain alive for the RTSP session. Capture may
-        # briefly die during eDP scale / ensure-capture / SIGUSR1 rebind; if we
-        # stop rescheduling on dead sender PIDs the sink TEARDOWNs on session
-        # timeout even after capture recovers. M16 does not require RTP.
+        # M16 keepalives are independent of capture/RTP; always reschedule.
         try:
-            # Some sinks return 454 if Session includes ";timeout=30" on M16 —
-            # they expect a bare session id. Without successful keepalives they
-            # TEARDOWN when the session timer fires.
+            # Bare Session id — some sinks 454 on ";timeout=" in M16 Session.
             self._send_request(
                 "M16_KEEPALIVE",
                 "GET_PARAMETER",
@@ -577,7 +571,7 @@ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
                 headers={"Session": self.session_id},
             )
             print("[FluxCast WFD RTSP] M16 keepalive sent")
-            # Stay under the common 30s session timeout advertised at SETUP.
+            # Interval under typical 30s SETUP session timeout.
             self._schedule_rtsp_keepalive(20.0)
         except OSError:
             pass  # Socket dead -> DONT RESCHEDULE
@@ -587,8 +581,7 @@ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
         if media is None:
             return
 
-        # Capture rebind briefly kills sender PIDs — keep probing through it.
-        # media.restarting is optional; stock pipelines leave it unset.
+        # Defer while capture rebind is in progress (restarting may be unset).
         if getattr(media, "restarting", False):
             self._schedule_probe(1.0)
             return
@@ -600,8 +593,7 @@ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
 
         if states and all(proc.poll() is None for proc in media.processes):
             self._unhealthy_probe_streak = 0
-            # Hyprland reload can leave senders alive while the capture output
-            # has been reshuffled — TV goes black though PIDs still look fine.
+            # Rebind when capture output geometry changed (PIDs may still run).
             if getattr(media, "capture_geometry_drifted", lambda: False)():
                 print(
                     "[FluxCast WFD Media] Capture output geometry changed; "
@@ -643,28 +635,72 @@ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
                     setup_ms=self.setup_ms,
                     sender_path_latency_ms=sender_path_latency_ms,
                 )
-            # Detect "alive but stuck": PIDs running, RTSP OK, but almost no RTP.
-            # Idle damage-aware can be very quiet — require a long near-zero streak
-            # so we do not thrash-rebind and make the desktop feel laggy.
-            # LPCM muxer keeps sending audio/PAT during video gaps; treat that as
-            # healthy even if the iface counter looks quiet for one interval.
+            # Stagnant TX: PIDs alive, iface TX < 4 KiB/probe for N probes.
+            # LPCM keeps sending audio while video is wedged (VAAPI pipe hang).
+            # Never treat audio-only progress as healthy — track video separately.
+            # Limits: 12 probes with LPCM (~60s), else 6 (~30s) for iface TX.
             lpcm = getattr(media, "_lpcm_muxer", None)
-            lpcm_activity = 0
+            video_frames = 0
+            audio_frames = 0
             if lpcm is not None:
-                lpcm_activity = int(getattr(lpcm, "frames_sent", 0)) + int(
-                    getattr(lpcm, "audio_frames_sent", 0)
+                video_frames = int(getattr(lpcm, "frames_sent", 0) or 0)
+                audio_frames = int(getattr(lpcm, "audio_frames_sent", 0) or 0)
+            prev_video = self._last_video_frames
+            prev_audio = self._last_audio_frames
+            self._last_video_frames = video_frames
+            self._last_audio_frames = audio_frames
+            video_delta = (
+                (video_frames - prev_video) if prev_video is not None else None
+            )
+            audio_delta = (
+                (audio_frames - prev_audio) if prev_audio is not None else None
+            )
+            if video_delta is not None and audio_delta is not None:
+                if video_delta <= 0 and audio_delta > 0:
+                    self._video_stall_streak += 1
+                elif video_delta > 0:
+                    self._video_stall_streak = 0
+            if video_delta is not None and video_delta > 0:
+                self._stagnant_tx_streak = 0
+
+            video_stall_limit = 2
+            if self._video_stall_streak >= video_stall_limit:
+                print(
+                    "[FluxCast WFD Media] VIDEO_STALL "
+                    f"(video_delta={video_delta}, audio_delta={audio_delta}, "
+                    f"streak={self._video_stall_streak}); rebinding desktop capture",
+                    flush=True,
                 )
-                prev_lpcm = getattr(self, "_last_lpcm_activity", None)
-                self._last_lpcm_activity = lpcm_activity
-                if prev_lpcm is not None and lpcm_activity > prev_lpcm:
+                _append_latency_log(
+                    self.media_config.latency_log_path,
+                    "video_stall",
+                    video_frames=video_frames,
+                    audio_frames=audio_frames,
+                    video_delta=video_delta,
+                    audio_delta=audio_delta,
+                    streak=self._video_stall_streak,
+                )
+                try:
+                    media.restart_video()
                     self._stagnant_tx_streak = 0
+                    self._video_stall_streak = 0
+                    self._last_interval_tx = None
+                    self._last_video_frames = None
+                    self._last_audio_frames = None
+                except Exception as exc:  # noqa: BLE001
+                    print(
+                        "[FluxCast WFD Media] Capture rebind after "
+                        f"VIDEO_STALL failed: {exc}"
+                    )
+                self._schedule_probe(2.0)
+                return
+
             if current is not None and self._last_interval_tx is not None:
                 interval = max(0, current - self._last_interval_tx)
                 if interval < 4 * 1024:
                     self._stagnant_tx_streak += 1
                 else:
                     self._stagnant_tx_streak = 0
-                # 12 × ~5s ≈ 60s before rebind; LPCM path is burstier.
                 stagnant_limit = 12 if lpcm is not None else 6
                 if self._stagnant_tx_streak >= stagnant_limit:
                     print(
@@ -674,8 +710,10 @@ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
                     try:
                         media.restart_video()
                         self._stagnant_tx_streak = 0
+                        self._video_stall_streak = 0
                         self._last_interval_tx = None
-                        self._last_lpcm_activity = None
+                        self._last_video_frames = None
+                        self._last_audio_frames = None
                     except Exception as exc:  # noqa: BLE001
                         print(
                             "[FluxCast WFD Media] Capture rebind after "
@@ -688,14 +726,24 @@ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
             print(
                 f"[FluxCast WFD Media] Sender health: "
                 f"{', '.join(states)}; {media.tx_summary()}"
+                + (
+                    f"; video_frames={video_frames} audio_frames={audio_frames}"
+                    if lpcm is not None
+                    else ""
+                )
             )
             _append_latency_log(
                 self.media_config.latency_log_path,
                 "sender_health",
                 processes=states,
                 tx_summary=media.tx_summary(),
+                video_frames=video_frames if lpcm is not None else None,
+                audio_frames=audio_frames if lpcm is not None else None,
+                video_delta=video_delta,
+                audio_delta=audio_delta,
+                video_stall_streak=self._video_stall_streak,
             )
-            self._schedule_probe(5.0)
+            self._schedule_probe(2.0 if self._video_stall_streak > 0 else 5.0)
             return
 
         detail = ", ".join(states) if states else "no sender process"
@@ -703,15 +751,13 @@ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
             f"[FluxCast WFD Media] WARNING: RTP sender is not healthy "
             f"({detail}; {media.tx_summary()})"
         )
-        # Brief grace so a mid-restart race does not permanently stop health checks.
+        # Grace probes before treating the sender as dead.
         self._unhealthy_probe_streak += 1
         if self._unhealthy_probe_streak <= self._UNHEALTHY_PROBE_GRACE:
             self._schedule_probe(2.0)
             return
 
-        # After grace: self-heal unless Omarchy intentionally paused capture
-        # (screen lock / Extend position move). Without this, probes stop and
-        # the TV stays frozen while RTSP keepalives continue.
+        # FLUXCAST_CAPTURE_PAUSE_FILE present → defer rebind.
         pause_file = os.environ.get("FLUXCAST_CAPTURE_PAUSE_FILE", "").strip()
         if pause_file and os.path.exists(pause_file):
             print(
@@ -728,7 +774,7 @@ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
             self._schedule_probe(5.0)
         except Exception as exc:  # noqa: BLE001 — keep probe chain alive
             print(f"[FluxCast WFD Media] Capture rebind after sender death failed: {exc}")
-            # Back off hard on bind failures so we do not spawn orphan recorders.
+            # Longer backoff after bind failure.
             self._schedule_probe(10.0)
 
     def _stop_media(self) -> None:

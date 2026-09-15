@@ -33,14 +33,18 @@ Reliable maximize-quality envelope (1080p30 + ~1.5 Mbps LPCM):
     bit_rate/bufsize set on the codec context (Intel BRC + DMA-BUF path)
 
   Presets:
-  - **DMA-BUF**: **CQP** (only RC that fills bits on this path). High uses **qp=19**
-    quality=2 + i_qfactor=1.3 — safer on 20 MHz after qp=18 peaks corrupted the TV.
-  - **VAAPI pipe / CPU**: **CBR 12/10/6 Mbps** (ffmpeg BRC works; hard cap).
-    High uses **12M + quality=4 + async=1** — quality=1/async=2 hung the pipe
-    every ~20–60s on-device (bufs_size storm → audio-only TX).
+  - **DMA-BUF**: **CQP** (only RC that fills bits on this path). High uses **qp=18**
+    quality=2 + i_qfactor=1.3 + CHP/high — 5 min soak peaked ~19 Mbps (under ~22
+    corruption). Avoid quality=1 with low qp (old 22–28 Mbps TV corruption).
+  - **VAAPI pipe**: **hard CBR** (ffmpeg BRC works). Do **not** use QVBR here —
+    on-device Intel QVBR undershot to ~5–7 Mbps (worse on lighting). High is
+    **CBR 15M + quality=3 + async=1 + VBV 1.0** (closest-to-lossless on 20 MHz
+    after hotyeah soaks; wire ~18 Mbps with LPCM; ~3–4 Mbps under the ~22 Mbps
+    corruption line). quality=1 hung the pipe; clamp floor is quality≥3.
+  - **CPU**: CBR ladder (libx264); independent of VAAPI pipe hang constraints.
 
   ``bitrate`` / ``vaapiBitrate`` are the pipe CBR target (=maxrate); informational
-  for DMA-BUF CQP.
+  for DMA-BUF CQP. ``vbvMultiplier`` is CBR HRD depth in seconds of bitrate.
 """
 
 from __future__ import annotations
@@ -56,12 +60,13 @@ TIERS = ("high", "medium", "low")
 PRESETS: dict[str, dict[str, dict[str, Any]]] = {
     "dmabuf": {
         # CQP only — bitrate RC undershoots ~0.5–3 Mbps on DMA-BUF+Intel.
-        # qp=18/quality=1 looked sharp but session peaks hit ~28–35 Mbps and
-        # corrupted the TV on 20 MHz. qp=19/quality=2 + stronger i_qfactor keeps
-        # more headroom while staying near the prior “good” look.
+        # qp=18/quality=1 looked sharp but peaks hit ~22–28 Mbps and corrupted
+        # the TV on 20 MHz. High uses qp=18/quality=2 + i_qfactor=1.3: sharper
+        # than qp=19, with quality/i_qfactor holding peaks under the old blow-up
+        # (5 min soak at qp=19 peaked ~13.6 Mbps — headroom to try 18).
         "high": {
             "vaapiRcMode": "CQP",
-            "vaapiQp": 19,
+            "vaapiQp": 18,
             "vaapiQuality": "2",
             "vaapiIQfactor": "1.3",
             "vaapiBitrate": "14M",
@@ -91,35 +96,43 @@ PRESETS: dict[str, dict[str, dict[str, Any]]] = {
         },
     },
     "vaapi": {
-        # Pipe — hard CBR cap (ffmpeg BRC works). quality=1 + async=2 hung the
-        # VAAPI pipe every ~20–60s (wf-recorder bufs_size 5→16, TX→~1.8 Mbps
-        # audio-only). quality=4 + async=1 soaked 3 min with no bufs_size.
+        # Pipe — hard CBR only (QVBR undershot ~5–7 Mbps on Intel+hotyeah).
+        # quality=1 / async>1 hung the pipe (bufs_size → audio-only). CHP/high
+        # profile is negotiated separately when the sink offers it.
+        #
+        # Ladder (1080p30 + LPCM on 20 MHz):
+        #   high   ≈ max quality under soft envelope (wire ~18 Mbps)
+        #   medium ≈ stable daily driver with RF headroom
+        #   low    ≈ poor RF / battery / busy channel
         "high": {
             "vaapiRcMode": "CBR",
             "vaapiQp": 18,
-            "vaapiQuality": "4",
-            "vaapiBitrate": "12M",
-            "bitrate": "12M",
+            "vaapiQuality": "3",
+            "vaapiBitrate": "15M",
+            "bitrate": "15M",
+            "vbvMultiplier": "1.0",
             "vaapiGop": 30,
             "vaapiAsyncDepth": 1,
         },
         "medium": {
             "vaapiRcMode": "CBR",
             "vaapiQp": 20,
-            "vaapiQuality": "4",
-            "vaapiBitrate": "10M",
-            "bitrate": "10M",
+            "vaapiQuality": "3",
+            "vaapiBitrate": "12M",
+            "bitrate": "12M",
+            "vbvMultiplier": "0.75",
             "vaapiGop": 30,
             "vaapiAsyncDepth": 1,
         },
         "low": {
             "vaapiRcMode": "CBR",
             "vaapiQp": 22,
-            "vaapiQuality": "6",
-            "vaapiBitrate": "6M",
-            "bitrate": "6M",
+            "vaapiQuality": "4",
+            "vaapiBitrate": "8M",
+            "bitrate": "8M",
+            "vbvMultiplier": "0.5",
             "vaapiGop": 30,
-            "vaapiAsyncDepth": 2,
+            "vaapiAsyncDepth": 1,
         },
     },
     "cpu": {

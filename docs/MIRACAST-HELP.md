@@ -54,10 +54,16 @@ list above in nftables/firewalld/your router policy as needed.
 
 ## Tips for a good picture
 
-- **20 MHz** P2P budget ≈ **12–14 Mbps** video (corruption seen above ~22).  
-- **VAAPI pipe** presets use CBR (High ≈ 12 M, quality=4); DMA-BUF High uses CQP.  
-  Avoid pipe **quality=1** — it can hang the encode pipe (frozen picture, audio-only).  
+- **20 MHz** P2P budget ≈ **12–15 Mbps** video (corruption seen above ~22).  
+- **VAAPI pipe** presets use hard **CBR** (High = **15 M / quality=3 / async=1 / VBV 1.0**;
+  Medium 12 M; Low 8 M). **DMA-BUF High** uses **CQP qp=18 / quality=2 / i_qfactor=1.3**
+  (peaks ~19 Mbps in soak — do not pair low qp with quality=1 on 20 MHz).  
+  Do **not** use QVBR on pipe (undershoots).  
+  Avoid pipe **quality < 3** / **async > 1** — quality=1 hung the encode pipe.  
+  FluxCast clamps those and auto-rebinds on `VIDEO_STALL` / `bufs_size` storms.  
+  Sinks that advertise CHP get **H.264 High** on both pipe and DMA-BUF.  
 - After changing engine or preset quality, **reconnect** (or `restart-capture`) so encode settings reload.  
+- Soak continuous `-D` VAAPI pipe: `./scripts/soak_vaapi_pipe.py --duration 1800`.  
 - Keep eDP and Miracast desktops separate (`ext-*` on the TV, numbers on the laptop).
 
 ## Wi‑Fi channel (“quiet” picking)
@@ -92,7 +98,7 @@ sustained high retries. Frozen video (TX stuck near audio-only ~2 Mbps) triggers
 2. Confirm the TV is in Miracast / screen-mirroring receive mode.  
 3. If video is fine but silent: set Sound default to **Miracast** (or enable auto-switch) and raise that sink’s volume.  
 4. If Doctor says live encode ≠ settings: reconnect.  
-5. Frozen TV picture with audio still going: wait for auto `restart-capture`, or run `miracast-ctl restart-capture`.  
+5. Frozen TV picture with audio still going: FluxCast should log `VIDEO_STALL` and rebind within a few seconds; if not, run `miracast-ctl restart-capture`. Check `cast.log` for `bufs_size` storms / ffmpeg IO watchdog. Do **not** treat switching to DMA-BUF as the only fix — pipe VAAPI should recover.  
 6. Occasional brief glitches with audio OK and TX still ~12 Mbps: usually 2.4 GHz RF / MCC — try a quieter channel, lower bitrate slightly, or soft‑block Bluetooth; a 5 GHz‑capable sink is the lasting fix.  
 7. Logs: `~/.local/state/omarchy-miracast/logs/cast.log` / `link-watch.log`
 

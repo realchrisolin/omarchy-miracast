@@ -115,6 +115,30 @@ def _idr_count_since(cast_log: Path, start_size: int) -> int:
     return len(re.findall(r"Sink requested IDR", chunk))
 
 
+def _cast_log_chunk(cast_log: Path, start_size: int) -> str:
+    try:
+        with cast_log.open("r", errors="ignore") as fh:
+            fh.seek(max(0, start_size))
+            return fh.read()
+    except OSError:
+        return ""
+
+
+def _bufs_size_storm(chunk: str) -> bool:
+    """True if bufs_size climbed sharply (encode backlog / VAAPI pipe wedge)."""
+    vals = [int(n) for n in re.findall(r"bufs_size:\s*(\d+)", chunk)]
+    if len(vals) < 3:
+        return False
+    peak = max(vals)
+    start = vals[0]
+    # Storm: climb of ≥6 within the tick window, or peak near pool cap.
+    return peak >= 14 or (peak - start) >= 6
+
+
+def _video_stall_logged(chunk: str) -> bool:
+    return "VIDEO_STALL" in chunk
+
+
 def _load_pick(plugin: Path):
     path = plugin / "scripts" / "pick-p2p-channel.py"
     spec = importlib.util.spec_from_file_location("pick_p2p_channel", path)
@@ -205,7 +229,31 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--interval", type=float, default=8.0)
     p.add_argument("--stall-mbps", type=float, default=3.0)
     p.add_argument("--stall-ticks", type=int, default=3)
+    p.add_argument(
+        "--audio-band-low",
+        type=float,
+        default=1.4,
+        help="Mbps floor of audio-only TX band (LPCM ~1.5 + overhead)",
+    )
+    p.add_argument(
+        "--audio-band-high",
+        type=float,
+        default=2.2,
+        help="Mbps ceiling of audio-only TX band",
+    )
+    p.add_argument(
+        "--audio-band-ticks",
+        type=int,
+        default=2,
+        help="ticks stuck in audio-only band before restart-capture",
+    )
     p.add_argument("--restart-cooldown", type=float, default=45.0)
+    p.add_argument(
+        "--video-signal-cooldown",
+        type=float,
+        default=20.0,
+        help="shorter cooldown when cast.log shows VIDEO_STALL / bufs_size storm",
+    )
     p.add_argument("--retry-sample-every", type=int, default=3, help="ticks between iw dumps")
     p.add_argument("--retry-rate-threshold", type=float, default=0.8, help="percent")
     p.add_argument("--score-cooldown", type=float, default=180.0)
@@ -225,6 +273,7 @@ def main(argv: list[str] | None = None) -> int:
     last_tx: int | None = None
     last_t = time.time()
     stall_streak = 0
+    audio_band_streak = 0
     last_restart = 0.0
     tick = 0
     last_pk = last_rt = None
@@ -239,6 +288,48 @@ def main(argv: list[str] | None = None) -> int:
         pass
 
     pick_mod = None
+
+    def _capture_paused() -> bool:
+        """True when FluxCast/Omarchy is mid-rebind (pause file or status)."""
+        pause = os.environ.get("FLUXCAST_CAPTURE_PAUSE_FILE", "").strip()
+        if pause and Path(pause).exists():
+            return True
+        try:
+            import json
+
+            st = json.loads(status_path.read_text())
+            if str(st.get("restarting") or "").lower() in ("1", "true", "yes"):
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _do_restart(reason: str, *, cooldown: float) -> bool:
+        nonlocal last_restart, stall_streak, audio_band_streak, last_tx, tick
+        now_r = time.time()
+        if (now_r - last_restart) < cooldown:
+            return False
+        if _capture_paused():
+            _log(cast_log, f"{reason} deferred (capture pause/restarting)")
+            return False
+        _log(cast_log, f"{reason} → restart-capture")
+        try:
+            subprocess.run(
+                [ctl, "restart-capture"],
+                capture_output=True,
+                text=True,
+                timeout=30.0,
+            )
+        except Exception as exc:
+            _log(cast_log, f"restart-capture error: {exc}")
+        last_restart = now_r
+        stall_streak = 0
+        audio_band_streak = 0
+        last_tx = None  # re-baseline after pipeline churn
+        # Grace: ignore TX until encode has time to ramp (avoid false stalls).
+        time.sleep(max(args.interval, 16.0))
+        tick += 1
+        return True
 
     while True:
         phase = _phase(status_path)
@@ -255,36 +346,50 @@ def main(argv: list[str] | None = None) -> int:
             last_tx = tx
             last_t = now
 
+        # --- cast.log video signals (prefer over slow TX-only stall) ---
+        chunk = _cast_log_chunk(cast_log, log_size)
+        try:
+            log_size = cast_log.stat().st_size
+        except OSError:
+            pass
+        if _video_stall_logged(chunk) or _bufs_size_storm(chunk):
+            reason = (
+                "VIDEO_STALL in cast.log"
+                if _video_stall_logged(chunk)
+                else "bufs_size storm in cast.log"
+            )
+            if _do_restart(reason, cooldown=args.video_signal_cooldown):
+                continue
+
         # --- stall detection (cheap) ---
         if mbps is not None and mbps < args.stall_mbps:
             stall_streak += 1
         else:
             stall_streak = 0
 
+        # Audio-only band: LPCM ~1.5 Mbps + RTP overhead ≈ 1.7–1.9 Mbps while
+        # video RTP is dead. Catch this even when above --stall-mbps floor.
         if (
-            stall_streak >= args.stall_ticks
-            and (now - last_restart) >= args.restart_cooldown
+            mbps is not None
+            and args.audio_band_low <= mbps <= args.audio_band_high
         ):
-            _log(
-                cast_log,
-                f"stall TX={mbps:.2f}Mbps for {stall_streak} ticks → restart-capture",
-            )
-            try:
-                subprocess.run(
-                    [ctl, "restart-capture"],
-                    capture_output=True,
-                    text=True,
-                    timeout=30.0,
-                )
-            except Exception as exc:
-                _log(cast_log, f"restart-capture error: {exc}")
-            last_restart = now
-            stall_streak = 0
-            last_tx = None  # re-baseline after pipeline churn
-            # Grace: ignore TX until encode has time to ramp (avoid false stalls).
-            time.sleep(max(args.interval, 16.0))
-            tick += 1
-            continue
+            audio_band_streak += 1
+        else:
+            audio_band_streak = 0
+
+        if stall_streak >= args.stall_ticks:
+            if _do_restart(
+                f"stall TX={mbps:.2f}Mbps for {stall_streak} ticks",
+                cooldown=args.restart_cooldown,
+            ):
+                continue
+
+        if audio_band_streak >= args.audio_band_ticks:
+            if _do_restart(
+                f"audio-only TX band={mbps:.2f}Mbps for {audio_band_streak} ticks",
+                cooldown=args.video_signal_cooldown,
+            ):
+                continue
 
         # --- retries / IDR (cheap-ish) ---
         tick += 1
@@ -309,11 +414,7 @@ def main(argv: list[str] | None = None) -> int:
             if stats:
                 last_pk, last_rt = stats
 
-        idr = _idr_count_since(cast_log, log_size)
-        try:
-            log_size = cast_log.stat().st_size
-        except OSError:
-            pass
+        idr = len(re.findall(r"Sink requested IDR", chunk))
         if idr >= 2:
             rf_pain = True
             _log(cast_log, f"IDR burst count={idr} since last check")

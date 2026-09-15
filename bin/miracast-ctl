@@ -4884,6 +4884,25 @@ s=json.loads(sys.argv[1])
 print(str(s.get("vaapiAsyncDepth") or "2").strip() or "2")
 ' "$settings" 2>/dev/null || echo 2)"
     _async="${FLUXCAST_WFD_VAAPI_ASYNC_DEPTH:-$_async}"
+    # Pipe VAAPI: quality<4 or async>1 hung on-device (bufs_size → audio-only).
+    _ce="$(python3 -c 'import json,sys
+s=json.loads(sys.argv[1])
+print(str(s.get("captureEncode") or "").strip().lower())
+' "$settings" 2>/dev/null || echo "")"
+    if [[ "$_ce" == "vaapi" || "$_ce" == "cpu" || "${FLUXCAST_WFD_CAPTURE_ENCODE_PREF:-}" == "vaapi" ]]; then
+      if [[ -z "${FLUXCAST_WFD_VAAPI_PIPE_UNSAFE:-}" ]]; then
+        # quality=1 hung the pipe; allow 3+ for sharper CBR on hard scenes.
+        if [[ "${_qual:-4}" =~ ^[0-9]+$ ]] && (( _qual < 3 )); then
+          echo "[miracast-ctl] clamp pipe VAAPI quality $_qual→3" >>"$LOG_DIR/cast.log"
+          _qual=3
+          export FLUXCAST_WFD_VAAPI_QUALITY="$_qual"
+        fi
+        if [[ "${_async:-1}" =~ ^[0-9]+$ ]] && (( _async > 1 )); then
+          echo "[miracast-ctl] clamp pipe VAAPI async $_async→1" >>"$LOG_DIR/cast.log"
+          _async=1
+        fi
+      fi
+    fi
     export FLUXCAST_WFD_VAAPI_ASYNC_DEPTH="$_async"
     _iqf="$(python3 -c 'import json,sys
 s=json.loads(sys.argv[1])
