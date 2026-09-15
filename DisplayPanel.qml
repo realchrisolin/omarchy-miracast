@@ -1970,9 +1970,9 @@ Panel {
       return n.indexOf("eDP") === 0 || n.indexOf("LVDS") === 0 || n.indexOf("DSI") === 0
     }
     // Shared rhythm for nested settings (eDP brightness/scale and Miracast cast controls).
-    readonly property int settingsSectionGap: Style.space(5)  // between BRIGHTNESS / CAST MODE / SCALE…
+    readonly property int settingsSectionGap: Style.space(3)  // between BRIGHTNESS / CAST MODE / SCALE…
     readonly property int settingsLabelGap: Style.space(3)    // between label and its control
-    readonly property int settingsControlPad: Style.space(2) // chrome padding inside outlined controls
+    readonly property int settingsControlPad: Style.space(1) // chrome padding inside outlined controls
 
     width: parent ? parent.width : 0
     spacing: Style.space(4)
