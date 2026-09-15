@@ -54,8 +54,8 @@ list above in nftables/firewalld/your router policy as needed.
 
 ## Tips for a good picture
 
-- Prefer **DMA-BUF** + **PRESET QUALITY High** when stable.  
-- All presets are capped for **20 MHz** P2P: High ≈ **10 Mbps target / 12 Mbps peak** (QVBR). Uncapped CQP can spike 20+ Mbps and block the TV.  
+- On **20 MHz** P2P, prefer **VAAPI (pipe)** + **PRESET QUALITY High**: **14 Mbps CBR** (Intel WiDi-class 1080p budget; wire ≈15–17 Mbps with LPCM).  
+- DMA-BUF + bitrate RC currently undershoots (~2–3 Mbps) on this stack — use pipe for capped High. Uncapped DMA-BUF CQP can spike 20+ Mbps and block the TV.  
 - After changing engine or preset quality, **reconnect** so encode settings reload.  
 - Keep eDP and Miracast desktops separate (`ext-*` on the TV, numbers on the laptop).
 

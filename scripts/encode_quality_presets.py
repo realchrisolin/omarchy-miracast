@@ -18,16 +18,28 @@ stays SCC next to a busy 5 GHz STA):
   - On-device: uncapped DMA-BUF **CQP** peaked ~22–28 Mbps and produced
     visible TV blockiness/corruption on 20 MHz
 
-Reliable video envelope used here (1080p30):
+Reliable maximize-quality envelope (1080p30 + ~1.5 Mbps LPCM):
 
-  | Tier   | Target | Peak (maxrate) |
-  |--------|--------|----------------|
-  | high   | 10 Mbps | 12 Mbps       |
-  | medium |  8 Mbps | 10 Mbps       |
-  | low    |  5 Mbps |  8 Mbps       |
+  Research / industry anchors:
+  - Intel WiDi adaptive BRC: 1080p range **3–20 Mbps** (good channel → high end)
+  - Fixed WiDi deployments often used **~8 Mbps**; lower-bandwidth mode for congestion
+  - 802.11n 20 MHz practical UDP ≫ 20 Mbps in clean tests; on-device CQP peaks of
+    **22–28 Mbps** still corrupted the TV → keep video **≤ ~14–16 Mbps**
+  - ~0.15–0.2 bits/pixel × 1080p30 ≈ **9–12 Mbps** “high” desktop/screen content
 
-High uses **QVBR** (not CQP): CQP cannot honor maxrate on Intel VAAPI.
-``bitrate`` = target; ``vaapiBitrate`` = peak cap (FLUXCAST_WFD_VAAPI_BITRATE).
+  On-device failure modes:
+  - Uncapped **CQP** → good looks, spikes past the link
+  - **QVBR/CBR without HRD bufsize** on wf-recorder → starved **~2.5 Mbps** (blocky)
+
+  Preset (CBR + bufsize, video):
+
+  | Tier   | CBR (video) | Wire ≈ video + LPCM |
+  |--------|-------------|---------------------|
+  | high   | 14 Mbps     | ~15.5 Mbps          |
+  | medium | 10 Mbps     | ~11.5 Mbps          |
+  | low    |  6 Mbps     | ~7.5 Mbps           |
+
+  ``bitrate`` == ``vaapiBitrate`` for CBR; quality=2 on high (more encode effort).
 """
 
 from __future__ import annotations
@@ -38,85 +50,85 @@ ENGINES = ("dmabuf", "vaapi", "cpu")
 TIERS = ("high", "medium", "low")
 
 # Knobs written into settings.json / exported to FluxCast.
-# bitrate = stream/target; vaapiBitrate = QVBR/CBR peak (FLUXCAST_WFD_VAAPI_BITRATE).
+# bitrate = stream/target; vaapiBitrate = peak (FLUXCAST_WFD_VAAPI_BITRATE).
+# For CBR both are equal so HRD maxrate == target.
 PRESETS: dict[str, dict[str, dict[str, Any]]] = {
     "dmabuf": {
-        # QVBR + hard maxrate — CQP ignored maxrate and blew past 20 MHz.
+        # CBR — fills the 20 MHz budget; QVBR starved ~2.5 Mbps on-device.
         "high": {
-            "vaapiRcMode": "QVBR",
+            "vaapiRcMode": "CBR",
             "vaapiQp": 18,
-            "vaapiQuality": "4",
-            "vaapiBitrate": "12M",
-            "bitrate": "10M",
+            "vaapiQuality": "2",
+            "vaapiBitrate": "14M",
+            "bitrate": "14M",
             "vaapiGop": 30,
             "vaapiAsyncDepth": 2,
         },
         "medium": {
-            "vaapiRcMode": "QVBR",
+            "vaapiRcMode": "CBR",
             "vaapiQp": 20,
-            "vaapiQuality": "5",
+            "vaapiQuality": "4",
             "vaapiBitrate": "10M",
-            "bitrate": "8M",
+            "bitrate": "10M",
             "vaapiGop": 30,
             "vaapiAsyncDepth": 2,
         },
         "low": {
-            "vaapiRcMode": "QVBR",
+            "vaapiRcMode": "CBR",
             "vaapiQp": 22,
             "vaapiQuality": "6",
-            "vaapiBitrate": "8M",
-            "bitrate": "5M",
+            "vaapiBitrate": "6M",
+            "bitrate": "6M",
             "vaapiGop": 30,
             "vaapiAsyncDepth": 2,
         },
     },
     "vaapi": {
-        # Pipe path — same 20 MHz envelope as DMA-BUF.
+        # Pipe — same CBR envelope (maximize within 20 MHz).
         "high": {
-            "vaapiRcMode": "QVBR",
+            "vaapiRcMode": "CBR",
             "vaapiQp": 18,
-            "vaapiQuality": "4",
-            "vaapiBitrate": "12M",
-            "bitrate": "10M",
+            "vaapiQuality": "2",
+            "vaapiBitrate": "14M",
+            "bitrate": "14M",
             "vaapiGop": 30,
             "vaapiAsyncDepth": 2,
         },
         "medium": {
-            "vaapiRcMode": "QVBR",
+            "vaapiRcMode": "CBR",
             "vaapiQp": 20,
-            "vaapiQuality": "5",
+            "vaapiQuality": "4",
             "vaapiBitrate": "10M",
-            "bitrate": "8M",
+            "bitrate": "10M",
             "vaapiGop": 30,
             "vaapiAsyncDepth": 2,
         },
         "low": {
-            "vaapiRcMode": "QVBR",
+            "vaapiRcMode": "CBR",
             "vaapiQp": 22,
             "vaapiQuality": "6",
-            "vaapiBitrate": "8M",
-            "bitrate": "5M",
+            "vaapiBitrate": "6M",
+            "bitrate": "6M",
             "vaapiGop": 30,
             "vaapiAsyncDepth": 2,
         },
     },
     "cpu": {
-        # libx264: hard CBR at the same caps (no QVBR).
         "high": {
             "vaapiRcMode": "CBR",
             "vaapiQp": 18,
-            "vaapiQuality": "4",
-            "vaapiBitrate": "10M",
-            "bitrate": "10M",
+            "vaapiQuality": "2",
+            "vaapiBitrate": "14M",
+            "bitrate": "14M",
             "vaapiGop": 30,
             "vaapiAsyncDepth": 2,
         },
         "medium": {
             "vaapiRcMode": "CBR",
             "vaapiQp": 20,
-            "vaapiQuality": "5",
-            "vaapiBitrate": "8M",
-            "bitrate": "8M",
+            "vaapiQuality": "4",
+            "vaapiBitrate": "10M",
+            "bitrate": "10M",
             "vaapiGop": 30,
             "vaapiAsyncDepth": 2,
         },
@@ -124,8 +136,8 @@ PRESETS: dict[str, dict[str, dict[str, Any]]] = {
             "vaapiRcMode": "CBR",
             "vaapiQp": 22,
             "vaapiQuality": "6",
-            "vaapiBitrate": "5M",
-            "bitrate": "5M",
+            "vaapiBitrate": "6M",
+            "bitrate": "6M",
             "vaapiGop": 30,
             "vaapiAsyncDepth": 2,
         },

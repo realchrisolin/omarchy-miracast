@@ -279,8 +279,8 @@ Item {
         spacing: Style.space(3)
         Repeater {
           model: [
-            "Prefer DMA-BUF + PRESET QUALITY High when stable.",
-            "All presets fit 20 MHz P2P: High ≈ 10 Mbps target / 12 Mbps peak (QVBR). Uncapped CQP can spike and block the TV.",
+            "On 20 MHz P2P prefer VAAPI pipe + PRESET High (14 Mbps CBR).",
+            "DMA-BUF bitrate RC undershoots here (~2–3 Mbps). Uncapped CQP can spike past the link.",
             "After changing engine or preset quality, reconnect so encode settings reload.",
             "Keep eDP and Miracast desktops separate (ext-* on the TV, numbers on the laptop)."
           ]
