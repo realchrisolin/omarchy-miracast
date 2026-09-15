@@ -46,6 +46,8 @@ CAPTURE_GEOM_FILE="$STATE_DIR/capture.geometry"
 CAPTURE_PAUSED_FILE="$STATE_DIR/capture.paused"
 # RENDER METHOD preference for FluxCast (dmabuf|vaapi|cpu); live-updated on pill change.
 CAPTURE_ENCODE_FILE="$STATE_DIR/capture-encode"
+# Encode knobs for live SIGUSR1 restart (FluxCast reloads this into os.environ).
+ENCODE_ENV_FILE="$STATE_DIR/encode.env"
 # Previous Hyprland look/perf knobs while Miracast forced a light profile.
 CAST_HYPR_PERF_PREV_FILE="$STATE_DIR/cast-hypr-perf.prev"
 # Legacy filename from animations-only toggle.
@@ -551,13 +553,16 @@ cmd_set_cast_preset() {
   [[ -n "$preset" ]] || { echo '{"ok":false,"error":"usage: set-cast-preset desktop|movie"}'; return 1; }
   local out
   out="$(apply_cast_preset "$preset")" || { echo "$out"; return 1; }
-  # VAAPI RC/bitrate are read from FluxCast's environment at process start.
-  # restart-capture (SIGUSR1) is not enough — tip reconnect if streaming.
-  local phase needs="false"
+  # Refresh encode.env and SIGUSR1 so bitrate/RC apply without full reconnect.
+  local phase restarted=false
   phase="$(python3 -c 'import json;from pathlib import Path;print(json.loads(Path.home().joinpath(".local/state/omarchy-miracast/status.json").read_text()).get("phase",""))' 2>/dev/null || true)"
-  [[ "$phase" == "streaming" ]] && needs="true"
-  python3 -c 'import json,sys; d=json.loads(sys.argv[1]); d["needsReconnect"]=sys.argv[2]=="true"; print(json.dumps(d,separators=(",",":")))' \
-    "$out" "$needs"
+  if [[ "$phase" == "streaming" ]]; then
+    local info
+    info="$(restart_extend_capture 2>>"$LOG_DIR/cast.log" || true)"
+    [[ "$info" == *"restarted=true"* ]] && restarted=true
+  fi
+  python3 -c 'import json,sys; d=json.loads(sys.argv[1]); d["captureRestarted"]=sys.argv[2]=="true"; d["needsReconnect"]=False; print(json.dumps(d,separators=(",",":")))' \
+    "$out" "$restarted"
 }
 
 peer_name_for() {
@@ -1165,6 +1170,13 @@ capture_geometry_drifted() {
 restart_extend_capture() {
   local flux_pid capture_restarted=false capture_healthy=false
   local quick="${1:-}"
+  # Refresh encode.env from settings so FluxCast picks up bitrate/RC/quality
+  # without a full reconnect (process environ is immutable after start).
+  local _enc_summary=""
+  _enc_summary="$(write_encode_env_from_settings 2>>"$LOG_DIR/cast.log" || true)"
+  if [[ -n "$_enc_summary" ]]; then
+    echo "[miracast-ctl] restart-capture encode.env $_enc_summary" >>"$LOG_DIR/cast.log"
+  fi
   flux_pid="$(fluxcast_pid || true)"
   if [[ -n "$flux_pid" ]] && kill -USR1 "$flux_pid" 2>/dev/null; then
     capture_restarted=true
@@ -3229,6 +3241,73 @@ write_capture_encode_file() {
   printf '%s\n' "$value" >"$CAPTURE_ENCODE_FILE"
 }
 
+# Write encode knobs from settings.json for FluxCast to reload on SIGUSR1
+# restart-capture (process environ is fixed at start).
+write_encode_env_from_settings() {
+  local settings="${1:-}"
+  [[ -n "$settings" ]] || settings="$(read_settings)"
+  mkdir -p "$STATE_DIR"
+  python3 - "$settings" "$ENCODE_ENV_FILE" "$CAPTURE_ENCODE_FILE" <<'PY'
+import json, sys
+from pathlib import Path
+
+settings = json.loads(sys.argv[1])
+env_path = Path(sys.argv[2])
+cap_path = Path(sys.argv[3])
+
+cap = str(settings.get("captureEncode") or "dmabuf").strip().lower()
+if cap not in ("dmabuf", "vaapi", "cpu"):
+    cap = "dmabuf"
+cap_path.write_text(cap + "\n")
+
+enc = str(settings.get("videoEncoder") or "auto").strip() or "auto"
+if cap == "cpu":
+    enc = "libx264"
+elif cap == "vaapi":
+    enc = "vaapi"
+elif enc in ("libx264", "software"):
+    enc = "auto"
+
+legacy = {"dmabuf": "vaapi", "vaapi": "pipe", "cpu": "pipe"}[cap]
+rc = str(settings.get("vaapiRcMode") or "CQP").strip().upper() or "CQP"
+qp = str(settings.get("vaapiQp") if settings.get("vaapiQp") is not None else "18").strip() or "18"
+gop = str(settings.get("vaapiGop") if settings.get("vaapiGop") is not None else "30").strip() or "30"
+br = str(settings.get("vaapiBitrate") or settings.get("bitrate") or "12M").strip() or "12M"
+stream_br = str(settings.get("bitrate") or br).strip() or br
+qual = str(settings.get("vaapiQuality") or "5").strip() or "5"
+async_d = str(settings.get("vaapiAsyncDepth") or "2").strip() or "2"
+iqf = str(settings.get("vaapiIQfactor") or "").strip()
+vbv = str(settings.get("vbvMultiplier") or "0.5").strip() or "0.5"
+dmg = str(settings.get("wfRecorderDamage", "1")).strip() or "1"
+
+lines = [
+    f"FLUXCAST_WFD_ENCODER={enc}",
+    f"FLUXCAST_WFD_CAPTURE_ENCODE_FILE={cap_path}",
+    f"FLUXCAST_WFD_CAPTURE_ENCODE_PREF={cap}",
+    f"FLUXCAST_WFD_CAPTURE_ENCODE={legacy}",
+    f"FLUXCAST_WFD_VAAPI_RC={rc}",
+    f"FLUXCAST_WFD_VAAPI_QP={qp}",
+    f"FLUXCAST_WFD_VAAPI_GOP={gop}",
+    f"FLUXCAST_WFD_VAAPI_BITRATE={br}",
+    f"FLUXCAST_WFD_BITRATE={stream_br}",
+    f"FLUXCAST_WFD_VAAPI_QUALITY={qual}",
+    f"FLUXCAST_WFD_VAAPI_ASYNC_DEPTH={async_d}",
+    f"FLUXCAST_WFD_VBV_MULTIPLIER={vbv}",
+]
+if iqf:
+    lines.append(f"FLUXCAST_WFD_VAAPI_I_QFACTOR={iqf}")
+else:
+    lines.append("FLUXCAST_WFD_VAAPI_I_QFACTOR=")
+if dmg.lower() in ("0", "false", "no", "off"):
+    lines.append("FLUXCAST_WFD_WF_RECORDER_DAMAGE=")
+else:
+    lines.append("FLUXCAST_WFD_WF_RECORDER_DAMAGE=1")
+
+env_path.write_text("\n".join(lines) + "\n")
+print(f"rc={rc} bitrate={stream_br} peak={br} quality={qual} encode={cap}")
+PY
+}
+
 read_capture_encode_pref() {
   python3 -c 'import json,sys
 try:
@@ -3392,13 +3471,17 @@ cmd_set_encode_profile() {
       return 1
       ;;
   esac
-  local out phase needs="false"
+  local out phase restarted=false
   out="$(apply_encode_profile "$tier")" || { echo "$out"; return 1; }
-  # RC/QP/async are process-env at FluxCast start — tip reconnect if live.
+  # Write encode.env + SIGUSR1 so knobs apply without full reconnect.
   phase="$(python3 -c 'import json;from pathlib import Path;print(json.loads(Path.home().joinpath(".local/state/omarchy-miracast/status.json").read_text()).get("phase",""))' 2>/dev/null || true)"
-  [[ "$phase" == "streaming" ]] && needs="true"
-  python3 -c 'import json,sys; d=json.loads(sys.argv[1]); d["needsReconnect"]=sys.argv[2]=="true"; print(json.dumps(d,separators=(",",":")))' \
-    "$out" "$needs"
+  if [[ "$phase" == "streaming" ]]; then
+    local info
+    info="$(restart_extend_capture 2>>"$LOG_DIR/cast.log" || true)"
+    [[ "$info" == *"restarted=true"* ]] && restarted=true
+  fi
+  python3 -c 'import json,sys; d=json.loads(sys.argv[1]); d["captureRestarted"]=sys.argv[2]=="true"; d["needsReconnect"]=False; print(json.dumps(d,separators=(",",":")))' \
+    "$out" "$restarted"
 }
 
 cmd_set_capture_encode() {
@@ -3415,22 +3498,18 @@ cmd_set_capture_encode() {
   profile_out="$(apply_encode_profile "" "$value")" || true
   write_capture_encode_file "$value"
   local restarted="false" healthy="false" info=""
-  local needs_reconnect="false" phase=""
-  phase="$(python3 -c 'import json;from pathlib import Path;print(json.loads(Path.home().joinpath(".local/state/omarchy-miracast/status.json").read_text()).get("phase",""))' 2>/dev/null || true)"
   if is_running; then
+    # restart_extend_capture refreshes encode.env then SIGUSR1.
     info="$(restart_extend_capture)"
-    # info like restarted=true healthy=true pid=...
     [[ "$info" == *restarted=true* ]] && restarted="true"
     [[ "$info" == *healthy=true* ]] && healthy="true"
-    # Profile knobs need full reconnect; USR1 alone keeps old env.
-    [[ "$phase" == "streaming" ]] && needs_reconnect="true"
   fi
   python3 -c '
 import json, sys
 value, restarted, healthy, lat_path = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 profile_raw, needs = sys.argv[5], sys.argv[6]
 out = {"ok": True, "captureEncode": value, "restarted": restarted == "true", "captureHealthy": healthy == "true",
-       "needsReconnect": needs == "true"}
+       "needsReconnect": False}
 try:
     prof = json.loads(profile_raw) if profile_raw else {}
     if isinstance(prof, dict) and prof.get("ok"):
@@ -3465,7 +3544,7 @@ try:
 except OSError:
     pass
 print(json.dumps(out, separators=(",", ":")))
-' "$value" "$restarted" "$healthy" "$LAT_FILE" "$profile_out" "$needs_reconnect"
+' "$value" "$restarted" "$healthy" "$LAT_FILE" "$profile_out" "false"
 }
 
 cmd_set_stream_mode() {
@@ -4568,6 +4647,7 @@ print("1" if v in (True,1,"1","true","yes","on") else "0")' "$settings")"
 s=json.loads(sys.argv[1]); v=str(s.get("captureEncode") or "dmabuf").strip().lower()
 print(v if v in ("dmabuf","vaapi","cpu") else "dmabuf")' "$settings")"
   write_capture_encode_file "$capture_encode"
+  write_encode_env_from_settings "$settings" >>"$LOG_DIR/cast.log" || true
   # Map RENDER METHOD → FluxCast encoder env (preference file is authoritative).
   case "$capture_encode" in
     cpu) video_encoder="libx264" ;;
@@ -4579,6 +4659,7 @@ print(v if v in ("dmabuf","vaapi","cpu") else "dmabuf")' "$settings")"
     cd "$root"
     export PYTHONUNBUFFERED=1
     export PATH="/usr/bin:/bin:$PATH"
+    export FLUXCAST_WFD_ENCODE_ENV_FILE="$ENCODE_ENV_FILE"
     export FLUXCAST_WFD_ENCODER="$video_encoder"
     export FLUXCAST_WFD_CAPTURE_ENCODE_FILE="$CAPTURE_ENCODE_FILE"
     export FLUXCAST_WFD_CAPTURE_ENCODE_PREF="$capture_encode"
