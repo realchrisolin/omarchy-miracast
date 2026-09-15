@@ -215,6 +215,9 @@ To score [BENCHMARKS.md](BENCHMARKS.md) results into settings (`captureEncode`,
 miracast-ctl set-render-engine dmabuf|vaapi|cpu   # RENDER ENGINE (alias: set-capture-encode)
 miracast-ctl set-quality high|medium|low          # QUALITY tier per engine (alias: set-encode-profile)
 miracast-ctl set-cast-preset movie|desktop        # damage-aware vs continuous -D
+miracast-ctl benchmark all                        # live matrix: every engine × every QUALITY tier
+miracast-ctl benchmark --engines dmabuf,vaapi --tiers high,medium
+# If already casting, matrix mode counts down 10s (Ctrl+C cancels; -y skips)
 ```
 
 See [BENCHMARKS.md](BENCHMARKS.md) for presets and Intel CBR undershoot notes.

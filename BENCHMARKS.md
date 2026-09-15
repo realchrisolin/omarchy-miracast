@@ -232,6 +232,12 @@ damage-aware vs continuous `-D`.
 miracast-ctl set-quality high           # retarget knobs for current engine
 miracast-ctl set-render-engine dmabuf   # also retargets current QUALITY tier
 miracast-ctl set-cast-preset movie      # continuous -D only
+
+# Live matrix (reconnects per cell; restores settings afterward).
+# If already casting, counts down from 10 — Ctrl+C cancels; -y/--yes/--force skips.
+miracast-ctl benchmark all
+miracast-ctl benchmark --engines dmabuf,vaapi --tiers high,medium
+miracast-ctl benchmark all -y
 ```
 
 FluxCast reads `FLUXCAST_WFD_VAAPI_RC`, `FLUXCAST_WFD_VAAPI_BITRATE`,

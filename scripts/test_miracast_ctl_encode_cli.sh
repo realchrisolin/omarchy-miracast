@@ -26,4 +26,26 @@ echo "$err_alias2" | grep -qiE 'set-quality|high|medium|low' || {
   exit 1
 }
 
+# benchmark help: all vs --engines/--tiers on plain benchmark
+bench_help="$("$CTL" benchmark --help 2>&1 || true)"
+echo "$bench_help" | grep -q 'benchmark all' || {
+  echo "FAIL: benchmark --help missing 'benchmark all'" >&2
+  exit 1
+}
+echo "$bench_help" | grep -q -- '--engines' || {
+  echo "FAIL: benchmark --help missing --engines" >&2
+  exit 1
+}
+# all rejects --engines
+err_all="$("$CTL" benchmark all --engines dmabuf 2>&1 || true)"
+echo "$err_all" | grep -qi 'omit --engines\|tests everything' || {
+  echo "FAIL: benchmark all should reject --engines: $err_all" >&2
+  exit 1
+}
+# -y / --yes / --force documented for matrix countdown skip
+echo "$bench_help" | grep -q -- '-y' || {
+  echo "FAIL: benchmark --help missing -y" >&2
+  exit 1
+}
+
 echo "OK: encode CLI names + aliases"

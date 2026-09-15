@@ -2333,47 +2333,110 @@ EOS
   fi
 }
 
+cmd_benchmark_matrix() {
+  # Live matrix: RENDER ENGINE × QUALITY (reconnects between cells).
+  local script="$PLUGIN_DIR/scripts/benchmark_encode_matrix.py"
+  if [[ ! -f "$script" ]]; then
+    emit '{"ok":false,"error":"benchmark_encode_matrix.py missing"}'
+    return 1
+  fi
+  python3 "$script" "$@"
+}
+
 cmd_benchmark() {
-  # Capability probes + optional results.tsv + short live sample when streaming.
-  local apply=0 json=0 offline=0 live_s=""
+  # Auto-tune by default. Matrix when `all` or --engines/--tiers are given.
+  local do_all=0
+  if [[ "${1:-}" == "all" ]]; then
+    do_all=1
+    shift
+  fi
+
+  local apply=0 json=0 offline=0 live_s="" force=0
+  local engines="" tiers=""
+  local warmup="" sample="" tx_sample="" settle="" no_audio=0
+  local matrix_args=()
+
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --apply|apply) apply=1 ;;
       --json|json) json=1 ;;
       --offline-only|offline-only) offline=1 ;;
+      -y|--yes|--force) force=1 ;;
       --live-seconds)
         shift
         live_s="${1:-}"
         [[ -n "$live_s" ]] || { emit '{"ok":false,"error":"--live-seconds needs a value"}'; return 1; }
         ;;
+      --engines)
+        shift
+        engines="${1:-}"
+        [[ -n "$engines" ]] || { emit '{"ok":false,"error":"--engines needs a value"}'; return 1; }
+        ;;
+      --tiers)
+        shift
+        tiers="${1:-}"
+        [[ -n "$tiers" ]] || { emit '{"ok":false,"error":"--tiers needs a value"}'; return 1; }
+        ;;
+      --warmup)
+        shift
+        warmup="${1:-}"
+        [[ -n "$warmup" ]] || { emit '{"ok":false,"error":"--warmup needs a value"}'; return 1; }
+        ;;
+      --sample)
+        shift
+        sample="${1:-}"
+        [[ -n "$sample" ]] || { emit '{"ok":false,"error":"--sample needs a value"}'; return 1; }
+        ;;
+      --tx-sample)
+        shift
+        tx_sample="${1:-}"
+        [[ -n "$tx_sample" ]] || { emit '{"ok":false,"error":"--tx-sample needs a value"}'; return 1; }
+        ;;
+      --settle)
+        shift
+        settle="${1:-}"
+        [[ -n "$settle" ]] || { emit '{"ok":false,"error":"--settle needs a value"}'; return 1; }
+        ;;
+      --no-audio) no_audio=1 ;;
       -h|--help)
         cat <<'EOF'
-Usage: miracast-ctl benchmark [--apply] [--json] [--offline-only] [--live-seconds N]
+Usage: miracast-ctl benchmark [all] [options]
 
-Pick good Miracast settings for this machine and print a plain-language report.
+  miracast-ctl benchmark
+      Auto-tune: pick good engines / radio / QUALITY knobs for this machine.
 
-What it decides
-  Capture path   dmabuf (best) → vaapi pipe → cpu
-  Wi-Fi radio    Auto prefers an idle P2P-GO adapter
-  Encode knobs   quality 5, VBV 0.5s (validated defaults)
-  Channel mode   SCC by default (same channel as normal Wi-Fi)
+  miracast-ctl benchmark --engines LIST --tiers LIST
+      Live matrix for the given engines × QUALITY tiers (reconnects per cell).
 
-How it decides
-  1. Probe what VAAPI / wf-recorder / ffmpeg support on this host
-  2. Optionally merge docs/benchmarks/results.tsv scores
-  3. If a cast is already streaming: ~25s live TX / retry / CPU sample
-     and refine the advice (e.g. prefer dmabuf when pipe CPU is high)
+  miracast-ctl benchmark all
+      Live matrix for everything: dmabuf,vaapi,cpu × high,medium,low.
+      Do not pass --engines/--tiers with all.
 
-Flags
+If a cast is already streaming, matrix mode warns and counts down from 10
+before the first reconnect. Press Ctrl+C to cancel.
+
+Auto-tune flags
   --offline-only    skip the live sample (fast capability-only pass)
   --live-seconds N  live sample length when streaming (default 25)
   --apply           write settings.json, capture-encode, recommended-cast.env
-  --json            machine-readable output (no human report)
+  --json            machine-readable output
+
+Matrix flags (with --engines/--tiers, or with all)
+  --engines LIST    dmabuf,vaapi,cpu  (not valid with all)
+  --tiers LIST      high,medium,low   (not valid with all)
+  --warmup N        default 5
+  --sample N        CPU/quality window (default 15)
+  --tx-sample N     TX/retry profile (default 10)
+  --settle N        wait after streaming before sample (default 3)
+  --no-audio        reconnect without --with-audio
+  -y / --yes / --force   skip the 10s reconnect countdown
+  --json            print full matrix JSON
 
 Examples
-  miracast-ctl benchmark                 # dry-run; live sample if casting
-  miracast-ctl benchmark --offline-only  # fast, no live wait
-  miracast-ctl benchmark --apply         # save recommendation
+  miracast-ctl benchmark
+  miracast-ctl benchmark --apply
+  miracast-ctl benchmark all
+  miracast-ctl benchmark --engines dmabuf,vaapi --tiers high,medium
 EOF
         return 0
         ;;
@@ -2384,6 +2447,50 @@ EOF
     esac
     shift
   done
+
+  if [[ "$do_all" == 1 ]]; then
+    if [[ -n "$engines" || -n "$tiers" ]]; then
+      emit '{"ok":false,"error":"benchmark all tests everything; omit --engines/--tiers (or use: miracast-ctl benchmark --engines … --tiers …)"}'
+      return 1
+    fi
+    if [[ "$apply" == 1 || "$offline" == 1 || -n "$live_s" ]]; then
+      emit '{"ok":false,"error":"benchmark all is a live matrix; do not combine with --apply/--offline-only/--live-seconds"}'
+      return 1
+    fi
+    matrix_args=(--engines dmabuf,vaapi,cpu --tiers high,medium,low)
+    [[ "$json" == 1 ]] && matrix_args+=(--json)
+    [[ "$force" == 1 ]] && matrix_args+=(--yes)
+    [[ "$no_audio" == 1 ]] && matrix_args+=(--no-audio)
+    [[ -n "$warmup" ]] && matrix_args+=(--warmup "$warmup")
+    [[ -n "$sample" ]] && matrix_args+=(--sample "$sample")
+    [[ -n "$tx_sample" ]] && matrix_args+=(--tx-sample "$tx_sample")
+    [[ -n "$settle" ]] && matrix_args+=(--settle "$settle")
+    cmd_benchmark_matrix "${matrix_args[@]}"
+    return
+  fi
+
+  if [[ -n "$engines" || -n "$tiers" ]]; then
+    if [[ "$apply" == 1 || "$offline" == 1 || -n "$live_s" ]]; then
+      emit '{"ok":false,"error":"matrix mode (--engines/--tiers) cannot combine with --apply/--offline-only/--live-seconds"}'
+      return 1
+    fi
+    matrix_args=(--engines "${engines:-dmabuf,vaapi,cpu}" --tiers "${tiers:-high,medium,low}")
+    [[ "$json" == 1 ]] && matrix_args+=(--json)
+    [[ "$force" == 1 ]] && matrix_args+=(--yes)
+    [[ "$no_audio" == 1 ]] && matrix_args+=(--no-audio)
+    [[ -n "$warmup" ]] && matrix_args+=(--warmup "$warmup")
+    [[ -n "$sample" ]] && matrix_args+=(--sample "$sample")
+    [[ -n "$tx_sample" ]] && matrix_args+=(--tx-sample "$tx_sample")
+    [[ -n "$settle" ]] && matrix_args+=(--settle "$settle")
+    cmd_benchmark_matrix "${matrix_args[@]}"
+    return
+  fi
+
+  if [[ -n "$warmup" || -n "$sample" || -n "$tx_sample" || -n "$settle" || "$no_audio" == 1 || "$force" == 1 ]]; then
+    emit '{"ok":false,"error":"matrix-only flags used without --engines/--tiers or all"}'
+    return 1
+  fi
+
   local script="$PLUGIN_DIR/scripts/auto_tune_miracast.py"
   if [[ ! -f "$script" ]]; then
     emit '{"ok":false,"error":"auto_tune_miracast.py missing"}'
