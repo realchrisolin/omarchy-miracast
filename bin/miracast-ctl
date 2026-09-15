@@ -3796,6 +3796,21 @@ activate_miracast_audio_default() {
 # PLAY (see hold_audio_default_until_play / activate_miracast_audio_default).
 ensure_miracast_audio_sink() {
   mkdir -p "$STATE_DIR"
+  # PipeWire/Pulse can be briefly down after crashes or service restarts.
+  # Wait for pactl before declaring failure — otherwise start falls back to
+  # "default" and FluxCast refuses LPCM (TV silent / encode abort).
+  local _pw_ok=0 _w
+  for _w in 1 2 3 4 5 6 7 8 9 10; do
+    if pactl info >/dev/null 2>&1; then
+      _pw_ok=1
+      break
+    fi
+    sleep 0.25
+  done
+  if [[ "$_pw_ok" != 1 ]]; then
+    echo "[miracast-ctl] failed to create Miracast audio sink (pactl unavailable)" >>"$LOG_DIR/cast.log"
+    return 1
+  fi
   save_audio_prev_default || true
   # Hold from create until PLAY so speakers stay default during handshake.
   # (If somehow called while already streaming, skip hold.)
