@@ -5,9 +5,13 @@ Captures full sink name + MAC (and host Wi-Fi details) for local analysis.
 Run ``./scripts/sanitize_benchmark_results.py`` afterward to publish a
 crowdsource-safe row into ``docs/benchmarks/public/`` and ``BENCHMARKS.md``.
 
+Private JSON filenames are always:
+  ``<device_name>[-<case>]-<YYYYMMDD_HHMMSS>.json``
+e.g. ``hotyeah-20260914_211205.json`` or ``hotyeah-pipe_cqp-20260914_211205.json``.
+
 Usage (while casting):
   ./scripts/record_live_benchmark.py
-  SAMPLE_S=18 ./scripts/record_live_benchmark.py --stem lg_1080p_dmabuf
+  SAMPLE_S=18 ./scripts/record_live_benchmark.py --case pipe_cqp_movie
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ from bench_host_info import collect as collect_host  # noqa: E402
 from benchmark_privacy import (  # noqa: E402
     guess_manufacturer,
     guess_model_hint,
+    private_filename_stem,
     private_path,
     write_json,
 )
@@ -101,7 +106,16 @@ def _p2p_tx_kbps(iface: Optional[str], seconds: float = 2.0) -> Optional[float]:
 
 def main(argv: Optional[list[str]] = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--stem", default=None, help="private filename stem")
+    p.add_argument(
+        "--case",
+        default=None,
+        help="optional case tag in the filename (between device and timestamp)",
+    )
+    p.add_argument(
+        "--stem",
+        default=None,
+        help="deprecated: treated as --case (device + timestamp are always applied)",
+    )
     p.add_argument("--warmup", type=float, default=6.0)
     p.add_argument("--sample", type=float, default=float(os.environ.get("SAMPLE_S", "18")))
     p.add_argument("--tx-sample", type=float, default=2.0)
@@ -145,8 +159,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     display = ident.get("device_name") or display
 
     ts = datetime.now(timezone.utc).isoformat()
-    day = datetime.now().strftime("%Y%m%d_%H%M%S")
-    stem = args.stem or f"live_{day}"
+    case = getattr(args, "case", None) or args.stem
+    stem = private_filename_stem(display, case=case)
 
     private = {
         "stem": stem,

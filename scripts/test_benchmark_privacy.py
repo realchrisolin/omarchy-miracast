@@ -7,9 +7,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from datetime import datetime
+
 from benchmark_privacy import (  # noqa: E402
     guess_manufacturer,
     guess_model_hint,
+    private_filename_stem,
     sanitize_display_name,
     sanitize_private_run,
 )
@@ -19,6 +22,17 @@ class BenchmarkPrivacyTest(unittest.TestCase):
     def test_sanitize_strips_mac_suffix(self):
         self.assertEqual(sanitize_display_name("hotyeah-AABB12_P2P"), "hotyeah")
         self.assertIsNone(sanitize_display_name("aa:bb:cc:dd:ee:ff"))
+
+    def test_private_filename_stem_device_timestamp(self):
+        when = datetime(2026, 9, 14, 21, 12, 5)
+        self.assertEqual(
+            private_filename_stem("hotyeah-AABB12_P2P", when=when),
+            "hotyeah-20260914_211205",
+        )
+        self.assertEqual(
+            private_filename_stem("hotyeah-AABB12_P2P", when=when, case="pipe_cqp_movie"),
+            "hotyeah-pipe_cqp_movie-20260914_211205",
+        )
 
     def test_guess_lg(self):
         self.assertEqual(guess_manufacturer("[LG]"), "LG")

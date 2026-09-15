@@ -115,6 +115,29 @@ def guess_model_hint(display_name: Optional[str], manufacturer: Optional[str]) -
     return name
 
 
+def private_filename_stem(
+    device_name: Optional[str],
+    *,
+    when: Optional[datetime] = None,
+    case: Optional[str] = None,
+) -> str:
+    """Private JSON stem: ``<device_name>[-<case>]-<YYYYMMDD_HHMMSS>``.
+
+    Device name is filesystem-sanitized (no MACs). Timestamp is local time.
+    """
+    when = when or datetime.now()
+    ts = when.strftime("%Y%m%d_%H%M%S")
+    raw = sanitize_display_name(device_name) or (device_name or "").strip() or "sink"
+    device = re.sub(r"[^a-zA-Z0-9._-]+", "-", raw).strip("-_.")[:48] or "sink"
+    parts = [device]
+    if case:
+        tag = re.sub(r"[^a-zA-Z0-9._-]+", "-", str(case)).strip("-_.")[:40]
+        if tag:
+            parts.append(tag)
+    parts.append(ts)
+    return "-".join(parts)
+
+
 def private_path(stem: str) -> Path:
     PRIVATE_DIR.mkdir(parents=True, exist_ok=True)
     return PRIVATE_DIR / f"{stem}.json"
