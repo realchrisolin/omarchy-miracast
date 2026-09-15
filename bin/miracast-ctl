@@ -213,27 +213,40 @@ print(str(s.get("p2pWifiInterface") or "auto").strip() or "auto")
   done
 }
 
-# When MCC is available, tell wpa_supplicant not to prefer the STA shared freq.
+# wpa_supplicant: 0 = prefer STA shared freq (SCC); 1 = allow other channels (MCC).
 ensure_p2p_ignore_shared_freq() {
+  local want="${1:-1}"
   local out iface
+  [[ "$want" == "0" || "$want" == "1" ]] || want=1
   iface="$(resolve_p2p_wifi_iface)"
   [[ -n "$iface" ]] || iface="wlp0s20f3"
   # Prefer sudo -n (session NOPASSWD / keep-alive). Never pkexec here.
   if sudo -n true 2>/dev/null; then
-    out="$(sudo -n wpa_cli -i "$iface" set p2p_ignore_shared_freq 1 2>/dev/null || true)"
+    out="$(sudo -n wpa_cli -i "$iface" set p2p_ignore_shared_freq "$want" 2>/dev/null || true)"
   else
-    out="$(wpa_cli -i "$iface" set p2p_ignore_shared_freq 1 2>/dev/null || true)"
+    out="$(wpa_cli -i "$iface" set p2p_ignore_shared_freq "$want" 2>/dev/null || true)"
   fi
-  echo "[miracast-ctl] p2p_ignore_shared_freq set on $iface: ${out:-unknown}"
+  echo "[miracast-ctl] p2p_ignore_shared_freq=$want on $iface: ${out:-unknown}" >>"$LOG_DIR/cast.log"
 }
 
-# Scan Wi-Fi occupancy and pick a quiet 5 GHz P2P channel (else the quietest).
-# Prints the channel number on stdout; empty on failure. Logs reason to stderr.
+# Primary 20 MHz channel of the STA (home Wi‑Fi). Empty if not associated.
+sta_wifi_channel() {
+  local iface ch
+  iface="$(resolve_p2p_wifi_iface)"
+  [[ -n "$iface" ]] || iface="wlp0s20f3"
+  ch="$(iw dev "$iface" info 2>/dev/null | awk '/channel/{print $2; exit}')"
+  [[ "$ch" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$ch"
+}
+
+# Scan Wi-Fi occupancy and pick a quiet channel (else the quietest).
+# Optional arg: band 5 (default), 2.4, or both. Prints channel on stdout.
 pick_p2p_channel() {
+  local band="${1:-5}"
   local script="$PLUGIN_DIR/scripts/pick-p2p-channel.py"
   local out ch
   [[ -f "$script" ]] || return 1
-  out="$(python3 "$script" --json --band 5 2>/dev/null || true)"
+  out="$(python3 "$script" --json --band "$band" 2>/dev/null || true)"
   [[ -n "$out" ]] || return 1
   ch="$(python3 -c 'import json,sys
 try:
@@ -248,10 +261,43 @@ except Exception:
 ' <<<"$out" 2>"$LOG_DIR/p2p-channel.pick.log" || true)"
   # Surface the pick reason into the cast log when present.
   if [[ -s "$LOG_DIR/p2p-channel.pick.log" ]]; then
-    echo "[miracast-ctl] P2P channel pick: $(tr '\n' ' ' <"$LOG_DIR/p2p-channel.pick.log")" >>"$LOG_DIR/cast.log" || true
+    echo "[miracast-ctl] P2P channel pick (band=$band): $(tr '\n' ' ' <"$LOG_DIR/p2p-channel.pick.log")" >>"$LOG_DIR/cast.log" || true
   fi
   [[ "$ch" =~ ^[0-9]+$ ]] || return 1
   printf '%s\n' "$ch"
+}
+
+# After PLAY: move GO onto target channel. If STA target is 5 GHz but GO is
+# stuck on 2.4 (common with 2.4-only dongles), CSA within 2.4 to a quieter
+# channel instead of a doomed cross-band switch.
+apply_p2p_scc_align() {
+  local want_ch="$1"
+  local go cur_ch alt
+  [[ "$want_ch" =~ ^[0-9]+$ ]] || return 1
+  go="$(iw dev 2>/dev/null | awk '/Interface p2p-/{iface=$2} /type P2P-GO/{print iface; exit}')"
+  [[ -n "$go" ]] || {
+    echo "[miracast-ctl] SCC align skip: no P2P-GO iface yet" >>"$LOG_DIR/cast.log"
+    return 1
+  }
+  cur_ch="$(iw dev "$go" info 2>/dev/null | awk '/channel/{print $2; exit}')"
+  if [[ "$cur_ch" == "$want_ch" ]]; then
+    echo "[miracast-ctl] SCC align: GO $go already on STA ch $want_ch" >>"$LOG_DIR/cast.log"
+    return 0
+  fi
+  # Cross-band (2.4 GO → 5 GHz STA): many Miracast sinks cannot follow.
+  if [[ -n "$cur_ch" && "$cur_ch" -le 14 && "$want_ch" -ge 32 ]]; then
+    echo "[miracast-ctl] SCC align: GO on 2.4 ch $cur_ch but STA is 5 GHz ch $want_ch — sink likely 2.4-only; skipping cross-band CSA" >>"$LOG_DIR/cast.log"
+    alt="$(pick_p2p_channel 2.4 2>>"$LOG_DIR/cast.log" || true)"
+    if [[ "$alt" =~ ^[0-9]+$ ]] && [[ "$alt" != "$cur_ch" ]]; then
+      echo "[miracast-ctl] SCC fallback: CSA within 2.4 to quieter ch $alt" >>"$LOG_DIR/cast.log"
+      apply_p2p_quiet_csa "$alt" || true
+    else
+      echo "[miracast-ctl] SCC fallback: stay on 2.4 ch ${cur_ch:-?} (no better pick)" >>"$LOG_DIR/cast.log"
+    fi
+    return 0
+  fi
+  echo "[miracast-ctl] SCC align: ensure GO on STA channel $want_ch" >>"$LOG_DIR/cast.log"
+  apply_p2p_quiet_csa "$want_ch"
 }
 
 # Map P2P channel number → MHz (20 MHz primary).
@@ -4419,16 +4465,43 @@ print("1" if v in (True,1,"1","true","yes","on") else "0")' "$settings")"
   [[ "$mode" == "extend" ]] && action_word="Extending"
   write_status "connecting" "Connecting to $label" "peer=$peer" "peerName=$peer_name" "monitor=$monitor" "mode=$mode" >/dev/null
 
-  # Quiet-channel target for post-connect CSA (MCC). Soft OperChannel still
-  # passed for logging/preference; NM associates on STA channel first, then
-  # apply_p2p_quiet_csa moves the GO once PLAY is accepted.
+  # Channel policy:
+  #   p2pQuietCsa=false (default SCC): force STA primary channel; never CSA away.
+  #   p2pQuietCsa=true (MCC): pick a quiet channel and CSA there after PLAY.
+  # Bug we fixed: SCC mode used to pass the quiet pick as --wfd-p2p-channel,
+  # which pushed the GO off the STA band (often onto 2.4 ch 6) while CSA was
+  # skipped — worst of both worlds.
   local p2p_channel="" p2p_channel_args=()
-  p2p_channel="$(pick_p2p_channel 2>>"$LOG_DIR/cast.log" || true)"
-  if [[ "$p2p_channel" =~ ^[0-9]+$ ]]; then
-    p2p_channel_args=(--wfd-p2p-channel "$p2p_channel")
-    echo "[miracast-ctl] P2P quiet target channel=$p2p_channel (CSA after PLAY)" >>"$LOG_DIR/cast.log"
+  local _want_quiet_csa=0
+  if [[ "${MIRACAST_SKIP_P2P_CSA:-}" =~ ^(1|true|yes)$ ]]; then
+    _want_quiet_csa=0
+  elif [[ "${MIRACAST_P2P_QUIET_CSA:-}" =~ ^(1|true|yes)$ ]]; then
+    _want_quiet_csa=1
   else
-    echo "[miracast-ctl] P2P channel scan skipped; stay on STA/SCC channel" >>"$LOG_DIR/cast.log"
+    _want_quiet_csa="$(python3 -c 'import json,sys
+s=json.loads(sys.argv[1])
+v=s.get("p2pQuietCsa", False)
+print("1" if v in (True,1,"1","true","yes","on") else "0")
+' "$settings" 2>/dev/null || echo 0)"
+  fi
+  if [[ "$_want_quiet_csa" == "1" ]]; then
+    ensure_p2p_ignore_shared_freq 1
+    p2p_channel="$(pick_p2p_channel 2>>"$LOG_DIR/cast.log" || true)"
+    if [[ "$p2p_channel" =~ ^[0-9]+$ ]]; then
+      p2p_channel_args=(--wfd-p2p-channel "$p2p_channel")
+      echo "[miracast-ctl] P2P quiet target channel=$p2p_channel (CSA after PLAY / MCC)" >>"$LOG_DIR/cast.log"
+    else
+      echo "[miracast-ctl] P2P quiet pick failed; NM will choose channel" >>"$LOG_DIR/cast.log"
+    fi
+  else
+    ensure_p2p_ignore_shared_freq 0
+    p2p_channel="$(sta_wifi_channel 2>>"$LOG_DIR/cast.log" || true)"
+    if [[ "$p2p_channel" =~ ^[0-9]+$ ]]; then
+      p2p_channel_args=(--wfd-p2p-channel "$p2p_channel")
+      echo "[miracast-ctl] P2P SCC: force STA channel=$p2p_channel (no quiet CSA)" >>"$LOG_DIR/cast.log"
+    else
+      echo "[miracast-ctl] P2P SCC: could not read STA channel; leave channel to NM" >>"$LOG_DIR/cast.log"
+    fi
   fi
 
   # Audio default: settings.audioEnabled (true) unless --with-audio / --no-audio.
@@ -4663,27 +4736,16 @@ except Exception: print("")' "$STATUS_FILE" 2>/dev/null || true)"
         missing_link=0
         # Default audio → Miracast only once the cast is actually streaming.
         activate_miracast_audio_default || true
-        # Quiet-channel CSA (MCC) vs stay-on-STA (SCC).
-        # Default SCC: radio A/B 2026-09-14 — MCC bw20 had 10 retry spikes / 90s;
-        # SCC had 0. Override: settings p2pQuietCsa=true, or
-        # MIRACAST_P2P_QUIET_CSA=1 / MIRACAST_SKIP_P2P_CSA=1.
-        local _do_csa=0
-        if [[ "${MIRACAST_SKIP_P2P_CSA:-}" =~ ^(1|true|yes)$ ]]; then
-          _do_csa=0
-        elif [[ "${MIRACAST_P2P_QUIET_CSA:-}" =~ ^(1|true|yes)$ ]]; then
-          _do_csa=1
+        # After PLAY: MCC → CSA to quiet channel; SCC → align onto STA channel
+        # (or quieter 2.4 if the sink cannot follow STA onto 5 GHz).
+        if [[ "$p2p_channel" =~ ^[0-9]+$ ]]; then
+          if [[ "$_want_quiet_csa" == "1" ]]; then
+            apply_p2p_quiet_csa "$p2p_channel" || true
+          else
+            apply_p2p_scc_align "$p2p_channel" || true
+          fi
         else
-          _csa_set="$(python3 -c 'import json,sys
-s=json.loads(sys.argv[1])
-v=s.get("p2pQuietCsa", False)
-print("1" if v in (True,1,"1","true","yes","on") else "0")
-' "$settings" 2>/dev/null || echo 0)"
-          _do_csa="$_csa_set"
-        fi
-        if [[ "$p2p_channel" =~ ^[0-9]+$ ]] && [[ "$_do_csa" == "1" ]]; then
-          apply_p2p_quiet_csa "$p2p_channel" || true
-        else
-          echo "[miracast-ctl] CSA skipped (SCC; p2pQuietCsa=false or SKIP env)" >>"$LOG_DIR/cast.log"
+          echo "[miracast-ctl] CSA/align skipped (no target channel)" >>"$LOG_DIR/cast.log"
         fi
       elif [[ "$saw_play" -eq 0 ]]; then
         if rg -q "rtsp_connected" "$LAT_FILE" 2>/dev/null; then

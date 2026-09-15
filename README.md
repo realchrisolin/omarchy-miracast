@@ -250,10 +250,13 @@ streaming — runs a ~25s live TX/retry/CPU sample to refine the advice.
 Use `--offline-only` to skip the live sample. `--apply` writes settings
 (once per machine, or after adding a USB Wi‑Fi dongle).
 
-By default Miracast stays on the **STA channel (SCC)** — one radio, no
-channel hop. Set `p2pQuietCsa: true` (or `MIRACAST_P2P_QUIET_CSA=1`) to
-post-PLAY CSA onto a quieter channel (MCC). On this AX201 host, MCC at
-20 MHz showed retry storms while SCC did not; treat CSA as opt-in.
+By default Miracast uses **SCC**: force the P2P GO onto the **STA primary
+channel** (`p2p_ignore_shared_freq=0`, `--wfd-p2p-channel=<STA>`), and after
+PLAY align with CSA if negotiation landed elsewhere. Set `p2pQuietCsa: true`
+(or `MIRACAST_P2P_QUIET_CSA=1`) to CSA onto a quieter channel instead (MCC).
+If STA is 5 GHz but the sink/GO stays on 2.4 (common with 2.4-only dongles
+like Realtek 8192CU), cross-band CSA is skipped and a quieter **2.4** channel
+is used instead — true 5 GHz SCC is impossible with those sinks.
 See [BUILD.md](BUILD.md) § P2P channel (SCC vs quiet CSA).
 
 ## Virtual output lifecycle (eDP safety)
