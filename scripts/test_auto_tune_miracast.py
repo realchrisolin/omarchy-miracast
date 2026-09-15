@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for offline auto_tune_miracast (no live cast)."""
+"""Unit tests for auto_tune_miracast (offline picks + live refine heuristics)."""
 
 from __future__ import annotations
 
@@ -109,7 +109,7 @@ class AutoTuneTest(unittest.TestCase):
                             },
                             clear=False,
                         ):
-                            result = self.mod.tune()
+                            result = self.mod.tune(offline_only=True)
                             applied = self.mod.apply_tune(result)
             settings = json.loads(Path(applied["settings"]).read_text())
             self.assertEqual(settings["captureEncode"], "dmabuf")
@@ -125,6 +125,55 @@ class AutoTuneTest(unittest.TestCase):
                 Path(applied["capture_encode_file"]).read_text().strip(),
                 "dmabuf",
             )
+
+    def test_refine_from_live_prefers_dmabuf_on_high_pipe_cpu(self):
+        eng = self.mod.EngineProbe(
+            dmabuf=True, vaapi_pipe=True, cpu=True,
+            ffmpeg="/usr/bin/ffmpeg", wf_recorder="/usr/bin/wf-recorder",
+            vaapi_device=True,
+        )
+        live = self.mod.LiveSample(
+            ok=True,
+            skipped=False,
+            reason="ok",
+            seconds=25,
+            p2p_iface="p2p-wlp0s20-0",
+            tx_mbps_mean=12.0,
+            tx_cv=0.05,
+            retry_per_s=0.2,
+            wf_cpu_mean=35.0,
+            ffmpeg_cpu_mean=8.0,
+            current_capture_path="pipe",
+            current_capture_encode="vaapi",
+        )
+        enc, csa, notes = self.mod.refine_from_live("vaapi", eng, live, False)
+        self.assertEqual(enc, "dmabuf")
+        self.assertFalse(csa)
+        self.assertTrue(any("prefer dmabuf" in n for n in notes))
+
+    def test_refine_from_live_keeps_scc_on_high_retries(self):
+        eng = self.mod.EngineProbe(
+            dmabuf=True, vaapi_pipe=True, cpu=True,
+            ffmpeg="/usr/bin/ffmpeg", wf_recorder="/usr/bin/wf-recorder",
+            vaapi_device=True,
+        )
+        live = self.mod.LiveSample(
+            ok=True,
+            skipped=False,
+            reason="ok",
+            seconds=25,
+            p2p_iface="p2p-wlp0s20-0",
+            tx_mbps_mean=11.0,
+            tx_cv=0.2,
+            retry_per_s=5.0,
+            wf_cpu_mean=5.0,
+            current_capture_path="dmabuf",
+            current_capture_encode="dmabuf",
+        )
+        enc, csa, notes = self.mod.refine_from_live("dmabuf", eng, live, True)
+        self.assertEqual(enc, "dmabuf")
+        self.assertFalse(csa)
+        self.assertTrue(any("SCC" in n for n in notes))
 
 
 if __name__ == "__main__":
