@@ -322,14 +322,24 @@ def main(argv: Optional[list[str]] = None) -> int:
         default=float(os.environ.get("TX_SAMPLE_S", "20")),
         help="radio TX kbps sample + 1 Hz TX/retry profile length (default 20)",
     )
+    p.add_argument(
+        "--require-streaming",
+        action="store_true",
+        help="exit non-zero if Miracast is not currently streaming",
+    )
     args = p.parse_args(argv)
 
     status = _status()
     if status.get("phase") != "streaming":
-        print(
-            f"[record-live] warning: phase={status.get('phase')!r} (expected streaming)",
-            file=sys.stderr,
-        )
+        msg = f"phase={status.get('phase')!r} (expected streaming)"
+        if args.require_streaming:
+            print(
+                f"[record-live] error: {msg}. "
+                "benchmark performance only works while casting.",
+                file=sys.stderr,
+            )
+            return 2
+        print(f"[record-live] warning: {msg}", file=sys.stderr)
 
     settings = _settings()
     encode = _collect_encode(settings)

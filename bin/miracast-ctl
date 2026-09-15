@@ -2654,8 +2654,93 @@ cmd_benchmark_matrix() {
   python3 "$script" "$@"
 }
 
+cmd_benchmark_performance() {
+  # 60s live performance sample of an *already active* cast. Never starts or
+  # reconnects — if idle, only explain that casting is required.
+  local json=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json|json) json=1 ;;
+      -h|--help)
+        cat <<'EOF'
+Usage: miracast-ctl benchmark performance [--json]
+
+  Full ~60s performance sample of the current Miracast session
+  (CPU, TX profile, radio, delivery checks). Does not reconnect or
+  change encode settings.
+
+  Requires an active cast (phase=streaming). If you are not casting,
+  this command only prints how to use it — it will not start Miracast.
+EOF
+        return 0
+        ;;
+      *)
+        emit "{\"ok\":false,\"error\":\"unknown benchmark performance flag: $1\"}"
+        return 1
+        ;;
+    esac
+    shift
+  done
+
+  local st phase
+  st="$(cmd_status 2>/dev/null || true)"
+  phase="$(python3 -c 'import json,sys
+try:
+  print(json.loads(sys.argv[1]).get("phase") or "")
+except Exception:
+  print("")
+' "$st" 2>/dev/null || echo "")"
+
+  if [[ "$phase" != "streaming" ]]; then
+    local msg
+    msg="benchmark performance can only run while Miracast is casting (phase=streaming)."
+    if [[ "$json" == 1 ]]; then
+      emit "$(python3 -c 'import json,sys
+print(json.dumps({
+  "ok": False,
+  "error": sys.argv[1],
+  "phase": sys.argv[2] or "unknown",
+  "hint": "Start a cast from the Display panel (or: miracast-ctl start …), then re-run: miracast-ctl benchmark performance",
+}, separators=(",", ":")))
+' "$msg" "$phase")"
+    else
+      echo "miracast-ctl: $msg" >&2
+      echo "Start a cast first, then run: miracast-ctl benchmark performance" >&2
+      if [[ -n "$phase" ]]; then
+        echo "Current phase: $phase" >&2
+      fi
+      emit "$(python3 -c 'import json,sys
+print(json.dumps({
+  "ok": False,
+  "error": "not casting",
+  "phase": sys.argv[1] or "unknown",
+  "hint": "miracast-ctl benchmark performance requires an active Miracast session",
+}, separators=(",", ":")))
+' "$phase")"
+    fi
+    return 1
+  fi
+
+  local script="$PLUGIN_DIR/scripts/record_live_benchmark.py"
+  if [[ ! -f "$script" ]]; then
+    emit '{"ok":false,"error":"record_live_benchmark.py missing"}'
+    return 1
+  fi
+
+  # ~60s primary sample window (+ short warmup / TX profile). No reconnect.
+  echo "[benchmark performance] sampling active cast for ~60s (no reconnect)…" >&2
+  python3 "$script" --case performance --require-streaming --warmup 5 --sample 60 --tx-sample 30
+}
+
 cmd_benchmark() {
   # Auto-tune by default. Matrix when `all` or --engines/--tiers are given.
+  # `performance` = 60s live sample of an active cast (no reconnect).
+  if [[ "${1:-}" == "performance" ]]; then
+    shift
+    cmd_benchmark_performance "$@"
+    return
+  fi
+
   local do_all=0
   if [[ "${1:-}" == "all" ]]; then
     do_all=1
@@ -2711,10 +2796,14 @@ cmd_benchmark() {
       --no-audio) no_audio=1 ;;
       -h|--help)
         cat <<'EOF'
-Usage: miracast-ctl benchmark [all] [options]
+Usage: miracast-ctl benchmark [performance|all] [options]
 
   miracast-ctl benchmark
       Auto-tune: pick good engines / radio / QUALITY knobs for this machine.
+
+  miracast-ctl benchmark performance
+      ~60s performance sample of the *active* cast (no reconnect).
+      Refuses with a hint if you are not currently casting.
 
   miracast-ctl benchmark --engines LIST --tiers LIST
       Live matrix for the given engines × QUALITY tiers (reconnects per cell).
@@ -2746,6 +2835,7 @@ Matrix flags (with --engines/--tiers, or with all)
 Examples
   miracast-ctl benchmark
   miracast-ctl benchmark --apply
+  miracast-ctl benchmark performance
   miracast-ctl benchmark all
   miracast-ctl benchmark --engines dmabuf,vaapi --tiers high,medium
 EOF
@@ -4670,7 +4760,8 @@ Commands:
   set-cast-preset desktop|movie       # content hint: damage-aware vs continuous -D
   list-p2p-radios                 # Wi-Fi ifaces for Miracast P2P
   set-p2p-wifi-interface auto|IFACE
-  benchmark [--apply] [--json] [--offline-only] [--live-seconds N]
+  benchmark [performance|all] [--apply] [--json] [--engines …] [--tiers …]
+  benchmark performance           # 60s live sample; requires active cast
   get-extend-position
   set-extend-position right|left|above|below
   restart-capture [quick]
