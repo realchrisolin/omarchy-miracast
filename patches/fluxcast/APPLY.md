@@ -85,7 +85,7 @@ export FLUXCAST_ROOT="${FLUXCAST_ROOT:-$HOME/code/other/fluxcast}"
 
 ### Capture encode path (DMA-BUF + CQP)
 
-Omarchy’s Display panel shows **RENDER ENGINE** pills on the Miracast
+Omarchy’s Display panel shows **RENDER ENGINE** and **QUALITY** pills on the Miracast
 display row only while connected (`dmabuf` / `vaapi` / `cpu`). Preference
 lives in `settings.captureEncode` and `$STATE_DIR/capture-encode` for live
 rebind; GPU failures fall back to CPU and the active pill follows the
