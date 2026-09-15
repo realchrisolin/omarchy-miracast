@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""Offline Miracast auto-tune: probe render engines + radios, apply settings.
+"""Miracast auto-tune: offline probes + optional short live sample.
 
-No live cast required. Combines:
+Combines:
   - capability probes (VAAPI / wf-recorder / ffmpeg)
   - optional docs/benchmarks/results.tsv via recommend-cast-profile
   - list_p2p_radios idle P2P-GO preference
   - validated encode knobs (quality 5, VBV 0.5, SCC)
+  - if a cast is streaming: ~25s TX / retry / CPU sample to refine advice
 
 Usage:
-  scripts/auto_tune_miracast.py              # dry-run JSON + env
-  scripts/auto_tune_miracast.py --apply      # write settings + state env
+  scripts/auto_tune_miracast.py                 # offline + live if streaming
+  scripts/auto_tune_miracast.py --offline-only  # skip live sample
+  scripts/auto_tune_miracast.py --live-seconds 30
+  scripts/auto_tune_miracast.py --apply
   scripts/auto_tune_miracast.py --json
 """
 
@@ -19,9 +22,12 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import shutil
+import statistics
 import subprocess
 import sys
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -89,6 +95,26 @@ class EngineProbe:
 
 
 @dataclass
+class LiveSample:
+    ok: bool
+    skipped: bool
+    reason: str
+    seconds: float = 0.0
+    p2p_iface: str = ""
+    tx_mbps_mean: Optional[float] = None
+    tx_cv: Optional[float] = None
+    retry_per_s: Optional[float] = None
+    retry_pct: Optional[float] = None
+    wf_cpu_mean: Optional[float] = None
+    ffmpeg_cpu_mean: Optional[float] = None
+    signal_avg_dbm: Optional[int] = None
+    phy_mbps: Optional[float] = None
+    cast_log_hard_errors: int = 0
+    current_capture_path: str = ""  # dmabuf | pipe | ""
+    current_capture_encode: str = ""
+
+
+@dataclass
 class TuneResult:
     capture_encode: str  # dmabuf | vaapi | cpu
     p2p_wifi_interface: str  # auto | iface
@@ -103,7 +129,8 @@ class TuneResult:
     engines: dict[str, Any]
     radios: list[dict[str, Any]]
     rationale: list[str]
-    source: str  # capability | benchmarks+capability
+    source: str  # capability | benchmarks+capability | …+live
+    live: Optional[dict[str, Any]] = None
 
 
 def probe_engines() -> EngineProbe:
@@ -207,7 +234,274 @@ def try_benchmark_profile() -> Optional[Any]:
         return None
 
 
-def tune() -> TuneResult:
+def _state_dir() -> Path:
+    return Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "omarchy-miracast"
+
+
+def cast_phase() -> str:
+    try:
+        r = _run(["miracast-ctl", "status"], timeout=5.0)
+        data = json.loads(r.stdout or "{}")
+        return str(data.get("phase") or "")
+    except Exception:
+        return ""
+
+
+def _status_fields() -> dict[str, Any]:
+    try:
+        r = _run(["miracast-ctl", "status"], timeout=5.0)
+        data = json.loads(r.stdout or "{}")
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _p2p_ifaces() -> list[str]:
+    net = Path("/sys/class/net")
+    if not net.is_dir():
+        return []
+    return sorted(
+        p.name
+        for p in net.iterdir()
+        if p.name.startswith("p2p-") and (p / "statistics" / "tx_bytes").is_file()
+    )
+
+
+def _jiffies(pid: int) -> Optional[int]:
+    try:
+        parts = Path(f"/proc/{pid}/stat").read_text().split()
+        return int(parts[13]) + int(parts[14])
+    except Exception:
+        return None
+
+
+def _find_pids() -> tuple[Optional[int], Optional[int]]:
+    wf = ff = None
+    for p in Path("/proc").iterdir():
+        if not p.name.isdigit():
+            continue
+        try:
+            cmd = (p / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+        except Exception:
+            continue
+        if "wf-recorder" in cmd and "rawvideo" in cmd:
+            wf = int(p.name)
+        elif "ffmpeg" in cmd and "h264_vaapi" in cmd:
+            ff = int(p.name)
+        elif "wf-recorder" in cmd and "h264_vaapi" in cmd:
+            # DMA-BUF path: wf-recorder encodes itself
+            wf = int(p.name)
+    return wf, ff
+
+
+def _station_stats(iface: str) -> dict[str, Any]:
+    try:
+        r = _run(["iw", "dev", iface, "station", "dump"], timeout=3.0)
+    except Exception:
+        return {}
+    out = r.stdout or ""
+
+    def g(pat: str, cast=str):
+        m = re.search(pat, out)
+        if not m:
+            return None
+        try:
+            return cast(m.group(1))
+        except Exception:
+            return m.group(1)
+
+    br = g(r"tx bitrate:\s*([0-9.]+)")
+    return {
+        "tx_retries": g(r"tx retries:\s*(\d+)", int),
+        "tx_packets": g(r"tx packets:\s*(\d+)", int),
+        "signal_avg_dbm": g(r"signal avg:\s*(-?\d+)", int),
+        "tx_bitrate_mbps": float(br) if br else None,
+    }
+
+
+def _cast_log_hard_errors(tail_bytes: int = 64_000) -> int:
+    log = _state_dir() / "logs" / "cast.log"
+    if not log.is_file():
+        return 0
+    try:
+        data = log.read_bytes()[-tail_bytes:]
+        text = data.decode("utf-8", errors="replace")
+    except OSError:
+        return 0
+    pat = re.compile(
+        r"buffer pool full|RTP TX stagnant|Capture restart failed|RTP sender is not healthy",
+        re.I,
+    )
+    return len(pat.findall(text))
+
+
+def sample_live(seconds: float = 25.0) -> LiveSample:
+    """Sample P2P TX / retries / capture CPU while streaming."""
+    status = _status_fields()
+    phase = str(status.get("phase") or "")
+    if phase != "streaming":
+        return LiveSample(
+            ok=False,
+            skipped=True,
+            reason=f"not streaming (phase={phase or 'unknown'})",
+            current_capture_path=str(status.get("capturePath") or ""),
+            current_capture_encode=str(status.get("captureEncode") or ""),
+        )
+
+    ifaces = _p2p_ifaces()
+    if not ifaces:
+        return LiveSample(
+            ok=False,
+            skipped=True,
+            reason="streaming but no p2p-* iface",
+            current_capture_path=str(status.get("capturePath") or ""),
+            current_capture_encode=str(status.get("captureEncode") or ""),
+        )
+    iface = ifaces[0]
+    tx_path = Path(f"/sys/class/net/{iface}/statistics/tx_bytes")
+    hz = os.sysconf("SC_CLK_TCK")
+    wf_pid, ff_pid = _find_pids()
+
+    def read_tx() -> Optional[int]:
+        try:
+            return int(tx_path.read_text())
+        except OSError:
+            return None
+
+    samples_tx: list[float] = []
+    wf_cpus: list[float] = []
+    ff_cpus: list[float] = []
+    st0 = _station_stats(iface)
+    t0 = time.monotonic()
+    tx0 = read_tx()
+    w0 = _jiffies(wf_pid) if wf_pid else None
+    f0 = _jiffies(ff_pid) if ff_pid else None
+
+    # Progress on stderr so miracast-ctl users see activity
+    print(f"Live sample: {seconds:.0f}s on {iface}…", file=sys.stderr, flush=True)
+
+    n = max(1, int(seconds))
+    for i in range(n):
+        time.sleep(1.0)
+        t1 = time.monotonic()
+        tx1 = read_tx()
+        w1 = _jiffies(wf_pid) if wf_pid else None
+        f1 = _jiffies(ff_pid) if ff_pid else None
+        dt = max(t1 - t0, 1e-6)
+        if tx0 is not None and tx1 is not None:
+            samples_tx.append((tx1 - tx0) * 8.0 / dt / 1e6)  # Mbps
+        if w0 is not None and w1 is not None:
+            wf_cpus.append((w1 - w0) / hz / dt * 100.0)
+        if f0 is not None and f1 is not None:
+            ff_cpus.append((f1 - f0) / hz / dt * 100.0)
+        t0, tx0, w0, f0 = t1, tx1, w1, f1
+        if (i + 1) % 5 == 0 or i + 1 == n:
+            print(f"  … {i + 1}/{n}s", file=sys.stderr, flush=True)
+
+    st1 = _station_stats(iface)
+    retries0 = st0.get("tx_retries")
+    retries1 = st1.get("tx_retries")
+    pkts0 = st0.get("tx_packets")
+    pkts1 = st1.get("tx_packets")
+    elapsed = float(n)
+    retry_delta = (
+        (retries1 - retries0)
+        if isinstance(retries0, int) and isinstance(retries1, int)
+        else None
+    )
+    pkt_delta = (
+        (pkts1 - pkts0) if isinstance(pkts0, int) and isinstance(pkts1, int) else None
+    )
+    retry_per_s = (retry_delta / elapsed) if retry_delta is not None else None
+    retry_pct = (
+        (100.0 * retry_delta / pkt_delta)
+        if retry_delta is not None and pkt_delta and pkt_delta > 0
+        else None
+    )
+
+    tx_mean = statistics.mean(samples_tx) if samples_tx else None
+    tx_cv = (
+        statistics.pstdev(samples_tx) / tx_mean
+        if samples_tx and tx_mean and tx_mean > 0
+        else None
+    )
+
+    return LiveSample(
+        ok=True,
+        skipped=False,
+        reason="ok",
+        seconds=elapsed,
+        p2p_iface=iface,
+        tx_mbps_mean=round(tx_mean, 3) if tx_mean is not None else None,
+        tx_cv=round(tx_cv, 3) if tx_cv is not None else None,
+        retry_per_s=round(retry_per_s, 2) if retry_per_s is not None else None,
+        retry_pct=round(retry_pct, 2) if retry_pct is not None else None,
+        wf_cpu_mean=round(statistics.mean(wf_cpus), 1) if wf_cpus else None,
+        ffmpeg_cpu_mean=round(statistics.mean(ff_cpus), 1) if ff_cpus else None,
+        signal_avg_dbm=st1.get("signal_avg_dbm"),
+        phy_mbps=st1.get("tx_bitrate_mbps"),
+        cast_log_hard_errors=_cast_log_hard_errors(),
+        current_capture_path=str(status.get("capturePath") or ""),
+        current_capture_encode=str(status.get("captureEncode") or ""),
+    )
+
+
+def refine_from_live(
+    encode: str,
+    engines: EngineProbe,
+    live: LiveSample,
+    quiet_csa: bool,
+) -> tuple[str, bool, list[str]]:
+    """Adjust encode / CSA from live sample. Returns (encode, quiet_csa, notes)."""
+    notes: list[str] = []
+    if live.skipped or not live.ok:
+        notes.append(f"live sample skipped: {live.reason}")
+        return encode, quiet_csa, notes
+
+    notes.append(
+        f"live {live.seconds:.0f}s on {live.p2p_iface}: "
+        f"tx≈{live.tx_mbps_mean} Mbps cv={live.tx_cv} "
+        f"retries/s={live.retry_per_s} wf_cpu≈{live.wf_cpu_mean}% "
+        f"ff_cpu≈{live.ffmpeg_cpu_mean}% path={live.current_capture_path or '?'}"
+    )
+
+    # High pipe capture CPU + dmabuf available → prefer dmabuf
+    if (
+        engines.dmabuf
+        and encode != "dmabuf"
+        and (live.current_capture_path == "pipe" or live.current_capture_encode == "vaapi")
+        and live.wf_cpu_mean is not None
+        and live.wf_cpu_mean >= 20.0
+    ):
+        notes.append(
+            f"live: pipe wf-recorder CPU {live.wf_cpu_mean}% ≥20 — prefer dmabuf"
+        )
+        encode = "dmabuf"
+
+    # Unstable TX or high retries → keep SCC (quiet CSA off)
+    if live.retry_per_s is not None and live.retry_per_s >= 2.0:
+        notes.append(
+            f"live: retries/s {live.retry_per_s} ≥2 — keep SCC (p2pQuietCsa=false)"
+        )
+        quiet_csa = False
+    if live.tx_cv is not None and live.tx_cv >= 0.15:
+        notes.append(f"live: TX CV {live.tx_cv} ≥0.15 — delivery jitter; prefer SCC")
+        quiet_csa = False
+
+    if live.cast_log_hard_errors:
+        notes.append(
+            f"live: {live.cast_log_hard_errors} recent hard error(s) in cast.log"
+        )
+
+    if live.tx_mbps_mean is not None and live.tx_mbps_mean < 2.0:
+        notes.append(
+            f"live: TX {live.tx_mbps_mean} Mbps looks low for 1080p CBR — check radio/path"
+        )
+
+    return encode, quiet_csa, notes
+
+
+def tune(*, live_seconds: float = 25.0, offline_only: bool = False) -> TuneResult:
     engines = probe_engines()
     rationale: list[str] = []
     rationale.extend(engines.notes)
@@ -249,13 +543,6 @@ def tune() -> TuneResult:
     encode, enc_why = pick_encode(engines, bench_encode)
     rationale.append(f"render engine: {encode} — {enc_why}")
 
-    if encode == "dmabuf":
-        video_encoder = video_encoder if video_encoder != "software" else "auto"
-    elif encode == "vaapi":
-        video_encoder = "vaapi"
-    else:
-        video_encoder = "software"
-
     radio_setting, radio_resolved, radios, radio_why = pick_radio()
     rationale.append(f"radio: {radio_why}")
 
@@ -265,6 +552,27 @@ def tune() -> TuneResult:
     quiet_csa = False
     rationale.append("encode knobs: vaapiQuality=5, vbvMultiplier=0.5 (pipe-stable)")
     rationale.append("p2pQuietCsa=false (SCC default; MCC retry storms on 20 MHz CSA)")
+
+    live_dict: Optional[dict[str, Any]] = None
+    if offline_only:
+        live = LiveSample(ok=False, skipped=True, reason="--offline-only")
+        rationale.append("live sample skipped (--offline-only)")
+    else:
+        live = sample_live(live_seconds)
+        live_dict = asdict(live)
+        encode, quiet_csa, live_notes = refine_from_live(
+            encode, engines, live, quiet_csa
+        )
+        rationale.extend(live_notes)
+        if live.ok and not live.skipped:
+            source = source + "+live"
+
+    if encode == "dmabuf":
+        video_encoder = video_encoder if video_encoder != "software" else "auto"
+    elif encode == "vaapi":
+        video_encoder = "vaapi"
+    else:
+        video_encoder = "software"
 
     return TuneResult(
         capture_encode=encode,
@@ -288,6 +596,7 @@ def tune() -> TuneResult:
         radios=radios,
         rationale=rationale,
         source=source,
+        live=live_dict,
     )
 
 
@@ -296,7 +605,7 @@ def format_env(t: TuneResult) -> str:
         t.capture_encode, "pipe"
     )
     lines = [
-        "# Generated by scripts/auto_tune_miracast.py (offline probes)",
+        "# Generated by scripts/auto_tune_miracast.py",
         f"# source={t.source} encode={t.capture_encode} radio={t.p2p_wifi_resolved or t.p2p_wifi_interface}",
         f"export FLUXCAST_WFD_CAPTURE_ENCODE_PREF={t.capture_encode}",
         f"export FLUXCAST_WFD_CAPTURE_ENCODE={legacy}",
@@ -360,9 +669,20 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--apply", action="store_true", help="write settings + state env")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
+    ap.add_argument(
+        "--offline-only",
+        action="store_true",
+        help="skip live TX/CPU sample even if streaming",
+    )
+    ap.add_argument(
+        "--live-seconds",
+        type=float,
+        default=25.0,
+        help="live sample duration when streaming (default 25)",
+    )
     args = ap.parse_args(argv)
 
-    result = tune()
+    result = tune(live_seconds=args.live_seconds, offline_only=args.offline_only)
     applied = apply_tune(result) if args.apply else None
     payload = asdict(result)
     payload["applied"] = applied
@@ -382,8 +702,18 @@ def main(argv: Optional[list[str]] = None) -> int:
         + (f" → {result.p2p_wifi_resolved}" if result.p2p_wifi_resolved else "")
     )
     print(f"  quality/VBV   : {result.vaapi_quality} / {result.vbv_multiplier}")
-    print(f"  quiet CSA     : {result.p2p_quiet_csa} (SCC default)")
+    print(f"  quiet CSA     : {result.p2p_quiet_csa} (SCC when false)")
     print(f"  wf-recorder   : {result.wf_recorder_bin or '(PATH)'} proto={result.wf_recorder_proto}")
+    if result.live:
+        live = result.live
+        if live.get("skipped"):
+            print(f"  LIVE          : skipped ({live.get('reason')})")
+        else:
+            print(
+                f"  LIVE          : {live.get('seconds')}s tx≈{live.get('tx_mbps_mean')} Mbps "
+                f"cv={live.get('tx_cv')} retries/s={live.get('retry_per_s')} "
+                f"wf={live.get('wf_cpu_mean')}% ff={live.get('ffmpeg_cpu_mean')}%"
+            )
     print("  rationale:")
     for line in result.rationale:
         print(f"    - {line}")

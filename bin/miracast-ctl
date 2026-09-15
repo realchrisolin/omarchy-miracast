@@ -2314,23 +2314,32 @@ EOS
 }
 
 cmd_benchmark() {
-  # Offline capability probes (+ optional results.tsv). --apply writes settings.
-  local apply=0 json=0
+  # Capability probes + optional results.tsv + short live sample when streaming.
+  local apply=0 json=0 offline=0 live_s=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --apply|apply) apply=1 ;;
       --json|json) json=1 ;;
+      --offline-only|offline-only) offline=1 ;;
+      --live-seconds)
+        shift
+        live_s="${1:-}"
+        [[ -n "$live_s" ]] || { emit '{"ok":false,"error":"--live-seconds needs a value"}'; return 1; }
+        ;;
       -h|--help)
         cat <<'EOF'
-Usage: miracast-ctl benchmark [--apply] [--json]
+Usage: miracast-ctl benchmark [--apply] [--json] [--offline-only] [--live-seconds N]
 
-Offline auto-tune (no live cast):
+Auto-tune:
   - probe supported render engines (dmabuf / vaapi / cpu)
   - pick P2P Wi-Fi radio (idle P2P-GO preferred)
   - apply validated encode knobs (quality 5, VBV 0.5, SCC)
   - optionally merge docs/benchmarks/results.tsv via recommend-cast-profile
+  - if a cast is streaming: sample ~25s TX / retries / CPU and refine advice
 
---apply writes settings.json, state/capture-encode, and recommended-cast.env
+--offline-only   skip the live sample (fast capability-only pass)
+--live-seconds N live sample length when streaming (default 25)
+--apply          write settings.json, state/capture-encode, recommended-cast.env
 EOF
         return 0
         ;;
@@ -2349,6 +2358,8 @@ EOF
   local args=()
   [[ "$apply" == 1 ]] && args+=(--apply)
   [[ "$json" == 1 ]] && args+=(--json)
+  [[ "$offline" == 1 ]] && args+=(--offline-only)
+  [[ -n "$live_s" ]] && args+=(--live-seconds "$live_s")
   python3 "$script" "${args[@]}"
 }
 
@@ -3997,7 +4008,7 @@ Commands:
   set-cast-preset desktop|movie   # CQP desktop vs CBR movie encode
   list-p2p-radios                 # Wi-Fi ifaces for Miracast P2P
   set-p2p-wifi-interface auto|IFACE
-  benchmark [--apply] [--json]        # offline auto-tune (engines + radio + knobs)
+  benchmark [--apply] [--json] [--offline-only] [--live-seconds N]
   get-extend-position
   set-extend-position right|left|above|below
   restart-capture [quick]
