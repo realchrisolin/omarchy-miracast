@@ -11,6 +11,7 @@ AUDIO_SINK_MODULE_FILE="$STATE_DIR/audio-sink.module"
 AUDIO_SILENCE_PID_FILE="$STATE_DIR/audio-silence.pid"
 AUDIO_ROUTE_PID_FILE="$STATE_DIR/audio-route.pid"
 AUDIO_ROUTE_LAST_DEFAULT_FILE="$STATE_DIR/audio-route.last-default"
+LINK_WATCH_PID_FILE="$STATE_DIR/link-watch.pid"
 # Hardware (or prior) default sink to restore until PLAY, and after teardown.
 AUDIO_PREV_DEFAULT_FILE="$STATE_DIR/audio-prev-default"
 # While present: do not allow Miracast to become/stay the default sink.
@@ -2631,6 +2632,7 @@ if isinstance(st, dict) and st.get("phase") == "streaming":
                 )
         elif go_ch is not None and go_ch >= 32:
             add("radio_channel", "ok", f"P2P on 5 GHz ch {go_ch}", f"go={go_iface}")
+
     except Exception as e:
         add("radio_channel", "warn", "channel score probe failed", str(e)[:160])
 
@@ -4362,8 +4364,54 @@ stop_miracast_audio_route_watcher() {
   fi
 }
 
+start_miracast_link_watcher() {
+  mkdir -p "$STATE_DIR" "$LOG_DIR"
+  if [[ -f "$LINK_WATCH_PID_FILE" ]]; then
+    local old
+    old="$(tr -d '[:space:]' <"$LINK_WATCH_PID_FILE" 2>/dev/null || true)"
+    if [[ -n "$old" ]] && kill -0 "$old" 2>/dev/null; then
+      return 0
+    fi
+    rm -f "$LINK_WATCH_PID_FILE"
+  fi
+  local script="$PLUGIN_DIR/scripts/miracast_link_watch.py"
+  [[ -f "$script" ]] || {
+    echo "[miracast-ctl] link watch script missing" >>"$LOG_DIR/cast.log"
+    return 1
+  }
+  # Cheap TX poll; rare cached nmcli score; CSA only with cooldown/hysteresis.
+  nohup python3 "$script" \
+    --ctl "$PLUGIN_DIR/bin/miracast-ctl" \
+    --plugin "$PLUGIN_DIR" \
+    --status "$STATUS_FILE" \
+    --cast-log "$LOG_DIR/cast.log" \
+    --interval 8 \
+    --stall-mbps 3 \
+    --stall-ticks 3 \
+    --restart-cooldown 45 \
+    --retry-sample-every 3 \
+    --score-cooldown 180 \
+    --csa-cooldown 300 \
+    --csa-max-per-hour 2 \
+    >>"$LOG_DIR/link-watch.log" 2>&1 &
+  echo $! >"$LINK_WATCH_PID_FILE"
+  echo "[miracast-ctl] link watcher pid=$!" >>"$LOG_DIR/cast.log"
+}
+
+stop_miracast_link_watcher() {
+  if [[ -f "$LINK_WATCH_PID_FILE" ]]; then
+    local pid
+    pid="$(tr -d '[:space:]' <"$LINK_WATCH_PID_FILE" 2>/dev/null || true)"
+    rm -f "$LINK_WATCH_PID_FILE"
+    if [[ -n "$pid" ]]; then
+      kill "$pid" 2>/dev/null || true
+    fi
+  fi
+}
+
 teardown_miracast_audio_sink() {
   stop_miracast_audio_route_watcher || true
+  stop_miracast_link_watcher || true
   rm -f "$AUDIO_DEFAULT_HOLD_FILE"
 
   # Prefer the sink we remembered from before PLAY / before Miracast default.
@@ -4429,6 +4477,8 @@ cmd_stop() {
     esac
   done
   disconnect_log "cmd_stop begin keep_workspaces=$keep_workspaces"
+  # Stop link watcher first so it cannot restart-capture during teardown.
+  stop_miracast_link_watcher || true
   # Detach screencopy first — killing FluxCast while hypr removes the output
   # mid-capture is the eDP hard-freeze path.
   pause_extend_capture >/dev/null || true
@@ -4919,6 +4969,8 @@ except Exception: print("")' "$STATUS_FILE" 2>/dev/null || true)"
         else
           echo "[miracast-ctl] CSA/align skipped (no target channel)" >>"$LOG_DIR/cast.log"
         fi
+        # Low-cost stall recovery + rare RF CSA while streaming.
+        start_miracast_link_watcher || true
       elif [[ "$saw_play" -eq 0 ]]; then
         if rg -q "rtsp_connected" "$LAT_FILE" 2>/dev/null; then
           write_status "rtsp" "RTSP connected; negotiating media" "peer=$peer" "peerName=$peer_name" "mode=$mode" "pid=$pid" "running=true" >/dev/null
