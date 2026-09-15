@@ -116,19 +116,29 @@ class AutoTuneTest(unittest.TestCase):
                             self.assertEqual(
                                 report["settings"]["captureEncode"], "dmabuf"
                             )
+                            # Default QUALITY tier medium → DMA-BUF medium knobs
+                            self.assertEqual(
+                                report["settings"]["encodeProfile"], "medium"
+                            )
+                            self.assertEqual(
+                                report["settings"]["vaapiQuality"], "4"
+                            )
                             self.assertEqual(
                                 report["live"]["skip_kind"], "offline_only"
                             )
                             applied = self.mod.apply_tune(report)
             settings = json.loads(Path(applied["settings"]).read_text())
             self.assertEqual(settings["captureEncode"], "dmabuf")
+            self.assertEqual(settings["encodeProfile"], "medium")
             self.assertEqual(settings["p2pWifiInterface"], "auto")
-            self.assertEqual(settings["vaapiQuality"], "5")
+            self.assertEqual(settings["vaapiQuality"], "4")
+            self.assertEqual(settings["vaapiQp"], 18)
             self.assertEqual(settings["vbvMultiplier"], "0.5")
             self.assertIs(settings["p2pQuietCsa"], False)
             env = Path(applied["state_env"]).read_text()
             self.assertIn("FLUXCAST_WFD_CAPTURE_ENCODE_PREF=dmabuf", env)
-            self.assertIn("FLUXCAST_WFD_VAAPI_QUALITY=5", env)
+            self.assertIn("FLUXCAST_WFD_VAAPI_QUALITY=4", env)
+            self.assertIn("FLUXCAST_WFD_VAAPI_RC=QVBR", env)
             self.assertIn("FLUXCAST_WFD_INTERFACE=wlan1", env)
             self.assertEqual(
                 Path(applied["capture_encode_file"]).read_text().strip(),
@@ -136,6 +146,7 @@ class AutoTuneTest(unittest.TestCase):
             )
             saved = json.loads(Path(applied["report"]).read_text())
             self.assertEqual(saved["settings"]["captureEncode"], "dmabuf")
+            self.assertEqual(saved["settings"]["encodeProfile"], "medium")
 
     def test_refine_from_live_prefers_dmabuf_on_high_pipe_cpu(self):
         eng = self.mod.EngineProbe(
@@ -212,10 +223,15 @@ class AutoTuneTest(unittest.TestCase):
         report["settings"].update(
             {
                 "captureEncode": "dmabuf",
+                "encodeProfile": "medium",
                 "p2pWifiInterface": "auto",
                 "p2pWifiResolved": "wlan1",
                 "p2pQuietCsa": False,
-                "vaapiQuality": "5",
+                "vaapiRcMode": "QVBR",
+                "vaapiQp": 18,
+                "vaapiQuality": "4",
+                "vaapiBitrate": "14M",
+                "vaapiAsyncDepth": 2,
                 "vbvMultiplier": "0.5",
                 "wfRecorderBin": "/usr/bin/wf-recorder",
                 "wfRecorderProto": "icc",

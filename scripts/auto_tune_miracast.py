@@ -151,8 +151,15 @@ def empty_report() -> dict[str, Any]:
         "source": "capability",
         "settings": {
             "captureEncode": "cpu",  # dmabuf | vaapi | cpu
+            "encodeProfile": "medium",  # high | medium | low (per engine)
             "videoEncoder": "auto",
+            "vaapiRcMode": "QVBR",
+            "vaapiQp": 18,
             "vaapiQuality": "5",
+            "vaapiBitrate": "14M",
+            "bitrate": "11M",
+            "vaapiGop": 30,
+            "vaapiAsyncDepth": 2,
             "vbvMultiplier": "0.5",
             "p2pWifiInterface": "auto",  # auto | iface
             "p2pWifiResolved": "",
@@ -166,6 +173,24 @@ def empty_report() -> dict[str, Any]:
         "live": None,
         "rationale": [],
     }
+
+
+def _load_encode_presets():
+    return _load("encode_quality_presets", SCRIPTS / "encode_quality_presets.py")
+
+
+def _existing_encode_profile() -> str:
+    """Keep user's QUALITY tier when retargeting engine; default medium."""
+    cfg = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    path = cfg / "omarchy-miracast" / "settings.json"
+    try:
+        data = json.loads(path.read_text())
+        raw = str(data.get("encodeProfile") or "medium").strip().lower()
+    except Exception:
+        raw = "medium"
+    if raw not in ("high", "medium", "low"):
+        return "medium"
+    return raw
 
 
 def probe_engines() -> EngineProbe:
@@ -641,13 +666,20 @@ def tune(*, live_seconds: float = 25.0, offline_only: bool = False) -> dict[str,
     settings["p2pWifiResolved"] = radio_resolved
     report["rationale"].append(f"radio: {radio_why}")
 
-    # Validated pipe/session knobs (not from live A/B matrix TSV)
-    settings["vaapiQuality"] = "5"
+    # Per-engine QUALITY tier (high|medium|low). Preserve existing tier label.
+    presets = _load_encode_presets()
+    tier = _existing_encode_profile()
+    applied = presets.apply_to_settings(settings, tier=tier, engine=encode)
+    report["rationale"].append(
+        f"encode profile: {applied['encodeProfile']} for {applied['captureEncode']} "
+        f"(rc={applied.get('vaapiRcMode')} qp={applied.get('vaapiQp')} "
+        f"quality={applied.get('vaapiQuality')} max={applied.get('vaapiBitrate')})"
+    )
+
+    # Session radio / VBV defaults (not part of QUALITY table)
     settings["vbvMultiplier"] = "0.5"
     settings["p2pQuietCsa"] = False
-    report["rationale"].append(
-        "encode knobs: vaapiQuality=5, vbvMultiplier=0.5 (pipe-stable)"
-    )
+    report["rationale"].append("vbvMultiplier=0.5 (pipe-stable CBR/QVBR buffer)")
     report["rationale"].append(
         "p2pQuietCsa=false (SCC default; MCC retry storms on 20 MHz CSA)"
     )
@@ -674,6 +706,15 @@ def tune(*, live_seconds: float = 25.0, offline_only: bool = False) -> dict[str,
             report["source"] = report["source"] + "+live"
 
     report["live"] = live_block
+    # refine_from_live may change encode; retarget QUALITY knobs for final engine.
+    if settings.get("captureEncode") != encode:
+        presets.apply_to_settings(
+            settings, tier=settings.get("encodeProfile") or tier, engine=encode
+        )
+        report["rationale"].append(
+            f"encode profile retargeted after live refine → {encode} / "
+            f"{settings.get('encodeProfile')}"
+        )
     settings["captureEncode"] = encode
     settings["videoEncoder"] = _video_encoder_for(encode, settings["videoEncoder"])
     return report
@@ -824,9 +865,13 @@ def format_human(
         f"vaapi-pipe={_yes(engines.get('vaapi'))}  cpu={_yes(engines.get('cpu'))}",
         f"  Wi-Fi radio    {_radio_display(settings)}",
         "                 Auto prefers an idle P2P-GO adapter when more than one exists.",
-        f"  Encode knobs   quality={settings.get('vaapiQuality')}  "
-        f"VBV={settings.get('vbvMultiplier')}s",
-        "                 Higher quality = faster/worse VAAPI; VBV is CBR buffer depth.",
+        f"  QUALITY tier   {settings.get('encodeProfile') or 'medium'}  "
+        f"(rc={settings.get('vaapiRcMode')} qp={settings.get('vaapiQp')} "
+        f"quality={settings.get('vaapiQuality')} max={settings.get('vaapiBitrate')})",
+        "                 Tier knobs are per render engine; reconnect to apply.",
+        f"  Encode knobs   VBV={settings.get('vbvMultiplier')}s  "
+        f"async={settings.get('vaapiAsyncDepth')}",
+        "                 VBV is CBR/QVBR buffer depth; async is pipe async_depth.",
     ]
     if quiet:
         lines.append(
@@ -883,7 +928,12 @@ def format_env(report: dict[str, Any]) -> str:
         f"export FLUXCAST_WFD_CAPTURE_ENCODE_PREF={encode}",
         f"export FLUXCAST_WFD_CAPTURE_ENCODE={legacy}",
         f"export FLUXCAST_WFD_ENCODER={settings.get('videoEncoder') or 'auto'}",
+        f"export FLUXCAST_WFD_VAAPI_RC={settings.get('vaapiRcMode') or 'QVBR'}",
+        f"export FLUXCAST_WFD_VAAPI_QP={settings.get('vaapiQp') or 18}",
+        f"export FLUXCAST_WFD_VAAPI_GOP={settings.get('vaapiGop') or 30}",
+        f"export FLUXCAST_WFD_VAAPI_BITRATE={settings.get('vaapiBitrate') or settings.get('bitrate') or '12M'}",
         f"export FLUXCAST_WFD_VAAPI_QUALITY={settings.get('vaapiQuality')}",
+        f"export FLUXCAST_WFD_VAAPI_ASYNC_DEPTH={settings.get('vaapiAsyncDepth') or 2}",
         f"export FLUXCAST_WFD_VBV_MULTIPLIER={settings.get('vbvMultiplier')}",
         f"export FLUXCAST_WFD_WF_RECORDER_DAMAGE={settings.get('wfRecorderDamage')}",
     ]
@@ -915,8 +965,15 @@ def apply_tune(report: dict[str, Any]) -> dict[str, str]:
         except Exception:
             data = {}
     data["captureEncode"] = settings.get("captureEncode")
+    data["encodeProfile"] = settings.get("encodeProfile") or "medium"
     data["videoEncoder"] = settings.get("videoEncoder")
+    data["vaapiRcMode"] = settings.get("vaapiRcMode")
+    data["vaapiQp"] = settings.get("vaapiQp")
+    data["vaapiGop"] = settings.get("vaapiGop")
+    data["vaapiBitrate"] = settings.get("vaapiBitrate")
+    data["bitrate"] = settings.get("bitrate")
     data["vaapiQuality"] = settings.get("vaapiQuality")
+    data["vaapiAsyncDepth"] = settings.get("vaapiAsyncDepth")
     data["vbvMultiplier"] = settings.get("vbvMultiplier")
     data["p2pWifiInterface"] = settings.get("p2pWifiInterface")
     data["p2pQuietCsa"] = bool(settings.get("p2pQuietCsa"))
