@@ -105,6 +105,41 @@ Those three requirements are inconsistent under Hyprland (and typical tiling WMs
 - **Shared** as “same workspace on both displays + independent switching” is **not feasible** on stock Hyprland without mirroring (which kills independence) or lying about “same” (paired distinct workspaces).  
 - A honest **shared** mode should mean **A** (shared pool, one WS per monitor) and/or **B** (optional paired switching), documented clearly so users don’t expect a dual view of one desktop without mirror.
 
+### Clarification: one global active workspace + focus vs read-only (2026-09-14)
+
+Revised ask:
+
+> There would only be **one active workspace** at a time. One display has **focus**; the other is **read-only**. Same content on eDP and Miracast, without calling it “screen mirroring” in the product sense.
+
+**Does that change feasibility?** It removes the contradiction with per-display independent switching, but it does **not** unlock a non-mirror dual view in Hyprland.
+
+| Piece | Feasible? | How |
+|-------|-----------|-----|
+| Single global active desktop (switching changes what *both* show) | **Yes** | Always show the same workspace identity on both outputs |
+| Same windows / same layout on both screens | **Yes, via clone** | Hyprland `monitor.mirror`, or Miracast **Mirror** cast mode (capture eDP) |
+| Focused display interactive, other read-only | **Mostly yes** | One seat: cursor/keyboard follow the focused monitor; keep focus on eDP (or cast) and don’t focus the read-only output. Optional: stronger “input lock” so clicks on the TV do nothing useful |
+| Same result **without** compositor mirror / capture clone | **No** | Stock Hyprland still won’t assign one workspace to two monitors as two live viewports. No supported “secondary read-only camera” into a workspace on another output |
+
+So the revised model is essentially:
+
+**Shared-clone (focus + read-only)** ≈ **mirror (or Mirror cast)** + **input policy**  
+not a third compositor primitive.
+
+Implications for WORKSPACE TYPE naming:
+
+- If product “shared” means “TV always shows what I’m looking at, I drive it from the laptop,” ship it as **clone/mirror semantics** (possibly wrapped as WORKSPACE TYPE `shared`) and be honest that the TV is a read-only view of the focused desktop.
+- That path overlaps heavily with existing **Cast mode = Mirror**; Extend + `persistent-miracast` + `mirror=eDP` is the Hyprland-native way to get the same pixels on the headless output.
+- Independent switching of a *different* desktop on the TV is then explicitly **out of scope** for `shared`.
+
+Updated coherent modes:
+
+| Mode | Active WS | What’s on TV | Input |
+|------|-----------|--------------|--------|
+| **independent** (now) | Two (numeric + `ext-*`) | Separate desktop | Per focused monitor |
+| **shared-pool (A)** | Two (one per monitor) | Different WS from shared pool | Per focused monitor |
+| **shared-clone (revised ask)** | **One** global | Same as focused desktop | Focus display RW; other RO |
+| **paired (B)** | Two, switched together | Different content, same slot # | Per monitor or locked |
+
 ---
 
 ## 3. Plan: add WORKSPACE TYPE (`independent` | `shared`)
@@ -112,12 +147,14 @@ Those three requirements are inconsistent under Hyprland (and typical tiling WMs
 ### Goals
 - Panel + `miracast-ctl` setting: **WORKSPACE TYPE**.  
 - Default: **`independent`** (current behavior + pin_extend_workspaces).  
-- **`shared`**: implement interpretation **A** first (shared pool); optionally **B** as “paired switch” later.  
+- **`shared`**: pick one honest meaning after product choice:
+  - **`shared-pool`**: interpretation **A**, or  
+  - **`shared-clone`**: revised ask (one active WS, focus + read-only) via mirror / Mirror cast + focus policy.  
 - Never freeze eDP; never `output remove` for workspace mode changes.
 
 ### Non-goals (v1)
-- True dual-viewport of one workspace without mirror.  
-- Changing Persist-display semantics (keep as sink-head persistence).
+- Dual interactive viewports of one workspace without clone/mirror.  
+- Changing Persist-display semantics (keep as sink-head persistence) unless `shared-clone` replaces Extend with mirrored headless.
 
 ### Settings sketch
 ```json
@@ -130,7 +167,8 @@ Those three requirements are inconsistent under Hyprland (and typical tiling WMs
 | Value | Behavior |
 |-------|----------|
 | `independent` | eDP: numeric; Miracast: `ext-*`; pin on every connect; bar strips differ |
-| `shared` | Both monitors use the same numeric (or named) pool; pin rules relaxed; a workspace lives on one monitor; switching is per focused monitor |
+| `shared` (pool) | Both monitors use the same numeric pool; a WS lives on one monitor; per-monitor active WS |
+| `shared` (clone) | One global active WS; TV mirrors focused desktop; input stays on focus display (read-only TV) |
 
 ### Implementation phases
 
@@ -169,9 +207,10 @@ Those three requirements are inconsistent under Hyprland (and typical tiling WMs
 4. **Matrix**: reconnect loop does not strand workspaces (pin).  
 
 ### Open questions
-1. When switching independent → shared, migrate `ext-*` automatically or ask?  
-2. Should shared mode allow dragging a workspace to the TV while keeping another WS active on eDP? (Hyprland default: yes.)  
-3. Bar indicator: one strip for shared vs two strips for independent?
+1. Does product **shared** mean **shared-pool (A)** or **shared-clone** (one active WS, focus + read-only TV)?  
+2. If clone: implement via Hyprland `mirror=` on `persistent-miracast`, or reuse Cast mode **Mirror** (capture eDP)?  
+3. When switching independent → shared-pool, migrate `ext-*` automatically or ask?  
+4. Bar indicator: one strip for shared-clone vs two strips for independent / shared-pool?  
 
 ---
 
