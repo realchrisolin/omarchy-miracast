@@ -90,7 +90,7 @@ Dry-run without writing settings: omit `--apply`. Details in
 
 ```bash
 miracast-ctl set-cast-preset desktop   # CQP qp18 GOP30 quality 5
-miracast-ctl set-cast-preset movie     # CQP qp18 GOP60 quality 5, continuous -D
+miracast-ctl set-cast-preset movie     # QVBR qp18 max 16M GOP30 quality 5, continuous -D
 # RC/env apply at FluxCast start — reconnect if already streaming
 ```
 

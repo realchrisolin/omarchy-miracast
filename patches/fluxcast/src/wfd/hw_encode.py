@@ -433,10 +433,24 @@ def build_encode_plan(
             "-rc_mode", rc,
         ]
         if rc == "CQP":
-            # Movie/desktop presets: CQP avoids Intel CBR undershoot/blockiness.
+            # Sharp/static: pure QP. Note: Intel ignores -maxrate in CQP, so
+            # busy scenes can spike 30–40 Mbps — fine on wide P2P, harsh on
+            # 20 MHz / ~72 Mbps Miracast links (use QVBR there).
             qp = _vaapi_qp()
             video_args += ["-qp", qp]
             rc_note = f"CQP qp={qp} gop={gop_i}"
+        elif rc == "QVBR":
+            # Quality-defined VBR: keep qp as quality floor and honor maxrate.
+            # Prefer FLUXCAST_WFD_VAAPI_BITRATE as the peak cap when set.
+            qp = _vaapi_qp()
+            cap = (os.environ.get("FLUXCAST_WFD_VAAPI_BITRATE", "") or "").strip() or bitrate
+            video_args += [
+                "-qp", qp,
+                "-b:v", bitrate,
+                "-maxrate", cap,
+                "-bufsize", bufsize,
+            ]
+            rc_note = f"QVBR qp={qp} b={bitrate} max={cap} gop={gop_i}"
         else:
             # Explicit bitrate mode: bare -b:v can land on AVBR and undershoot
             # badly on static desktops (few hundred kb/s vs multi-Mbps target).

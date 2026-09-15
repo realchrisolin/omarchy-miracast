@@ -116,13 +116,13 @@ Override in `~/.config/omarchy-miracast/settings.json` (merged with
 | `wfRecorderBin` | unset | Absolute path to a custom `wf-recorder` (e.g. ICC / PR #347). Empty = **PATH** stock. ICC preferred for perf; see [BUILD.md §7](BUILD.md) for Extend terminal typing lag. |
 | `wfRecorderProto` | `auto` | `auto` / `icc` / `wlr`. `auto` upgrades to `icc` when a configured binary advertises ICC. Use `wlr` + stock binary if cast-head terminal keys feel buffered until the pointer moves. |
 | `wfRecorderDamage` | `"1"` | `"1"` = damage-aware (omit `wf-recorder -D`); `"0"` = continuous `-D`. Set by `scripts/recommend-cast-profile.py --apply` or manually. |
-| `castPreset` | `desktop` | `desktop` = CQP qp18 GOP30; `movie` = CQP qp18 GOP60 quality **5**, continuous `-D`. `miracast-ctl set-cast-preset desktop\|movie`. |
+| `castPreset` | `desktop` | `desktop` = CQP qp18 GOP30; `movie` = **QVBR** qp18 max **16M** GOP30 quality **5**, continuous `-D`. `miracast-ctl set-cast-preset desktop\|movie`. |
 | `vaapiQuality` | `5` | ffmpeg `h264_vaapi` `-quality` (1–8; higher = faster/worse). Pipe A/B: q2 choppier; q7+tight VBV stalled. |
 | `vbvMultiplier` | `0.5` | CBR VBV as a fraction of bitrate (~0.5 s). → `FLUXCAST_WFD_VBV_MULTIPLIER`. |
 | `p2pWifiInterface` | `auto` | Managed Wi‑Fi iface for Miracast P2P, or `auto` (prefer idle P2P-GO). `miracast-ctl list-p2p-radios` / `set-p2p-wifi-interface`. |
 | `p2pQuietCsa` | `false` | `true` = post-PLAY CSA to a quiet channel (MCC). Default **SCC** (same channel as STA) after retry-storm A/B. |
-| `vaapiRcMode` | `CQP` | `CQP` / `CBR` / `VBR` → `FLUXCAST_WFD_VAAPI_RC` (pipe + DMA) |
-| `vaapiBitrate` | `12M` | Target for CBR/VBR (Intel CBR undershoots; movie preset uses CQP). |
+| `vaapiRcMode` | `CQP` | `CQP` / `QVBR` / `CBR` / `VBR` → `FLUXCAST_WFD_VAAPI_RC` (pipe + DMA) |
+| `vaapiBitrate` | `12M` | Target/peak for CBR/VBR/QVBR (Intel CBR undershoots; movie uses QVBR max 16M). |
 | `vaapiQp` | `18` | CQP quantizer (lower = sharper) |
 | `vaapiGop` | `30` | GOP length in frames (~1s at 30 fps; movie preset uses 60) |
 | *(env)* `FLUXCAST_WFD_VAAPI_QP` | `18` | CQP quantizer for pipe ffmpeg and DMA wf-recorder |
@@ -189,7 +189,7 @@ To score [BENCHMARKS.md](BENCHMARKS.md) results into settings (`captureEncode`,
 ```bash
 ./scripts/recommend-cast-profile.py          # dry-run + docs/benchmarks/recommended.env
 ./scripts/recommend-cast-profile.py --apply  # update settings.json
-miracast-ctl set-cast-preset movie|desktop   # CQP movie vs desktop encode; reconnect if streaming
+miracast-ctl set-cast-preset movie|desktop   # QVBR movie vs CQP desktop; reconnect if streaming
 ```
 
 See [BENCHMARKS.md](BENCHMARKS.md) for presets and Intel CBR undershoot notes.

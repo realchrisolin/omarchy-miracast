@@ -408,7 +408,7 @@ print(json.dumps(data, separators=(",", ":")))
 PY
 }
 
-# desktop = sharp UI (CQP); movie = steady bitrate for film (CBR).
+# desktop = sharp UI (CQP); movie = QVBR with peak cap for film on narrow P2P.
 apply_cast_preset() {
   local preset="${1:-desktop}"
   case "$preset" in
@@ -429,15 +429,15 @@ if not isinstance(data, dict):
     data = {}
 data["castPreset"] = preset
 if preset == "movie":
-    # Intel h264_vaapi CBR undershoots badly (~3 Mbps vs 20–28M target) →
-    # smooth but blocky. CQP uses bits when scenes need them (peaks OK on
-    # ~72 Mbps P2P PHY). Slightly longer GOP than desktop for film efficiency.
-    data["vaapiRcMode"] = "CQP"
+    # Intel CBR undershoots (~3 Mbps) → blocky. Pure CQP looks better but
+    # ignores maxrate and can spike 30–40 Mbps on busy scenes — too hot for
+    # typical 20 MHz / ~72 Mbps Miracast P2P. QVBR keeps QP quality with a cap.
+    data["vaapiRcMode"] = "QVBR"
     data["vaapiQp"] = 18
-    data["vaapiGop"] = 60
-    # quality 5: pipe CBR A/B on hotyeah — q2 was choppier; q7+tight VBV locked up.
+    data["vaapiGop"] = 30  # faster IDR recovery than 60 if a slice is lost
+    # quality 5: prior pipe A/B — q2 choppier; q7+tight VBV locked up.
     data["vaapiQuality"] = "5"
-    data["vaapiBitrate"] = str(data.get("vaapiBitrate") or "28M")  # unused for CQP
+    data["vaapiBitrate"] = "16M"  # peak cap for narrow Miracast P2P
     data["wfRecorderDamage"] = "0"  # continuous -D
 else:
     # Sharp desktop / terminals.
@@ -3810,7 +3810,7 @@ else:
 ' "$settings" "${FLUXCAST_WFD_VAAPI_GOP:-}" 2>/dev/null || echo "${FLUXCAST_WFD_VAAPI_GOP:-30}")"
     export FLUXCAST_WFD_VAAPI_GOP="$_gop"
     echo "[miracast-ctl] VAAPI GOP=$FLUXCAST_WFD_VAAPI_GOP" >>"$LOG_DIR/cast.log"
-    # Rate control: settings.vaapiRcMode (CQP|CBR|VBR) + bitrate for non-CQP.
+    # Rate control: settings.vaapiRcMode (CQP|QVBR|CBR|VBR) + bitrate for non-CQP.
     _rc="$(python3 -c 'import json,sys
 s=json.loads(sys.argv[1])
 print(str(s.get("vaapiRcMode") or "CQP").strip().upper() or "CQP")
@@ -4019,7 +4019,7 @@ Commands:
   get-stream-mode
   set-stream-mode <id>   # e.g. 1280x720p30 / 1920x1080p60
   set-capture-encode dmabuf|vaapi|cpu   # RENDER METHOD preference
-  set-cast-preset desktop|movie   # CQP desktop vs CBR movie encode
+  set-cast-preset desktop|movie   # CQP desktop vs QVBR movie (16M cap)
   list-p2p-radios                 # Wi-Fi ifaces for Miracast P2P
   set-p2p-wifi-interface auto|IFACE
   benchmark [--apply] [--json] [--offline-only] [--live-seconds N]
