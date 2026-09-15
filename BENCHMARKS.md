@@ -7,8 +7,9 @@ ENGINE). Setup: [BUILD.md](BUILD.md).
 **RF / P2P channel** (SCC vs quiet-channel CSA / MCC) is mostly orthogonal to
 the encode CPU matrix below — it changes airtime contention on the radio.
 Measured A/B: [docs/benchmarks/p2p_channel_ab.tsv](docs/benchmarks/p2p_channel_ab.tsv)
-(see § P2P channel A/B). Setup notes: [BUILD.md](BUILD.md) § P2P channel
-(SCC vs quiet CSA). Default is **SCC** (`p2pQuietCsa: false`).
+(see § P2P channel A/B). How “quiet” **scores** relate to retries (user-facing):
+[README.md](README.md) § P2P channel. Developer CSA/tests:
+[BUILD.md](BUILD.md) § P2P channel. Default is **SCC** (`p2pQuietCsa: false`).
 
 ## Capture binaries compared
 

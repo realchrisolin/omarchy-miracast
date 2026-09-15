@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Unit tests for pick-p2p-channel quiet / quietest policy."""
+"""Unit tests for pick-p2p-channel quiet / quietest policy.
+
+“Quiet” is a score threshold; ranking uses the numeric interference score.
+On-device Miracast TX retries have followed that ranking (see README § P2P
+channel). These tests cover the policy helpers, not live RF.
+"""
 
 from __future__ import annotations
 

@@ -157,9 +157,10 @@ Home Wi‑Fi (STA) and Miracast (P2P-GO) share one radio on typical laptops
 (e.g. Intel AX201 / `iwlwifi`). Soft `--wfd-p2p-channel` during GO negotiation
 is overridden to the STA channel (**SCC**).
 
-**Default (`p2pQuietCsa: false`):** stay on the STA channel. On this host, SCC
-avoided the retry storms seen when CSA moved P2P to a 20 MHz “quiet” channel
-(MCC). Prefer SCC unless you have measured MCC as better in your RF.
+**Default (`p2pQuietCsa: false`):** **SCC** — force/align P2P onto the STA
+primary channel. If the sink stays on 2.4 while STA is 5 GHz (2.4-only
+dongles), skip cross-band CSA and use a quieter 2.4 channel instead. Prefer
+SCC over quiet-CSA MCC unless you have measured MCC as better in your RF.
 
 **Opt-in quiet CSA (`p2pQuietCsa: true` or `MIRACAST_P2P_QUIET_CSA=1`):**
 
