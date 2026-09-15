@@ -69,8 +69,24 @@ Panel {
   readonly property bool onlyExpandFocusedDisplay: !!(miracast && miracast.onlyExpandFocusedDisplay)
   // MIRACAST → ADVANCED SETTINGS (STREAM / RENDER / PRESET QUALITY).
   property bool advancedSettingsExpanded: false
-  // Themed Miracast help card (Info button / I). Separate from the terminal CLI.
+  // Themed Miracast help window (Info button / I). Independent of the Display
+  // dropdown: the KeyboardPanel overlay would steal clicks from a FloatingWindow.
   property bool helpOpen: false
+  function showHelp() {
+    root.helpOpen = true
+    // Drop the Display overlay so the help window can take focus/clicks.
+    if (root.opened)
+      root.close()
+  }
+  function hideHelp() {
+    root.helpOpen = false
+  }
+  function toggleHelp() {
+    if (root.helpOpen)
+      root.hideHelp()
+    else
+      root.showHelp()
+  }
   // Which monitor's scale-pill row currently has keyboard focus.
   property string scaleFocusMonitor: ""
   // After open, wait for a fresh monitor-state read before expanding — otherwise
@@ -566,8 +582,8 @@ Panel {
     function toggle() { root.toggle() }
     function show() { root.open() }
     function hide() { root.close() }
-    function openHelp() { root.open(); root.helpOpen = true }
-    function closeHelp() { root.helpOpen = false }
+    function openHelp() { root.showHelp() }
+    function closeHelp() { root.hideHelp() }
   }
 
   function refresh() {
@@ -818,7 +834,7 @@ Panel {
   // the cursor until hover or the first navigation key.
   onOpenedChanged: {
     if (!opened) {
-      root.helpOpen = false
+      // Keep helpOpen — help is its own window and must outlive the dropdown.
       root.syncExpandToFocusPending = false
       return
     }
@@ -1075,7 +1091,7 @@ Panel {
       onTextKey: function(t) {
         if (t === "s" || t === "S") miracast.scanPeers()
         else if (t === "d" || t === "D") miracast.runDoctor(true)
-        else if (t === "i" || t === "I") root.helpOpen = !root.helpOpen
+        else if (t === "i" || t === "I") root.toggleHelp()
         else if (t === "c" || t === "C") miracast.startCast("")
         else if (t === "m" || t === "M") miracast.setMode("mirror")
         else if (t === "e" || t === "E") miracast.setMode("extend")
@@ -1348,7 +1364,7 @@ Panel {
                     foreground: root.bar.foreground
                     fontFamily: root.bar.fontFamily
                     enabled: true
-                    onClicked: root.helpOpen = !root.helpOpen
+                    onClicked: root.toggleHelp()
                   }
                   Item { width: Style.space(8); height: 1 }
                   PanelActionButton {
@@ -1751,16 +1767,17 @@ Panel {
     }
   }
 
-  // Themed floating help window — Close / Esc. Separate from the Display
-  // KeyboardPanel so it does not fight the bar popout coordinator.
-  // CLI `miracast-ctl info` still opens the terminal viewer.
+  // Themed floating help window — Close / Esc. Opens independently: the
+  // Display KeyboardPanel is a layer-shell overlay and would steal clicks.
+  // showHelp() closes the dropdown first. CLI `miracast-ctl info` still
+  // opens the terminal viewer.
   FloatingWindow {
     id: helpWindow
     title: "Miracast help"
     color: Color.popups.background
-    implicitWidth: 480
-    implicitHeight: 520
-    minimumSize: Qt.size(360, 320)
+    implicitWidth: 500
+    implicitHeight: 560
+    minimumSize: Qt.size(380, 360)
     visible: false
 
     onVisibleChanged: {
@@ -1785,30 +1802,23 @@ Panel {
 
     FocusScope {
       anchors.fill: parent
+      anchors.margins: Style.space(14)
       focus: true
 
       PanelKeyCatcher {
         id: helpCatcher
         anchors.fill: parent
-        onCloseRequested: root.helpOpen = false
+        onCloseRequested: root.hideHelp()
         onTextKey: function(t) {
-          if (t === "i" || t === "I") root.helpOpen = false
+          if (t === "i" || t === "I") root.hideHelp()
         }
 
-        ScrollView {
-          id: helpScroll
+        MiracastHelpPopup {
           anchors.fill: parent
-          anchors.margins: Style.space(14)
-          clip: true
-          ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
-          ScrollBar.vertical.policy: ScrollBar.AsNeeded
-
-          MiracastHelpPopup {
-            width: helpScroll.availableWidth
-            foreground: root.bar ? root.bar.foreground : Color.foreground
-            fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
-            onCloseRequested: root.helpOpen = false
-          }
+          foreground: root.bar ? root.bar.foreground : Color.foreground
+          fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+          background: Color.popups.background
+          onCloseRequested: root.hideHelp()
         }
       }
     }
