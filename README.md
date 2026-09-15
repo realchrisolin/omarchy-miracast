@@ -16,7 +16,7 @@ why upstream merges matter): see **[BUILD.md](BUILD.md)**.
 - Scan / connect / disconnect Miracast sinks from the Display panel
 - **Mirror** or **Extend** (Hyprland virtual output named after the sink)
 - Stream mode pills (sink-advertised CEA modes such as 720p30 / 1080p30)
-- Quiet P2P channel after connect (scan → associate on home Wi‑Fi channel → CSA off that block)
+- P2P Wi‑Fi radio picker (Auto prefers idle P2P-GO adapters; optional quiet-channel CSA)
 - Safe scale / position changes (pause capture → move → restart)
 - Safer disconnect teardown (workspace migrate, cursor restore, eDP re-assert)
 - Optional VAAPI/QSV encode with OS power-plan throttling (FluxCast `power_plan_N`)
@@ -116,7 +116,11 @@ Override in `~/.config/omarchy-miracast/settings.json` (merged with
 | `wfRecorderBin` | unset | Absolute path to a custom `wf-recorder` (e.g. ICC / PR #347). Empty = **PATH** stock. ICC preferred for perf; see [BUILD.md §7](BUILD.md) for Extend terminal typing lag. |
 | `wfRecorderProto` | `auto` | `auto` / `icc` / `wlr`. `auto` upgrades to `icc` when a configured binary advertises ICC. Use `wlr` + stock binary if cast-head terminal keys feel buffered until the pointer moves. |
 | `wfRecorderDamage` | `"1"` | `"1"` = damage-aware (omit `wf-recorder -D`); `"0"` = continuous `-D`. Set by `scripts/recommend-cast-profile.py --apply` or manually. |
-| `castPreset` | `desktop` | `desktop` = CQP qp18 GOP30; `movie` = CQP qp18 GOP60 quality2 (Intel CBR undershoots). `miracast-ctl set-cast-preset desktop\|movie`. |
+| `castPreset` | `desktop` | `desktop` = CQP qp18 GOP30; `movie` = CQP qp18 GOP60 quality **5**, continuous `-D`. `miracast-ctl set-cast-preset desktop\|movie`. |
+| `vaapiQuality` | `5` | ffmpeg `h264_vaapi` `-quality` (1–8; higher = faster/worse). Pipe A/B: q2 choppier; q7+tight VBV stalled. |
+| `vbvMultiplier` | `0.5` | CBR VBV as a fraction of bitrate (~0.5 s). → `FLUXCAST_WFD_VBV_MULTIPLIER`. |
+| `p2pWifiInterface` | `auto` | Managed Wi‑Fi iface for Miracast P2P, or `auto` (prefer idle P2P-GO). `miracast-ctl list-p2p-radios` / `set-p2p-wifi-interface`. |
+| `p2pQuietCsa` | `false` | `true` = post-PLAY CSA to a quiet channel (MCC). Default **SCC** (same channel as STA) after retry-storm A/B. |
 | `vaapiRcMode` | `CQP` | `CQP` / `CBR` / `VBR` → `FLUXCAST_WFD_VAAPI_RC` |
 | `vaapiBitrate` | `12M` | Target for CBR/VBR (Intel CBR undershoots; movie preset uses CQP). |
 | `vaapiQp` | `18` | CQP quantizer (lower = sharper) |
@@ -200,16 +204,18 @@ override per sink in the Display panel (`sinkScales`).
 
 ```bash
 miracast-ctl set-capture-encode dmabuf|vaapi|cpu
-miracast-ctl pick-channel          # quiet 5 GHz P2P target (else quietest)
+miracast-ctl list-p2p-radios                # Auto / iface + P2P-GO / STA flags
+miracast-ctl set-p2p-wifi-interface auto|IFACE
+miracast-ctl pick-channel                   # quiet 5 GHz P2P target (else quietest)
 miracast-ctl pick-channel --json
-./scripts/test_p2p_channel_integration.sh   # assert GO ch != STA ch after PLAY
 ./scripts/bench_p2p_channel.sh              # SCC vs MCC TX A/B
 ```
 
-On connect, `miracast-ctl` associates via NetworkManager (same channel as
-home Wi‑Fi), then after PLAY runs a GO **channel switch** to the picked
-quiet channel when the radio supports it (AX201: STA can stay on home Wi‑Fi
-while P2P moves to e.g. UNII-3). See [BUILD.md](BUILD.md) § P2P quiet channel.
+By default Miracast stays on the **STA channel (SCC)** — one radio, no
+channel hop. Set `p2pQuietCsa: true` (or `MIRACAST_P2P_QUIET_CSA=1`) to
+post-PLAY CSA onto a quieter channel (MCC). On this AX201 host, MCC at
+20 MHz showed retry storms while SCC did not; treat CSA as opt-in.
+See [BUILD.md](BUILD.md) § P2P channel (SCC vs quiet CSA).
 
 ## Virtual output lifecycle (eDP safety)
 

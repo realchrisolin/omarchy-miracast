@@ -89,8 +89,8 @@ Dry-run without writing settings: omit `--apply`. Details in
 **Encode presets** (desktop UI vs movie):
 
 ```bash
-miracast-ctl set-cast-preset desktop   # CQP qp18 GOP30
-miracast-ctl set-cast-preset movie     # CQP qp18 GOP60 quality2, continuous -D
+miracast-ctl set-cast-preset desktop   # CQP qp18 GOP30 quality 5
+miracast-ctl set-cast-preset movie     # CQP qp18 GOP60 quality 5, continuous -D
 # RC/env apply at FluxCast start — reconnect if already streaming
 ```
 
@@ -148,27 +148,34 @@ omarchy pkg add dnsmasq wf-recorder xorg-xrandr ffmpeg meson ninja \
 - A TV/dongle that actually completes WFD (many “Miracast” sticks are flaky)
 - Hyprland new enough for `ext_image_copy_capture_manager_v1`
 
-### P2P quiet channel (MCC via CSA)
+### P2P channel (SCC vs quiet CSA)
 
 Home Wi‑Fi (STA) and Miracast (P2P-GO) share one radio on typical laptops
 (e.g. Intel AX201 / `iwlwifi`). Soft `--wfd-p2p-channel` during GO negotiation
-is overridden to the STA channel (SCC). The working approach:
+is overridden to the STA channel (**SCC**).
+
+**Default (`p2pQuietCsa: false`):** stay on the STA channel. On this host, SCC
+avoided the retry storms seen when CSA moved P2P to a 20 MHz “quiet” channel
+(MCC). Prefer SCC unless you have measured MCC as better in your RF.
+
+**Opt-in quiet CSA (`p2pQuietCsa: true` or `MIRACAST_P2P_QUIET_CSA=1`):**
 
 1. `scripts/pick-p2p-channel.py` — prefer quiet channels **outside** the STA’s
    80 MHz block (UNII-3 when STA is on UNII-1 ch 36–48).
-2. Connect with NetworkManager as usual (association succeeds on STA channel).
-3. After PLAY, `miracast-ctl` runs `wpa_cli chan_switch` on the GO iface to the
-   picked channel. Home Wi‑Fi stays up; do **not** unmanage `p2p-dev-*` (that
-   can leave wifi-p2p unavailable until NetworkManager restarts).
+2. Connect with NetworkManager as usual (association on STA channel).
+3. After PLAY, `miracast-ctl` runs `wpa_cli chan_switch` on the GO iface
+   (`MIRACAST_P2P_CSA_BW=20|40|80`, default 20). Do **not** unmanage
+   `p2p-dev-*`.
 
 ```bash
 ./scripts/pick-p2p-channel.py --json --band 5
 ./scripts/test_pick_p2p_channel.py
 ./scripts/test_attach_radio_channel_fields.py
-./scripts/test_p2p_channel_integration.sh   # reconnect + assert GO ch != STA ch
+./scripts/test_list_p2p_radios.py
 ./scripts/bench_p2p_channel.sh              # SCC vs MCC TX A/B → docs/benchmarks/
+miracast-ctl list-p2p-radios
 miracast-ctl pick-channel
-miracast-ctl status   # includes staChannel / p2pChannel / radioMcc
+miracast-ctl status   # staChannel / p2pChannel / radioMcc / p2pWifiResolved
 # Live check while streaming:
 iw dev   # STA channel vs P2P-GO channel
 ```

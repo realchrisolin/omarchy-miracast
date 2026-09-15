@@ -4,10 +4,11 @@ Live **Extend** session on Omarchy/Hyprland. These numbers motivate shipping
 an ICC-capable `wf-recorder` (and keeping DMA-BUF as the default RENDER
 ENGINE). Setup: [BUILD.md](BUILD.md).
 
-**RF / P2P channel** (quiet-channel CSA / MCC vs SCC) is mostly orthogonal to
+**RF / P2P channel** (SCC vs quiet-channel CSA / MCC) is mostly orthogonal to
 the encode CPU matrix below — it changes airtime contention on the radio.
 Measured A/B: [docs/benchmarks/p2p_channel_ab.tsv](docs/benchmarks/p2p_channel_ab.tsv)
-(see § P2P channel A/B). Setup notes: [BUILD.md](BUILD.md) § P2P quiet channel.
+(see § P2P channel A/B). Setup notes: [BUILD.md](BUILD.md) § P2P channel
+(SCC vs quiet CSA). Default is **SCC** (`p2pQuietCsa: false`).
 
 ## Capture binaries compared
 
@@ -205,8 +206,8 @@ matching `FLUXCAST_WFD_*` env vars via `miracast-ctl`.
 
 | Preset | RC | Bitrate / QP | GOP | Damage | Best for |
 |--------|-----|--------------|-----|--------|----------|
-| **desktop** | CQP | qp 18 | 30 | damage-aware (`1`) | UI / terminals |
-| **movie** | CQP | qp 18, quality 2 | 60 | continuous `-D` (`0`) | Fullscreen video (Intel CBR undershoots ≈3 Mbps → blocky) |
+| **desktop** | CQP | qp 18, quality **5** | 30 | damage-aware (`1`) | UI / terminals |
+| **movie** | CQP | qp 18, quality **5** | 60 | continuous `-D` (`0`) | Fullscreen video (Intel CBR undershoots ≈3 Mbps → blocky) |
 
 ```bash
 miracast-ctl set-cast-preset movie     # apply + restart capture if streaming
@@ -233,8 +234,9 @@ From the checked-in run (`docs/benchmarks/p2p_channel_ab.json`): Intel
 i7-1165G7, Iris Xe, Wi‑Fi 6 AX201/`iwlwifi`, Hyprland; STA link **ch 44 @
 80 MHz**; sink display name as advertised by the dongle.
 
-**SCC**: `MIRACAST_SKIP_P2P_CSA=1` (GO remains on 44). **MCC**: post-PLAY CSA to
-quiet off-block channel (**161**). Sample **20 s** after **6 s** settle; TX from
+**SCC**: GO remains on STA channel (default; `p2pQuietCsa: false` or
+`MIRACAST_SKIP_P2P_CSA=1`). **MCC**: post-PLAY CSA to quiet off-block channel
+(**161**). Sample **20 s** after **6 s** settle; TX from
 `/sys/class/net/<p2p-GO>/statistics`.
 
 | Case | STA ch | GO ch | TX kbps | Signal | iw TX bitrate | Authorized |
@@ -242,13 +244,14 @@ quiet off-block channel (**161**). Sample **20 s** after **6 s** settle; TX from
 | **scc** | 44 | 44 | 6347.6 | −41 dBm | 72.2 Mb/s | yes |
 | **mcc** | 44 | 161 | 6548.3 | −52 dBm | 72.2 Mb/s | yes |
 
-MCC kept similar TX throughput while moving P2P off the STA’s 80 MHz block
-(signal a bit weaker on 161, as expected). Home Wi‑Fi default route stayed up.
+That early bench showed similar **average** TX. A later 90 s retry-storm probe
+on the same host favored **SCC** (0 retry spikes) over MCC at 20 MHz no-HT
+(10 spikes / ~4.9 retries/s). Prefer SCC unless you re-measure MCC as better.
 
 ```bash
 ./scripts/bench_host_info.py                   # equipment JSON only
 ./scripts/bench_p2p_channel.sh                 # SCC vs MCC + equipment → docs/benchmarks/
-./scripts/test_p2p_channel_integration.sh      # assert GO ch != STA ch after PLAY
+./scripts/test_list_p2p_radios.py
 ```
 
 Artifacts: `docs/benchmarks/public/p2p_channel_ab.*` (and legacy copies at `docs/benchmarks/p2p_channel_ab.*`). Full sink name/MAC dumps go to `docs/benchmarks/private/` (gitignored); run `./scripts/sanitize_benchmark_results.py` before PRs.
