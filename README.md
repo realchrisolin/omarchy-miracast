@@ -143,9 +143,9 @@ controls). To restore single-row accordion behavior:
 ```
 
 While connected, the Miracast display row shows **CAST MODE** / **EXTEND
-POSITION** first (← ↑ ↓ → when Extend), then **SCALE**, **STREAM MODE**,
-**RENDER ENGINE**, and **QUALITY**. Scan / doctor / firewall / Stop stay under
-the **MIRACAST** section.
+POSITION** (← ↑ ↓ → when Extend) and **SCALE**. Under **MIRACAST** (below
+**CONTROLS**): **STREAM MODE**, **RENDER ENGINE**, and **PRESET QUALITY**, then
+**RADIO**. Scan / doctor / firewall / Stop stay under **CONTROLS**.
 
 With focus on the CAST MODE / EXTEND POSITION row and Extend active, vim
 **hjkl** set position: **h** ← left, **j** ↓ below, **k** ↑ above, **l** → right.
@@ -173,11 +173,11 @@ SIGUSR1 capture restart alone is not enough for those. If a GPU path fails,
 FluxCast falls back toward CPU; the **active** pill follows the resolved path
 (`capturePath` / `encoder` in `miracast-ctl status`), not only the preference.
 
-### QUALITY
+### PRESET QUALITY
 
 Independent of render engine: **High** / **Medium** / **Low**. Knobs are looked
 up per engine in `scripts/encode_quality_presets.py` (DMA-BUF high ≠ VAAPI-pipe
-high).
+high). Shown under **MIRACAST** below **CONTROLS**.
 
 ```bash
 miracast-ctl set-quality high|medium|low

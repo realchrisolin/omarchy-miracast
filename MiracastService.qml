@@ -298,10 +298,10 @@ Item {
     encodeProfile = next
     lastError = ""
     if (active)
-      actionStatus = "QUALITY " + encodeProfileLabel(next)
+      actionStatus = "PRESET QUALITY " + encodeProfileLabel(next)
           + " saved — reconnect to apply…"
     else
-      actionStatus = "QUALITY: " + encodeProfileLabel(next)
+      actionStatus = "PRESET QUALITY: " + encodeProfileLabel(next)
     encodeProfileProcess.command = [ctl, "set-quality", next]
     encodeProfileProcess.running = true
   }
@@ -832,19 +832,19 @@ Item {
         try {
           var data = JSON.parse(String(text || "{}"))
           if (data.ok === false) {
-            root.lastError = String(data.error || "Failed to set QUALITY")
+            root.lastError = String(data.error || "Failed to set PRESET QUALITY")
             root.actionStatus = ""
           } else {
             if (data.encodeProfile) root.encodeProfile = String(data.encodeProfile)
             var label = root.encodeProfileLabel(root.encodeProfile)
             if (data.needsReconnect)
-              root.actionStatus = "QUALITY " + label + " — reconnect to apply"
+              root.actionStatus = "PRESET QUALITY " + label + " — reconnect to apply"
             else
-              root.actionStatus = "QUALITY: " + label
+              root.actionStatus = "PRESET QUALITY: " + label
             root.lastError = ""
           }
         } catch (e) {
-          root.actionStatus = "QUALITY updated"
+          root.actionStatus = "PRESET QUALITY updated"
         }
         root.refresh()
       }

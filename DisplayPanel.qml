@@ -117,10 +117,11 @@ Panel {
     if (showMiracastSessionControls) {
       list.push("miracastMode")
       if (miracast && miracast.mode === "extend") list.push("miracastPos")
-      if (miracastStreamModeIds.length > 0) list.push("miracastStream")
-      list.push("miracastEncode")
-      list.push("miracastEncodeProfile")
     }
+    // STREAM / RENDER / PRESET QUALITY live under MIRACAST (below CONTROLS).
+    if (miracastStreamModeIds.length > 0) list.push("miracastStream")
+    list.push("miracastEncode")
+    list.push("miracastEncodeProfile")
     list.push("miracast")
     if (miracastRadioValues.length > 0) list.push("miracastRadio")
     if (miracast && miracast.peers && miracast.peers.length > 0) list.push("miracastPeers")
@@ -1459,6 +1460,113 @@ Panel {
               }
             }
 
+            // ---- STREAM MODE / RENDER ENGINE / PRESET QUALITY (under CONTROLS) ----
+            Column {
+              x: Style.space(10)
+              width: parent.width - Style.space(10)
+              spacing: Style.space(4)
+              visible: root.miracastStreamModeIds.length > 0
+
+              Text {
+                text: "STREAM MODE"
+                color: Qt.darker(root.bar.foreground, 1.25)
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
+
+              Grid {
+                id: miracastStreamRow
+                width: parent.width
+                columns: Math.min(root.miracastStreamModeIds.length, 4)
+                spacing: Style.spacing.xs
+                readonly property real cellWidth: columns > 0
+                  ? (width - spacing * (columns - 1)) / columns
+                  : 0
+
+                Repeater {
+                  model: root.miracastStreamModeIds
+                  MiracastStreamModePill {
+                    required property string modelData
+                    required property int index
+                    modeId: modelData
+                    modeIndex: index
+                    width: miracastStreamRow.cellWidth
+                  }
+                }
+              }
+            }
+
+            Column {
+              x: Style.space(10)
+              width: parent.width - Style.space(10)
+              spacing: Style.space(4)
+
+              Text {
+                text: "RENDER ENGINE"
+                color: Qt.darker(root.bar.foreground, 1.25)
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
+
+              Grid {
+                id: miracastEncodeRow
+                width: parent.width
+                columns: root.miracastEncodeValues.length
+                spacing: Style.spacing.xs
+                readonly property real cellWidth: columns > 0
+                  ? (width - spacing * (columns - 1)) / columns
+                  : 0
+
+                Repeater {
+                  model: root.miracastEncodeValues
+                  MiracastEncodePill {
+                    required property string modelData
+                    required property int index
+                    encodeValue: modelData
+                    encodeIndex: index
+                    width: miracastEncodeRow.cellWidth
+                  }
+                }
+              }
+            }
+
+            Column {
+              x: Style.space(10)
+              width: parent.width - Style.space(10)
+              spacing: Style.space(4)
+
+              Text {
+                text: "PRESET QUALITY"
+                color: Qt.darker(root.bar.foreground, 1.25)
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
+
+              Grid {
+                id: miracastEncodeProfileRow
+                width: parent.width
+                columns: root.miracastEncodeProfileValues.length
+                spacing: Style.spacing.xs
+                readonly property real cellWidth: columns > 0
+                  ? (width - spacing * (columns - 1)) / columns
+                  : 0
+
+                Repeater {
+                  model: root.miracastEncodeProfileValues
+                  MiracastEncodeProfilePill {
+                    required property string modelData
+                    required property int index
+                    profileValue: modelData
+                    profileIndex: index
+                    width: miracastEncodeProfileRow.cellWidth
+                  }
+                }
+              }
+            }
+
             // ---- RADIO (indented under MIRACAST, after CONTROLS) ----
             Column {
               x: Style.space(10)
@@ -2150,112 +2258,6 @@ Panel {
         }
       }
 
-      // ---- STREAM MODE / RENDER ENGINE ----
-      Column {
-        visible: monitorRow.showMiracastCastControls
-                 && root.miracastStreamModeIds.length > 0
-        width: parent.width
-        spacing: monitorRow.settingsLabelGap
-
-        Text {
-          text: "STREAM MODE"
-          color: Qt.darker(root.bar.foreground, 1.25)
-          font.family: root.bar.fontFamily
-          font.pixelSize: Style.font.caption
-          font.bold: true
-        }
-
-        Grid {
-          id: miracastStreamRow
-          width: parent.width
-          columns: Math.min(root.miracastStreamModeIds.length, 4)
-          spacing: Style.spacing.xs
-          readonly property real cellWidth: columns > 0
-            ? (width - spacing * (columns - 1)) / columns
-            : 0
-
-          Repeater {
-            model: root.miracastStreamModeIds
-            MiracastStreamModePill {
-              required property string modelData
-              required property int index
-              modeId: modelData
-              modeIndex: index
-              width: miracastStreamRow.cellWidth
-            }
-          }
-        }
-      }
-
-      Column {
-        visible: monitorRow.showMiracastCastControls
-        width: parent.width
-        spacing: monitorRow.settingsLabelGap
-
-        Text {
-          text: "RENDER ENGINE"
-          color: Qt.darker(root.bar.foreground, 1.25)
-          font.family: root.bar.fontFamily
-          font.pixelSize: Style.font.caption
-          font.bold: true
-        }
-
-        Grid {
-          id: miracastEncodeRow
-          width: parent.width
-          columns: root.miracastEncodeValues.length
-          spacing: Style.spacing.xs
-          readonly property real cellWidth: columns > 0
-            ? (width - spacing * (columns - 1)) / columns
-            : 0
-
-          Repeater {
-            model: root.miracastEncodeValues
-            MiracastEncodePill {
-              required property string modelData
-              required property int index
-              encodeValue: modelData
-              encodeIndex: index
-              width: miracastEncodeRow.cellWidth
-            }
-          }
-        }
-      }
-
-      Column {
-        visible: monitorRow.showMiracastCastControls
-        width: parent.width
-        spacing: monitorRow.settingsLabelGap
-
-        Text {
-          text: "QUALITY"
-          color: Qt.darker(root.bar.foreground, 1.25)
-          font.family: root.bar.fontFamily
-          font.pixelSize: Style.font.caption
-          font.bold: true
-        }
-
-        Grid {
-          id: miracastEncodeProfileRow
-          width: parent.width
-          columns: root.miracastEncodeProfileValues.length
-          spacing: Style.spacing.xs
-          readonly property real cellWidth: columns > 0
-            ? (width - spacing * (columns - 1)) / columns
-            : 0
-
-          Repeater {
-            model: root.miracastEncodeProfileValues
-            MiracastEncodeProfilePill {
-              required property string modelData
-              required property int index
-              profileValue: modelData
-              profileIndex: index
-              width: miracastEncodeProfileRow.cellWidth
-            }
-          }
-        }
-      }
     }
   }
 
