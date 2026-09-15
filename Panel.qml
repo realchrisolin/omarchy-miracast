@@ -1363,6 +1363,100 @@ Panel {
                   }
                 }
               }
+
+              // Options directly under CONTROLS buttons
+              Column {
+                width: parent.width
+                spacing: Style.space(4)
+
+                Row {
+                  width: parent.width
+                  spacing: Style.spacing.sm
+
+                  Text {
+                    text: miracast.preserveDisplayAcrossMonitors ? "󰄬" : "󰄱"
+                    color: root.bar.foreground
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.body
+                    verticalAlignment: Text.AlignVCenter
+
+                    MouseArea {
+                      anchors.fill: parent
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: miracast.setPreserveDisplayAcrossMonitors(
+                        !miracast.preserveDisplayAcrossMonitors)
+                    }
+                  }
+
+                  Text {
+                    text: "Persist display across monitors"
+                    color: Qt.darker(root.bar.foreground, 1.15)
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.caption
+                    verticalAlignment: Text.AlignVCenter
+                    width: parent.width - parent.spacing - 28
+                    wrapMode: Text.WordWrap
+
+                    MouseArea {
+                      anchors.fill: parent
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: miracast.setPreserveDisplayAcrossMonitors(
+                        !miracast.preserveDisplayAcrossMonitors)
+                    }
+
+                    PanelToolTip {
+                      delay: 400
+                      text: miracast.preserveDisplayAcrossMonitors
+                        ? "On: switching TVs keeps the Extend desktop on the shared persistent-miracast output."
+                        : "Off: switching TVs migrates windows to the laptop and seeds a fresh peer-named Extend desktop."
+                    }
+                  }
+                }
+
+                Row {
+                  width: parent.width
+                  spacing: Style.spacing.sm
+
+                  Text {
+                    text: miracast.autoSwitchAudioOutput ? "󰄬" : "󰄱"
+                    color: root.bar.foreground
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.body
+                    verticalAlignment: Text.AlignVCenter
+
+                    MouseArea {
+                      anchors.fill: parent
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: miracast.setAutoSwitchAudioOutput(
+                        !miracast.autoSwitchAudioOutput)
+                    }
+                  }
+
+                  Text {
+                    text: "Automatically switch audio output"
+                    color: Qt.darker(root.bar.foreground, 1.15)
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.caption
+                    verticalAlignment: Text.AlignVCenter
+                    width: parent.width - parent.spacing - 28
+                    wrapMode: Text.WordWrap
+
+                    MouseArea {
+                      anchors.fill: parent
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: miracast.setAutoSwitchAudioOutput(
+                        !miracast.autoSwitchAudioOutput)
+                    }
+
+                    PanelToolTip {
+                      delay: 400
+                      text: miracast.autoSwitchAudioOutput
+                        ? "On: after the cast is streaming, set the default audio output to Miracast (speakers stay default during connect)."
+                        : "Off: leave the current audio output selected; Miracast sink is still used for capture if you route to it manually."
+                    }
+                  }
+                }
+              }
             }
 
             // ---- RADIO (indented under MIRACAST, after CONTROLS) ----
@@ -1398,50 +1492,6 @@ Panel {
                     radioIndex: index
                     width: miracastRadioRow.cellWidth
                   }
-                }
-              }
-            }
-
-            Row {
-              width: parent.width
-              spacing: Style.spacing.sm
-
-              Text {
-                text: miracast.preserveDisplayAcrossMonitors ? "󰄬" : "󰄱"
-                color: root.bar.foreground
-                font.family: root.bar.fontFamily
-                font.pixelSize: Style.font.body
-                verticalAlignment: Text.AlignVCenter
-
-                MouseArea {
-                  anchors.fill: parent
-                  cursorShape: Qt.PointingHandCursor
-                  onClicked: miracast.setPreserveDisplayAcrossMonitors(
-                    !miracast.preserveDisplayAcrossMonitors)
-                }
-              }
-
-              Text {
-                text: "Persist display across monitors"
-                color: Qt.darker(root.bar.foreground, 1.15)
-                font.family: root.bar.fontFamily
-                font.pixelSize: Style.font.caption
-                verticalAlignment: Text.AlignVCenter
-                width: parent.width - parent.spacing - 28
-                wrapMode: Text.WordWrap
-
-                MouseArea {
-                  anchors.fill: parent
-                  cursorShape: Qt.PointingHandCursor
-                  onClicked: miracast.setPreserveDisplayAcrossMonitors(
-                    !miracast.preserveDisplayAcrossMonitors)
-                }
-
-                PanelToolTip {
-                  delay: 400
-                  text: miracast.preserveDisplayAcrossMonitors
-                    ? "On: switching TVs keeps the Extend desktop on the shared persistent-miracast output."
-                    : "Off: switching TVs migrates windows to the laptop and seeds a fresh peer-named Extend desktop."
                 }
               }
             }

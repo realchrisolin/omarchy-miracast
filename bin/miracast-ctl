@@ -334,9 +334,13 @@ defaults = {
     # ffmpeg h264_vaapi -async_depth (pipe). From encode profile; default 2.
     "vaapiAsyncDepth": 2,
     # Mux audio into the WFD stream. When true, creates a PipeWire/Pulse null
-    # sink named "Miracast" for capture (miracast.monitor). Default output
-    # switches to Miracast only after PLAY / streaming (not during handshake).
+    # sink named "Miracast" for capture (miracast.monitor). When
+    # autoSwitchAudioOutput is true, default output switches to Miracast only
+    # after PLAY / streaming (not during handshake).
     "audioEnabled": True,
+    # If true: set default sink to Miracast at PLAY. If false: keep whatever
+    # output was selected (still hold speakers during handshake against WP).
+    "autoSwitchAudioOutput": True,
     # Preferred Miracast stream mode id, e.g. "1280x720p30".
     "streamMode": "1280x720p30",
     # Display panel: false = expand all outputs; true = accordion (focused only).
@@ -2705,6 +2709,36 @@ print(json.dumps({"ok": True, "preserveDisplayAcrossMonitors": on}, separators=(
 PY
 }
 
+cmd_set_auto_switch_audio() {
+  # UI: "Automatically switch audio output"
+  local raw="${1:-}"
+  local on=1
+  raw="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
+  case "$raw" in
+    1|true|yes|on) on=1 ;;
+    0|false|no|off) on=0 ;;
+    *)
+      emit '{"ok":false,"error":"auto-switch-audio must be true or false"}'
+      return 1
+      ;;
+  esac
+  python3 - "$SETTINGS_FILE" "$on" <<'PY'
+import json, sys
+path, on = sys.argv[1], sys.argv[2] == "1"
+try:
+    data = json.load(open(path))
+except Exception:
+    data = {}
+if not isinstance(data, dict):
+    data = {}
+data["autoSwitchAudioOutput"] = on
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, separators=(",", ":"))
+    f.write("\n")
+print(json.dumps({"ok": True, "autoSwitchAudioOutput": on}, separators=(",", ":")))
+PY
+}
+
 # Merge sink-advertised stream modes + preferred/current into a status object.
 # Must use python3 -c (like enrich_peer_name) so stdin stays the JSON pipe.
 # A heredoc would steal stdin and wipe phase/running from status.
@@ -3215,6 +3249,9 @@ data["onlyExpandFocusedDisplay"] = _as_bool(settings.get("onlyExpandFocusedDispl
 data["preserveDisplayAcrossMonitors"] = _as_bool(
     settings.get("preserveDisplayAcrossMonitors"), True
 )
+data["autoSwitchAudioOutput"] = _as_bool(
+    settings.get("autoSwitchAudioOutput"), True
+)
 data.setdefault("peer", settings.get("lastPeerMac") or "")
 data.setdefault("peerName", settings.get("lastPeerName") or "")
 print(json.dumps(data, separators=(",", ":")))
@@ -3254,6 +3291,9 @@ def _as_bool(v, default=False):
 data["onlyExpandFocusedDisplay"] = _as_bool(settings.get("onlyExpandFocusedDisplay"), False)
 data["preserveDisplayAcrossMonitors"] = _as_bool(
     settings.get("preserveDisplayAcrossMonitors"), True
+)
+data["autoSwitchAudioOutput"] = _as_bool(
+    settings.get("autoSwitchAudioOutput"), True
 )
 data.setdefault("peer", settings.get("lastPeerMac") or "")
 data.setdefault("peerName", settings.get("lastPeerName") or "")
@@ -3295,10 +3335,30 @@ hold_audio_default_until_play() {
   echo "[miracast-ctl] held default sink at $prev until PLAY (WirePlumber had selected Miracast)" >>"$LOG_DIR/cast.log"
 }
 
-# After PLAY / streaming: make Miracast the default output and migrate streams.
+# settings.autoSwitchAudioOutput (default true).
+auto_switch_audio_output_enabled() {
+  python3 - "$SETTINGS_FILE" <<'PY' 2>/dev/null || echo 1
+import json, sys
+try:
+    s = json.load(open(sys.argv[1]))
+except Exception:
+    print(1)
+    raise SystemExit
+v = s.get("autoSwitchAudioOutput", True)
+print(1 if v in (True, 1, "1", "true", "True", "yes", "on") else 0)
+PY
+}
+
+# After PLAY / streaming: optionally make Miracast the default output.
+# Always clear the handshake hold so WirePlumber is no longer forced off Miracast.
 activate_miracast_audio_default() {
   mkdir -p "$STATE_DIR" "$LOG_DIR"
   rm -f "$AUDIO_DEFAULT_HOLD_FILE"
+  if [[ "$(auto_switch_audio_output_enabled)" != "1" ]]; then
+    echo "[miracast-ctl] autoSwitchAudioOutput=false — leaving default sink unchanged" >>"$LOG_DIR/cast.log"
+    sync_miracast_audio_routes || true
+    return 0
+  fi
   pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -qx "$MIRACAST_AUDIO_SINK_NAME" || return 0
   local cur
   cur="$(pactl get-default-sink 2>/dev/null || true)"
@@ -4310,6 +4370,7 @@ Commands:
   set-mode mirror|extend
   set-persist-display true|false    # Persist display across monitors (shared persistent-miracast head)
   set-preserve-display true|false   # alias of set-persist-display
+  set-auto-switch-audio true|false  # Automatically switch audio output at PLAY
   get-stream-mode
   set-stream-mode <id>   # e.g. 1280x720p30 / 1920x1080p60
   set-render-engine dmabuf|vaapi|cpu  # RENDER ENGINE (panel); alias: set-capture-encode
@@ -4449,6 +4510,7 @@ main() {
     get-mode|get_mode) cmd_get_mode "$@" ;;
     set-mode|set_mode) cmd_set_mode "$@" ;;
     set-persist-display|set_persist_display|set-preserve-display|set_preserve_display) cmd_set_preserve_display "$@" ;;
+    set-auto-switch-audio|set_auto_switch_audio) cmd_set_auto_switch_audio "$@" ;;
     get-stream-mode|get_stream_mode) cmd_get_stream_mode "$@" ;;
     set-stream-mode|set_stream_mode) cmd_set_stream_mode "$@" ;;
     set-render-engine|set_render_engine|set-capture-encode|set_capture_encode) cmd_set_capture_encode "$@" ;;

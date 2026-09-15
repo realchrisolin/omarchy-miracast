@@ -19,6 +19,8 @@ Item {
   property bool onlyExpandFocusedDisplay: false
   // Keep the same Extend headless + workspaces when switching Miracast sinks.
   property bool preserveDisplayAcrossMonitors: true
+  // Switch default audio to Miracast at PLAY (hold speakers during handshake).
+  property bool autoSwitchAudioOutput: true
   property string streamMode: "1280x720p30"  // e.g. 1920x1080p30
   property var streamModes: []
   // RENDER ENGINE preference: dmabuf | vaapi | cpu
@@ -70,7 +72,7 @@ Item {
   readonly property string ctl: pluginDir !== "" ? (pluginDir + "/bin/miracast-ctl") : "miracast-ctl"
   // Background status polls must NOT count as busy — they run every 2s while
   // streaming and would grey out Miracast action buttons via enabled:!busy.
-  readonly property bool busy: doctorProcess.running || scanProcess.running || startProcess.running || stopProcess.running || firewallProcess.running || modeProcess.running || positionProcess.running || streamModeProcess.running || captureEncodeProcess.running || encodeProfileProcess.running || preserveDisplayProcess.running || p2pWifiProcess.running
+  readonly property bool busy: doctorProcess.running || scanProcess.running || startProcess.running || stopProcess.running || firewallProcess.running || modeProcess.running || positionProcess.running || streamModeProcess.running || captureEncodeProcess.running || encodeProfileProcess.running || preserveDisplayProcess.running || autoSwitchAudioProcess.running || p2pWifiProcess.running
   // Pill values: Auto + each discovered managed iface.
   readonly property var p2pWifiValues: {
     var out = ["auto"]
@@ -182,6 +184,18 @@ Item {
     actionStatus = on
       ? "Persist display across monitors: on"
       : "Persist display across monitors: off"
+  }
+
+  function setAutoSwitchAudioOutput(enabled) {
+    var on = !!enabled
+    if (on === autoSwitchAudioOutput && !autoSwitchAudioProcess.running) return
+    autoSwitchAudioOutput = on
+    if (autoSwitchAudioProcess.running) return
+    autoSwitchAudioProcess.command = [ctl, "set-auto-switch-audio", on ? "true" : "false"]
+    autoSwitchAudioProcess.running = true
+    actionStatus = on
+      ? "Automatically switch audio output: on"
+      : "Automatically switch audio output: off"
   }
 
   function positionLabelFor(value) {
@@ -642,6 +656,8 @@ Item {
             root.onlyExpandFocusedDisplay = data.onlyExpandFocusedDisplay === true
           if (data.preserveDisplayAcrossMonitors !== undefined)
             root.preserveDisplayAcrossMonitors = data.preserveDisplayAcrossMonitors === true
+          if (data.autoSwitchAudioOutput !== undefined)
+            root.autoSwitchAudioOutput = data.autoSwitchAudioOutput === true
           if (data.streamMode) root.streamMode = String(data.streamMode)
           if (data.streamModes && data.streamModes.length)
             root.streamModes = data.streamModes
@@ -899,6 +915,26 @@ Item {
           }
           if (data.preserveDisplayAcrossMonitors !== undefined)
             root.preserveDisplayAcrossMonitors = data.preserveDisplayAcrossMonitors === true
+        } catch (e) {
+        }
+        root.refresh()
+      }
+    }
+  }
+
+  Process {
+    id: autoSwitchAudioProcess
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        try {
+          var data = JSON.parse(String(text || "{}"))
+          if (data.ok === false) {
+            root.lastError = String(data.error || "Failed to set auto-switch audio")
+            return
+          }
+          if (data.autoSwitchAudioOutput !== undefined)
+            root.autoSwitchAudioOutput = data.autoSwitchAudioOutput === true
         } catch (e) {
         }
         root.refresh()
