@@ -45,6 +45,7 @@ Panel {
   // Display order ← ↑ ↓ → (left, above, below, right).
   readonly property var miracastPosValues: ["left", "above", "below", "right"]
   readonly property var miracastEncodeValues: Model.miracastCaptureEncodeValues()
+  readonly property var miracastEncodeProfileValues: Model.miracastEncodeProfileValues()
   readonly property var miracastRadioValues: (miracast && miracast.p2pWifiValues)
     ? miracast.p2pWifiValues : ["auto"]
   readonly property var miracastStreamModeIds: {
@@ -118,6 +119,7 @@ Panel {
       if (miracast && miracast.mode === "extend") list.push("miracastPos")
       if (miracastStreamModeIds.length > 0) list.push("miracastStream")
       list.push("miracastEncode")
+      list.push("miracastEncodeProfile")
     }
     list.push("miracast")
     if (miracastRadioValues.length > 0) list.push("miracastRadio")
@@ -138,6 +140,7 @@ Panel {
     if (section === "miracastPos") return miracastPosValues.length
     if (section === "miracastStream") return miracastStreamModeIds.length
     if (section === "miracastEncode") return miracastEncodeValues.length
+    if (section === "miracastEncodeProfile") return miracastEncodeProfileValues.length
     if (section === "miracastRadio") return miracastRadioValues.length
     if (section === "miracast") return 0    // action row sentinel at -1
     if (section === "miracastPeers")
@@ -151,7 +154,7 @@ Panel {
     return section === "textsize" || section === "monitorBrightness" || section === "monitorScale"
       || section === "miracast" || section === "miracastMode" || section === "miracastPos"
       || section === "miracastStream" || section === "miracastEncode"
-      || section === "miracastRadio"
+      || section === "miracastEncodeProfile" || section === "miracastRadio"
   }
 
   function sectionFirstIndex(section) {
@@ -161,6 +164,8 @@ Panel {
     if (section === "miracastStream") return Math.max(0, miracastStreamModeIds.indexOf(miracast.streamMode))
     if (section === "miracastEncode")
       return Math.max(0, miracastEncodeValues.indexOf(miracast.captureEncodeActive))
+    if (section === "miracastEncodeProfile")
+      return Math.max(0, miracastEncodeProfileValues.indexOf(miracast.encodeProfile || "medium"))
     if (section === "miracastRadio")
       return Math.max(0, miracastRadioValues.indexOf(miracast.p2pWifiInterface || "auto"))
     if (section === "monitorScale") return Math.max(0, activeScaleIndexFor(displayByName(scaleFocusMonitor)))
@@ -393,6 +398,14 @@ Panel {
       selectedIndex = encodeNext
       return
     }
+    if (focusSection === "miracastEncodeProfile") {
+      var profNext = selectedIndex + delta
+      if (profNext < 0) profNext = 0
+      if (profNext > miracastEncodeProfileValues.length - 1)
+        profNext = miracastEncodeProfileValues.length - 1
+      selectedIndex = profNext
+      return
+    }
     if (focusSection === "miracastRadio") {
       var radioNext = selectedIndex + delta
       if (radioNext < 0) radioNext = 0
@@ -436,6 +449,11 @@ Panel {
     }
     if (focusSection === "miracastEncode" && selectedIndex >= 0 && selectedIndex < miracastEncodeValues.length) {
       miracast.setCaptureEncode(miracastEncodeValues[selectedIndex])
+      return
+    }
+    if (focusSection === "miracastEncodeProfile"
+        && selectedIndex >= 0 && selectedIndex < miracastEncodeProfileValues.length) {
+      miracast.setEncodeProfile(miracastEncodeProfileValues[selectedIndex])
       return
     }
     if (focusSection === "miracastRadio" && selectedIndex >= 0 && selectedIndex < miracastRadioValues.length) {
@@ -1031,6 +1049,7 @@ Panel {
           else if (root.focusSection === "monitors" || root.focusSection === "monitorScale"
                    || root.focusSection === "miracastMode" || root.focusSection === "miracastPos"
                    || root.focusSection === "miracastStream" || root.focusSection === "miracastEncode"
+                   || root.focusSection === "miracastEncodeProfile"
                    || root.focusSection === "miracastRadio")
             root.moveCursorH(dx)
         }
@@ -1678,6 +1697,33 @@ Panel {
     }
   }
 
+  component MiracastEncodeProfilePill: Button {
+    id: profilePill
+    required property string profileValue
+    required property int profileIndex
+
+    text: miracast.encodeProfileLabel(profileValue)
+    fontSize: Style.font.caption
+    foreground: root.bar.foreground
+    fontFamily: root.bar.fontFamily
+    horizontalPadding: Style.spacing.sm
+    verticalPadding: Style.spacing.controlPaddingY
+    bordered: true
+
+    active: miracast.encodeProfile === profileValue
+    hasCursor: root.cursorActive && root.focusSection === "miracastEncodeProfile"
+               && root.selectedIndex === profileIndex
+    enabled: !miracast.busy
+
+    onClicked: miracast.setEncodeProfile(profileValue)
+    onHovered: function(isHovered) {
+      if (!isHovered || root.reflowingText) return
+      root.cursorActive = true
+      root.focusSection = "miracastEncodeProfile"
+      root.selectedIndex = profilePill.profileIndex
+    }
+  }
+
   component MiracastRadioPill: Button {
     id: radioPill
     required property string radioValue
@@ -2121,6 +2167,41 @@ Panel {
               encodeValue: modelData
               encodeIndex: index
               width: miracastEncodeRow.cellWidth
+            }
+          }
+        }
+      }
+
+      Column {
+        visible: monitorRow.showMiracastCastControls
+        width: parent.width
+        spacing: monitorRow.settingsLabelGap
+
+        Text {
+          text: "QUALITY"
+          color: Qt.darker(root.bar.foreground, 1.25)
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+        }
+
+        Grid {
+          id: miracastEncodeProfileRow
+          width: parent.width
+          columns: root.miracastEncodeProfileValues.length
+          spacing: Style.spacing.xs
+          readonly property real cellWidth: columns > 0
+            ? (width - spacing * (columns - 1)) / columns
+            : 0
+
+          Repeater {
+            model: root.miracastEncodeProfileValues
+            MiracastEncodeProfilePill {
+              required property string modelData
+              required property int index
+              profileValue: modelData
+              profileIndex: index
+              width: miracastEncodeProfileRow.cellWidth
             }
           }
         }

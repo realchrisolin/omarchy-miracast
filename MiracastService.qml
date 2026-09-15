@@ -23,6 +23,8 @@ Item {
   property var streamModes: []
   // RENDER ENGINE preference: dmabuf | vaapi | cpu
   property string captureEncode: "dmabuf"
+  // Encode quality tier: high | medium | low (knobs depend on captureEncode)
+  property string encodeProfile: "medium"
   // Resolved while streaming (from status / latency): dmabuf | pipe
   property string capturePath: ""
   property string encoder: ""
@@ -68,7 +70,7 @@ Item {
   readonly property string ctl: pluginDir !== "" ? (pluginDir + "/bin/miracast-ctl") : "miracast-ctl"
   // Background status polls must NOT count as busy — they run every 2s while
   // streaming and would grey out Miracast action buttons via enabled:!busy.
-  readonly property bool busy: doctorProcess.running || scanProcess.running || startProcess.running || stopProcess.running || firewallProcess.running || modeProcess.running || positionProcess.running || streamModeProcess.running || captureEncodeProcess.running || preserveDisplayProcess.running || p2pWifiProcess.running
+  readonly property bool busy: doctorProcess.running || scanProcess.running || startProcess.running || stopProcess.running || firewallProcess.running || modeProcess.running || positionProcess.running || streamModeProcess.running || captureEncodeProcess.running || encodeProfileProcess.running || preserveDisplayProcess.running || p2pWifiProcess.running
   // Pill values: Auto + each discovered managed iface.
   readonly property var p2pWifiValues: {
     var out = ["auto"]
@@ -255,6 +257,10 @@ Item {
     return Model.miracastCaptureEncodeLabel(id)
   }
 
+  function encodeProfileLabel(id) {
+    return Model.miracastEncodeProfileLabel(id)
+  }
+
   function setCaptureEncode(value) {
     var next = String(value || "")
     if (next !== "dmabuf" && next !== "vaapi" && next !== "cpu") return
@@ -266,8 +272,24 @@ Item {
       actionStatus = "Switching RENDER ENGINE to " + captureEncodeLabel(next) + "…"
     else
       actionStatus = "RENDER ENGINE: " + captureEncodeLabel(next)
-    captureEncodeProcess.command = [ctl, "set-capture-encode", next]
+    captureEncodeProcess.command = [ctl, "set-render-engine", next]
     captureEncodeProcess.running = true
+  }
+
+  function setEncodeProfile(value) {
+    var next = String(value || "").toLowerCase()
+    if (next !== "high" && next !== "medium" && next !== "low") return
+    if (encodeProfileProcess.running || stopProcess.running) return
+    if (next === encodeProfile && !active) return
+    encodeProfile = next
+    lastError = ""
+    if (active)
+      actionStatus = "QUALITY " + encodeProfileLabel(next)
+          + " saved — reconnect to apply…"
+    else
+      actionStatus = "QUALITY: " + encodeProfileLabel(next)
+    encodeProfileProcess.command = [ctl, "set-quality", next]
+    encodeProfileProcess.running = true
   }
 
   function setStreamMode(nextMode) {
@@ -624,6 +646,11 @@ Item {
           if (data.streamModes && data.streamModes.length)
             root.streamModes = data.streamModes
           if (data.captureEncode) root.captureEncode = String(data.captureEncode)
+          if (data.encodeProfile) {
+            var ep = String(data.encodeProfile).toLowerCase()
+            if (ep === "high" || ep === "medium" || ep === "low")
+              root.encodeProfile = ep
+          }
           if (data.capturePath) root.capturePath = String(data.capturePath)
           else if (!root.streaming) root.capturePath = ""
           if (data.encoder) root.encoder = String(data.encoder)
@@ -753,6 +780,11 @@ Item {
             root.actionStatus = ""
           } else {
             if (data.captureEncode) root.captureEncode = String(data.captureEncode)
+            if (data.encodeProfile) {
+              var ep = String(data.encodeProfile).toLowerCase()
+              if (ep === "high" || ep === "medium" || ep === "low")
+                root.encodeProfile = ep
+            }
             if (data.capturePath) root.capturePath = String(data.capturePath)
             if (data.encoder) root.encoder = String(data.encoder)
             root.captureFallback = data.captureFallback === true
@@ -760,6 +792,9 @@ Item {
             if (root.captureFallback)
               root.actionStatus = "RENDER ENGINE fell back to "
                   + root.captureEncodeLabel(root.captureEncodeActive)
+            else if (data.needsReconnect)
+              root.actionStatus = "RENDER ENGINE: " + label
+                  + " — reconnect to apply quality knobs"
             else if (data.restarted)
               root.actionStatus = "RENDER ENGINE: " + label
             else
@@ -767,6 +802,33 @@ Item {
           }
         } catch (e) {
           root.actionStatus = "RENDER ENGINE updated"
+        }
+        root.refresh()
+      }
+    }
+  }
+
+  Process {
+    id: encodeProfileProcess
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        try {
+          var data = JSON.parse(String(text || "{}"))
+          if (data.ok === false) {
+            root.lastError = String(data.error || "Failed to set QUALITY")
+            root.actionStatus = ""
+          } else {
+            if (data.encodeProfile) root.encodeProfile = String(data.encodeProfile)
+            var label = root.encodeProfileLabel(root.encodeProfile)
+            if (data.needsReconnect)
+              root.actionStatus = "QUALITY " + label + " — reconnect to apply"
+            else
+              root.actionStatus = "QUALITY: " + label
+            root.lastError = ""
+          }
+        } catch (e) {
+          root.actionStatus = "QUALITY updated"
         }
         root.refresh()
       }

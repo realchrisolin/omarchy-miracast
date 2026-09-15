@@ -218,14 +218,20 @@ matching `FLUXCAST_WFD_*` env vars via `miracast-ctl`.
 | Preset | RC | Bitrate / QP | GOP | Damage | Best for |
 |--------|-----|--------------|-----|--------|----------|
 | **desktop** | CQP | qp 18, quality **5** | 30 | damage-aware (`1`) | UI / terminals |
-| **movie** | **QVBR** | qp 18, max **16M**, quality **5** | 30 | continuous `-D` (`0`) | Fullscreen video (uncapped CQP spikes 30–40 Mbps on 20 MHz P2P; Intel CBR undershoots) |
+Encode **quality tiers** are per render engine (`encodeProfile` high|medium|low).
+See `scripts/encode_quality_presets.py`. Content hint `castPreset` only toggles
+damage-aware vs continuous `-D`.
 
-Pipe-path ffmpeg honors `FLUXCAST_WFD_VAAPI_RC` / `QP` / `GOP` / bitrate
-(including **QVBR** with maxrate). Unset RC still defaults to CBR for older callers.
+| Engine × tier (sketch) | RC | Notes |
+|------------------------|----|--------|
+| **vaapi / high** | QVBR qp18 quality **4** max 16M | Vetted pipe envelope on 20 MHz P2P |
+| **dmabuf / high** | QVBR qp**16** quality **3** max 16M | Sharper than pipe high at same peak |
+| **\*/ medium\|low** | tighter caps / higher qp | RF headroom |
 
 ```bash
-miracast-ctl set-cast-preset movie     # apply + restart capture if streaming
-miracast-ctl set-cast-preset desktop
+miracast-ctl set-quality high           # retarget knobs for current engine
+miracast-ctl set-render-engine dmabuf   # also retargets current QUALITY tier
+miracast-ctl set-cast-preset movie      # continuous -D only
 ```
 
 FluxCast reads `FLUXCAST_WFD_VAAPI_RC`, `FLUXCAST_WFD_VAAPI_BITRATE`,

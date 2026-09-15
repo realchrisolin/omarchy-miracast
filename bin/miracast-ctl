@@ -324,6 +324,11 @@ defaults = {
     "videoEncoder": "auto",
     # RENDER METHOD: dmabuf (GPU·DMA-BUF) | vaapi (GPU·VAAPI pipe) | cpu (libx264).
     "captureEncode": "dmabuf",
+    # Encode quality tier (high|medium|low). Knobs are per-engine — see
+    # scripts/encode_quality_presets.py. Independent of captureEncode.
+    "encodeProfile": "medium",
+    # ffmpeg h264_vaapi -async_depth (pipe). From encode profile; default 2.
+    "vaapiAsyncDepth": 2,
     # Mux audio into the WFD stream. When true, creates a PipeWire/Pulse null
     # sink named "Miracast" so the sound panel can select it as default; WFD
     # captures that sink's .monitor. Does not auto-switch the default sink.
@@ -408,7 +413,8 @@ print(json.dumps(data, separators=(",", ":")))
 PY
 }
 
-# desktop = sharp UI (CQP); movie = QVBR with peak cap for film on narrow P2P.
+# Content hint only: damage-aware vs continuous. Encode RC/QP/cap live in
+# encodeProfile (per render engine) — see apply_encode_profile.
 apply_cast_preset() {
   local preset="${1:-desktop}"
   case "$preset" in
@@ -429,33 +435,47 @@ if not isinstance(data, dict):
     data = {}
 data["castPreset"] = preset
 if preset == "movie":
-    # Intel CBR undershoots (~3 Mbps) → blocky. Pure CQP looks better but
-    # ignores maxrate and can spike 30–40 Mbps on busy scenes — too hot for
-    # typical 20 MHz / ~72 Mbps Miracast P2P. QVBR keeps QP quality with a cap.
-    data["vaapiRcMode"] = "QVBR"
-    data["vaapiQp"] = 18
-    data["vaapiGop"] = 30  # faster IDR recovery than 60 if a slice is lost
-    # quality 5: prior pipe A/B — q2 choppier; q7+tight VBV locked up.
-    data["vaapiQuality"] = "5"
-    data["vaapiBitrate"] = "16M"  # peak cap for narrow Miracast P2P
-    data["wfRecorderDamage"] = "0"  # continuous -D
+    data["wfRecorderDamage"] = "0"  # continuous -D (fullscreen video)
 else:
-    # Sharp desktop / terminals.
-    data["vaapiRcMode"] = "CQP"
-    data["vaapiQp"] = int(data.get("vaapiQp") or 18)
-    data["vaapiGop"] = 30
-    data["vaapiQuality"] = str(data.get("vaapiQuality") or "5")
     data["wfRecorderDamage"] = str(data.get("wfRecorderDamage") or "1")
 with open(path, "w", encoding="utf-8") as f:
     json.dump(data, f, separators=(",", ":"))
     f.write("\n")
 print(json.dumps({"ok": True, "castPreset": preset,
-                  "vaapiRcMode": data.get("vaapiRcMode"),
-                  "vaapiBitrate": data.get("vaapiBitrate"),
-                  "vaapiQp": data.get("vaapiQp"),
-                  "vaapiGop": data.get("vaapiGop"),
-                  "wfRecorderDamage": data.get("wfRecorderDamage")},
+                  "wfRecorderDamage": data.get("wfRecorderDamage"),
+                  "encodeProfile": data.get("encodeProfile")},
                  separators=(",", ":")))
+PY
+}
+
+# Apply high|medium|low knobs for the current (or given) render engine.
+apply_encode_profile() {
+  local tier="${1:-}"
+  local engine="${2:-}"
+  python3 - "$SETTINGS_FILE" "$PLUGIN_DIR/scripts/encode_quality_presets.py" "$tier" "$engine" <<'PY'
+import importlib.util, json, sys
+from pathlib import Path
+
+path, mod_path = Path(sys.argv[1]), Path(sys.argv[2])
+tier = (sys.argv[3] or "").strip() or None
+engine = (sys.argv[4] or "").strip() or None
+spec = importlib.util.spec_from_file_location("encode_quality_presets", mod_path)
+mod = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(mod)
+try:
+    data = json.loads(path.read_text())
+except Exception:
+    data = {}
+if not isinstance(data, dict):
+    data = {}
+try:
+    applied = mod.apply_to_settings(data, tier=tier, engine=engine)
+except Exception as exc:
+    print(json.dumps({"ok": False, "error": str(exc)}, separators=(",", ":")))
+    raise SystemExit(1)
+path.write_text(json.dumps(data, separators=(",", ":")) + "\n")
+print(json.dumps({"ok": True, **applied}, separators=(",", ":")))
 PY
 }
 
@@ -2650,6 +2670,13 @@ except OSError:
     except Exception:
         pref = "dmabuf"
 data["captureEncode"] = pref
+try:
+    ep = str(json.load(open(settings_path)).get("encodeProfile") or "medium").strip().lower()
+    if ep not in ("high", "medium", "low"):
+        ep = "medium"
+    data["encodeProfile"] = ep
+except Exception:
+    data["encodeProfile"] = "medium"
 # Only surface resolved path while a cast is live — stale latency.jsonl must
 # not light the wrong RENDER ENGINE pill when idle.
 live = bool(data.get("running")) or str(data.get("phase") or "") in (
@@ -2761,29 +2788,64 @@ print(json.dumps(data, separators=(",", ":")))
 ' "$SETTINGS_FILE" "$PLUGIN_DIR/scripts/list_p2p_radios.py"
 }
 
+cmd_set_encode_profile() {
+  local tier="${1:-}"
+  case "$tier" in
+    high|medium|low) ;;
+    *)
+      emit '{"ok":false,"error":"usage: set-quality high|medium|low"}'
+      return 1
+      ;;
+  esac
+  local out phase needs="false"
+  out="$(apply_encode_profile "$tier")" || { echo "$out"; return 1; }
+  # RC/QP/async are process-env at FluxCast start — tip reconnect if live.
+  phase="$(python3 -c 'import json;from pathlib import Path;print(json.loads(Path.home().joinpath(".local/state/omarchy-miracast/status.json").read_text()).get("phase",""))' 2>/dev/null || true)"
+  [[ "$phase" == "streaming" ]] && needs="true"
+  python3 -c 'import json,sys; d=json.loads(sys.argv[1]); d["needsReconnect"]=sys.argv[2]=="true"; print(json.dumps(d,separators=(",",":")))' \
+    "$out" "$needs"
+}
+
 cmd_set_capture_encode() {
   local value="${1:-}"
   case "$value" in
     dmabuf|vaapi|cpu) ;;
     *)
-      emit '{"ok":false,"error":"captureEncode must be dmabuf, vaapi, or cpu"}'
+      emit '{"ok":false,"error":"usage: set-render-engine dmabuf|vaapi|cpu"}'
       return 1
       ;;
   esac
-  # write_settings prints the full settings object — discard so QML sees one JSON.
-  write_settings "captureEncode=$value" >/dev/null
+  # Retarget encodeProfile knobs for the new engine (tier label stays).
+  local profile_out=""
+  profile_out="$(apply_encode_profile "" "$value")" || true
   write_capture_encode_file "$value"
   local restarted="false" healthy="false" info=""
+  local needs_reconnect="false" phase=""
+  phase="$(python3 -c 'import json;from pathlib import Path;print(json.loads(Path.home().joinpath(".local/state/omarchy-miracast/status.json").read_text()).get("phase",""))' 2>/dev/null || true)"
   if is_running; then
     info="$(restart_extend_capture)"
     # info like restarted=true healthy=true pid=...
     [[ "$info" == *restarted=true* ]] && restarted="true"
     [[ "$info" == *healthy=true* ]] && healthy="true"
+    # Profile knobs need full reconnect; USR1 alone keeps old env.
+    [[ "$phase" == "streaming" ]] && needs_reconnect="true"
   fi
   python3 -c '
 import json, sys
 value, restarted, healthy, lat_path = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-out = {"ok": True, "captureEncode": value, "restarted": restarted == "true", "captureHealthy": healthy == "true"}
+profile_raw, needs = sys.argv[5], sys.argv[6]
+out = {"ok": True, "captureEncode": value, "restarted": restarted == "true", "captureHealthy": healthy == "true",
+       "needsReconnect": needs == "true"}
+try:
+    prof = json.loads(profile_raw) if profile_raw else {}
+    if isinstance(prof, dict) and prof.get("ok"):
+        out["encodeProfile"] = prof.get("encodeProfile")
+        out["vaapiQp"] = prof.get("vaapiQp")
+        out["vaapiQuality"] = prof.get("vaapiQuality")
+        out["vaapiRcMode"] = prof.get("vaapiRcMode")
+        out["vaapiBitrate"] = prof.get("vaapiBitrate")
+except Exception:
+    pass
 try:
     with open(lat_path, encoding="utf-8") as fh:
         lines = fh.readlines()
@@ -2807,7 +2869,7 @@ try:
 except OSError:
     pass
 print(json.dumps(out, separators=(",", ":")))
-' "$value" "$restarted" "$healthy" "$LAT_FILE"
+' "$value" "$restarted" "$healthy" "$LAT_FILE" "$profile_out" "$needs_reconnect"
 }
 
 cmd_set_stream_mode() {
@@ -3829,7 +3891,13 @@ print(str(s.get("vaapiQuality") or "5").strip() or "5")
 ' "$settings" 2>/dev/null || echo 5)"
     _qual="${FLUXCAST_WFD_VAAPI_QUALITY:-$_qual}"
     export FLUXCAST_WFD_VAAPI_QUALITY="$_qual"
-    echo "[miracast-ctl] VAAPI RC=$FLUXCAST_WFD_VAAPI_RC bitrate=$FLUXCAST_WFD_VAAPI_BITRATE quality=$FLUXCAST_WFD_VAAPI_QUALITY preset=$(python3 -c 'import json,sys;print(json.loads(sys.argv[1]).get("castPreset","desktop"))' "$settings" 2>/dev/null || echo desktop)" >>"$LOG_DIR/cast.log"
+    _async="$(python3 -c 'import json,sys
+s=json.loads(sys.argv[1])
+print(str(s.get("vaapiAsyncDepth") or "2").strip() or "2")
+' "$settings" 2>/dev/null || echo 2)"
+    _async="${FLUXCAST_WFD_VAAPI_ASYNC_DEPTH:-$_async}"
+    export FLUXCAST_WFD_VAAPI_ASYNC_DEPTH="$_async"
+    echo "[miracast-ctl] VAAPI RC=$FLUXCAST_WFD_VAAPI_RC bitrate=$FLUXCAST_WFD_VAAPI_BITRATE quality=$FLUXCAST_WFD_VAAPI_QUALITY async=$_async profile=$(python3 -c 'import json,sys;print(json.loads(sys.argv[1]).get("encodeProfile","medium"))' "$settings" 2>/dev/null || echo medium) content=$(python3 -c 'import json,sys;print(json.loads(sys.argv[1]).get("castPreset","desktop"))' "$settings" 2>/dev/null || echo desktop)" >>"$LOG_DIR/cast.log"
     # VBV multiplier (~seconds of CBR buffer). Default 0.5 validated on pipe.
     # Do not enable PIPE_LOW_LATENCY here (async=1/tiny queue caused lockups).
     _vbv="$(python3 -c 'import json,sys
@@ -4018,8 +4086,9 @@ Commands:
   set-preserve-display true|false   # alias of set-persist-display
   get-stream-mode
   set-stream-mode <id>   # e.g. 1280x720p30 / 1920x1080p60
-  set-capture-encode dmabuf|vaapi|cpu   # RENDER METHOD preference
-  set-cast-preset desktop|movie   # CQP desktop vs QVBR movie (16M cap)
+  set-render-engine dmabuf|vaapi|cpu  # RENDER ENGINE (panel); alias: set-capture-encode
+  set-quality high|medium|low         # QUALITY tier per engine; alias: set-encode-profile
+  set-cast-preset desktop|movie       # content hint: damage-aware vs continuous -D
   list-p2p-radios                 # Wi-Fi ifaces for Miracast P2P
   set-p2p-wifi-interface auto|IFACE
   benchmark [--apply] [--json] [--offline-only] [--live-seconds N]
@@ -4156,7 +4225,8 @@ main() {
     set-persist-display|set_persist_display|set-preserve-display|set_preserve_display) cmd_set_preserve_display "$@" ;;
     get-stream-mode|get_stream_mode) cmd_get_stream_mode "$@" ;;
     set-stream-mode|set_stream_mode) cmd_set_stream_mode "$@" ;;
-    set-capture-encode|set_capture_encode) cmd_set_capture_encode "$@" ;;
+    set-render-engine|set_render_engine|set-capture-encode|set_capture_encode) cmd_set_capture_encode "$@" ;;
+    set-quality|set_quality|set-encode-profile|set_encode_profile) cmd_set_encode_profile "$@" ;;
     set-cast-preset|set_cast_preset) cmd_set_cast_preset "$@" ;;
     list-p2p-radios|list_p2p_radios) cmd_list_p2p_radios "$@" ;;
     set-p2p-wifi-interface|set_p2p_wifi_interface) cmd_set_p2p_wifi_interface "$@" ;;

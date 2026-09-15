@@ -65,7 +65,9 @@ This is the important fork for Hyprland CPU.
 | **Availability** | Every Arch install with `wf-recorder` | **Manual build** until upstream + packaging |
 | **Omarchy default** | **Yes** (`PATH`) | **Opt-in** via `wfRecorderBin` / env |
 
-**RENDER ENGINE** (DMA-BUF / VAAPI pipe / CPU) is a third axis: how frames are
+**RENDER ENGINE** (DMA-BUF / VAAPI pipe / CPU) and **QUALITY** (high/medium/low,
+per engine) are separate axes: how frames are captured/encoded vs which
+RC/QP/cap recipe to use. RENDER ENGINE is
 *encoded* after capture. It does **not** choose wlr vs ICC. Prefer **GPU ·
 DMA-BUF** once capture is healthy.
 
@@ -89,8 +91,9 @@ Dry-run without writing settings: omit `--apply`. Details in
 **Encode presets** (desktop UI vs movie):
 
 ```bash
-miracast-ctl set-cast-preset desktop   # CQP qp18 GOP30 quality 5
-miracast-ctl set-cast-preset movie     # QVBR qp18 max 16M GOP30 quality 5, continuous -D
+miracast-ctl set-render-engine dmabuf|vaapi|cpu   # RENDER ENGINE
+miracast-ctl set-quality high|medium|low          # QUALITY (per engine)
+miracast-ctl set-cast-preset desktop|movie        # damage-aware vs continuous -D
 # RC/env apply at FluxCast start — reconnect if already streaming
 ```
 
@@ -176,6 +179,8 @@ miracast-ctl benchmark --apply              # write settings.json + recommended-
 ./scripts/test_attach_radio_channel_fields.py
 ./scripts/test_list_p2p_radios.py
 ./scripts/test_auto_tune_miracast.py
+./scripts/test_encode_quality_presets.py
+./scripts/test_miracast_ctl_encode_cli.sh   # set-render-engine / set-quality (+ aliases)
 ./scripts/bench_p2p_channel.sh              # SCC vs MCC TX A/B → docs/benchmarks/
 miracast-ctl list-p2p-radios
 miracast-ctl pick-channel

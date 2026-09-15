@@ -116,16 +116,18 @@ Override in `~/.config/omarchy-miracast/settings.json` (merged with
 | `wfRecorderBin` | unset | Absolute path to a custom `wf-recorder` (e.g. ICC / PR #347). Empty = **PATH** stock. ICC preferred for perf; see [BUILD.md §7](BUILD.md) for Extend terminal typing lag. |
 | `wfRecorderProto` | `auto` | `auto` / `icc` / `wlr`. `auto` upgrades to `icc` when a configured binary advertises ICC. Use `wlr` + stock binary if cast-head terminal keys feel buffered until the pointer moves. |
 | `wfRecorderDamage` | `"1"` | `"1"` = damage-aware (omit `wf-recorder -D`); `"0"` = continuous `-D`. Set by `scripts/recommend-cast-profile.py --apply` or manually. |
-| `castPreset` | `desktop` | `desktop` = CQP qp18 GOP30; `movie` = **QVBR** qp18 max **16M** GOP30 quality **5**, continuous `-D`. `miracast-ctl set-cast-preset desktop\|movie`. |
-| `vaapiQuality` | `5` | ffmpeg `h264_vaapi` `-quality` (1–8; higher = faster/worse). Pipe A/B: q2 choppier; q7+tight VBV stalled. |
+| `captureEncode` | `dmabuf` | Render engine: `dmabuf` \| `vaapi` (pipe) \| `cpu`. |
+| `encodeProfile` | `medium` | Quality tier **high\|medium\|low** — knobs are **per engine** (`scripts/encode_quality_presets.py`). |
+| `castPreset` | `desktop` | Content hint: `desktop` = damage-aware; `movie` = continuous `-D`. |
+| `vaapiQuality` | *(from profile)* | ffmpeg `h264_vaapi` `-quality` (1–8; higher = faster/worse). |
 | `vbvMultiplier` | `0.5` | CBR VBV as a fraction of bitrate (~0.5 s). → `FLUXCAST_WFD_VBV_MULTIPLIER`. |
-| `p2pWifiInterface` | `auto` | Managed Wi‑Fi iface for Miracast P2P, or `auto` (prefer idle P2P-GO). `miracast-ctl list-p2p-radios` / `set-p2p-wifi-interface`. |
-| `p2pQuietCsa` | `false` | `true` = post-PLAY CSA to a quiet channel (MCC). Default **SCC** (same channel as STA) after retry-storm A/B. |
-| `vaapiRcMode` | `CQP` | `CQP` / `QVBR` / `CBR` / `VBR` → `FLUXCAST_WFD_VAAPI_RC` (pipe + DMA) |
-| `vaapiBitrate` | `12M` | Target/peak for CBR/VBR/QVBR (Intel CBR undershoots; movie uses QVBR max 16M). |
-| `vaapiQp` | `18` | CQP quantizer (lower = sharper) |
-| `vaapiGop` | `30` | GOP length in frames (~1s at 30 fps; movie preset uses 60) |
-| *(env)* `FLUXCAST_WFD_VAAPI_QP` | `18` | CQP quantizer for pipe ffmpeg and DMA wf-recorder |
+| `p2pWifiInterface` | `auto` | Managed Wi‑Fi iface for Miracast P2P, or `auto` (prefer idle P2P-GO). |
+| `p2pQuietCsa` | `false` | `true` = post-PLAY CSA to a quiet channel (MCC). Default **SCC**. |
+| `vaapiRcMode` | *(from profile)* | `CQP` / `QVBR` / `CBR` / `VBR` → `FLUXCAST_WFD_VAAPI_RC`. |
+| `vaapiBitrate` | *(from profile)* | QVBR/CBR peak (`FLUXCAST_WFD_VAAPI_BITRATE`). |
+| `vaapiQp` | *(from profile)* | Quantizer (lower = sharper). |
+| `vaapiGop` | *(from profile)* | GOP frames. |
+| `vaapiAsyncDepth` | `2` | Pipe `async_depth` (from profile). |
 | `sinkScales` | `{}` | Per-sink Extend scale, keyed by MAC (overrides default) |
 | `defaultExtendScale` | `1` | Extend scale when a sink has no `sinkScales` entry — **1** is cheapest for Hyprland |
 | `onlyExpandFocusedDisplay` | `false` | Display panel: `false` expands all outputs; `true` = accordion (focused only) |
@@ -140,9 +142,9 @@ controls). To restore single-row accordion behavior:
 ```
 
 While connected, the Miracast display row shows **CAST MODE** / **EXTEND
-POSITION** first (← ↑ ↓ → when Extend), then **SCALE**, **STREAM MODE**, and
-**RENDER ENGINE**. Scan / doctor / firewall / Stop stay under the **MIRACAST**
-section.
+POSITION** first (← ↑ ↓ → when Extend), then **SCALE**, **STREAM MODE**,
+**RENDER ENGINE**, and **QUALITY**. Scan / doctor / firewall / Stop stay under
+the **MIRACAST** section.
 
 With focus on the CAST MODE / EXTEND POSITION row and Extend active, vim
 **hjkl** set position: **h** ← left, **j** ↓ below, **k** ↑ above, **l** → right.
@@ -154,14 +156,35 @@ Shown only after the Miracast display exists (connected session). Default is
 
 | Pill | `captureEncode` | Path |
 |------|-----------------|------|
-| GPU · DMA-BUF | `dmabuf` | `wf-recorder` VAAPI DMA-BUF + CQP |
+| GPU · DMA-BUF | `dmabuf` | `wf-recorder` VAAPI DMA-BUF |
 | GPU · VAAPI | `vaapi` | raw pipe → `hwupload` → `h264_vaapi` |
 | CPU | `cpu` | raw pipe → `libx264` |
 
-Preference is stored in `settings.json` and `$XDG_STATE_HOME/omarchy-miracast/capture-encode`
-so a live session can SIGUSR1-rebind without restarting FluxCast. If a GPU path
-fails, FluxCast falls back toward CPU; the **active** pill follows the resolved
-path (`capturePath` / `encoder` in `miracast-ctl status`), not only the preference.
+```bash
+miracast-ctl set-render-engine dmabuf|vaapi|cpu
+# alias: set-capture-encode
+```
+
+Preference is stored in `settings.json` and `$XDG_STATE_HOME/omarchy-miracast/capture-encode`.
+Changing engine **retargets** the current **QUALITY** tier (same label, different
+knobs). Encode RC/QP/bitrate need a **reconnect** to apply (process env); a
+SIGUSR1 capture restart alone is not enough for those. If a GPU path fails,
+FluxCast falls back toward CPU; the **active** pill follows the resolved path
+(`capturePath` / `encoder` in `miracast-ctl status`), not only the preference.
+
+### QUALITY
+
+Independent of render engine: **High** / **Medium** / **Low**. Knobs are looked
+up per engine in `scripts/encode_quality_presets.py` (DMA-BUF high ≠ VAAPI-pipe
+high).
+
+```bash
+miracast-ctl set-quality high|medium|low
+# alias: set-encode-profile
+```
+
+Reconnect if streaming (`needsReconnect: true`). `castPreset` (`desktop` /
+`movie`) only toggles damage-aware vs continuous `-D`; it does not own RC/QP.
 
 **Capture cadence:** Miracast Extend defaults to **damage-aware** capture
 (omit `wf-recorder -D`) so Hyprland only produces frames when the output
@@ -189,7 +212,9 @@ To score [BENCHMARKS.md](BENCHMARKS.md) results into settings (`captureEncode`,
 ```bash
 ./scripts/recommend-cast-profile.py          # dry-run + docs/benchmarks/recommended.env
 ./scripts/recommend-cast-profile.py --apply  # update settings.json
-miracast-ctl set-cast-preset movie|desktop   # QVBR movie vs CQP desktop; reconnect if streaming
+miracast-ctl set-render-engine dmabuf|vaapi|cpu   # RENDER ENGINE (alias: set-capture-encode)
+miracast-ctl set-quality high|medium|low          # QUALITY tier per engine (alias: set-encode-profile)
+miracast-ctl set-cast-preset movie|desktop        # damage-aware vs continuous -D
 ```
 
 See [BENCHMARKS.md](BENCHMARKS.md) for presets and Intel CBR undershoot notes.
@@ -206,7 +231,7 @@ override per sink in the Display panel (`sinkScales`).
 miracast-ctl benchmark                      # probes + live sample if streaming
 miracast-ctl benchmark --offline-only       # capability-only (no live sample)
 miracast-ctl benchmark --apply              # write settings.json + recommended-cast.env
-miracast-ctl set-capture-encode dmabuf|vaapi|cpu
+miracast-ctl set-render-engine dmabuf|vaapi|cpu
 miracast-ctl list-p2p-radios                # Auto / iface + P2P-GO / STA flags
 miracast-ctl set-p2p-wifi-interface auto|IFACE
 miracast-ctl pick-channel                   # quiet 5 GHz P2P target (else quietest)

@@ -249,6 +249,19 @@ function miracastCaptureEncodeValues() {
   return ["dmabuf", "vaapi", "cpu"]
 }
 
+/** Encode quality tier pill ids (per-engine knobs). */
+function miracastEncodeProfileValues() {
+  return ["high", "medium", "low"]
+}
+
+function miracastEncodeProfileLabel(id) {
+  var v = String(id || "")
+  if (v === "high") return "High"
+  if (v === "medium") return "Medium"
+  if (v === "low") return "Low"
+  return v || "Medium"
+}
+
 function miracastCaptureEncodeLabel(value) {
   var v = String(value || "")
   if (v === "dmabuf") return "GPU · DMA-BUF"
