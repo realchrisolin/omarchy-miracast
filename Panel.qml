@@ -566,6 +566,8 @@ Panel {
     function toggle() { root.toggle() }
     function show() { root.open() }
     function hide() { root.close() }
+    function openHelp() { root.open(); root.helpOpen = true }
+    function closeHelp() { root.helpOpen = false }
   }
 
   function refresh() {
