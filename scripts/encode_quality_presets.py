@@ -54,11 +54,12 @@ TIERS = ("high", "medium", "low")
 PRESETS: dict[str, dict[str, dict[str, Any]]] = {
     "dmabuf": {
         # CQP only — bitrate RC undershoots ~0.5–3 Mbps on DMA-BUF+Intel.
-        # qp=18 ≈ high quality inside typical 20 MHz; qp=16 peaked 22–28 Mbps.
+        # qp=18 + quality=1: max encode effort at the qp that stays ~12–17 Mbps
+        # live. qp=17 peaked ~32 Mbps on-device (over 20 MHz); qp=16 worse.
         "high": {
             "vaapiRcMode": "CQP",
             "vaapiQp": 18,
-            "vaapiQuality": "2",
+            "vaapiQuality": "1",
             "vaapiBitrate": "14M",
             "bitrate": "14M",
             "vaapiGop": 30,
