@@ -1,6 +1,13 @@
 # WORKSPACE TYPE: independent vs shared
 
-Status: **research + plan only** (not implemented).  
+Status: **ABANDONED — do not implement.**  
+Decision: 2026-09-14 — do **not** add a WORKSPACE TYPE / WORKSPACE METHOD
+panel section or settings. Keep current independent behavior only
+(`ext-*` on Miracast, numerics on eDP, plus `pin_extend_workspaces`).
+
+The sections below are retained only as historical research (Hyprland limits,
+Persist reconnect pin incident). They are **not** a backlog.
+
 Date: 2026-09-14  
 Context: Extend Miracast on Hyprland (`persistent-miracast` head + eDP).
 
