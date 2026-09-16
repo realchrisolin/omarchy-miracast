@@ -27,7 +27,7 @@ Optional: **UFW** — if enabled, Miracast ports must be allowed (see below).
 | Control | What it does |
 |---------|----------------|
 | **Scan** | Find nearby Miracast sinks |
-| **Check & fix** | Runs Doctor (tools, engines, encode, audio, radio, workspaces). If UFW is blocking Miracast ports, offers to open them (sudo). |
+| **Doctor** | Diagnose tools, engines, encode, audio, radio, workspaces. If UFW is blocking Miracast ports, offers to open them (sudo). |
 | **Info** | Opens the themed help window (this doc via CLI) |
 | **Stop / Reconnect** | End the cast, or reconnect to the last device |
 
@@ -47,7 +47,7 @@ Optional: **UFW** — if enabled, Miracast ports must be allowed (see below).
 | **19000–19100/udp** | Local RTP |
 | **42000–42100/udp** | Sink RTP/RTCP |
 
-If **ufw is not installed**, Check & fix cannot open ports for you — allow the
+If **ufw is not installed**, Doctor cannot open ports for you — allow the
 list above in nftables/firewalld/your router policy as needed.
 
 ---
@@ -94,7 +94,7 @@ sustained high retries. Frozen video (TX stuck near audio-only ~2 Mbps) triggers
 
 ## Troubleshooting
 
-1. Run **Check & fix** and read STATUS (warnings name the area: `audio`, `firewall`, `link`, `radio_channel`, …).  
+1. Run **Doctor** and read STATUS (warnings name the area: `audio`, `firewall`, `link`, `radio_channel`, …).  
 2. Confirm the TV is in Miracast / screen-mirroring receive mode.  
 3. If video is fine but silent: set Sound default to **Miracast** (or enable auto-switch) and raise that sink’s volume.  
 4. If Doctor says live encode ≠ settings: reconnect.  

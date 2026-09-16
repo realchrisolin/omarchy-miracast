@@ -35,7 +35,7 @@ omarchy pkg add dnsmasq wf-recorder xorg-xrandr ffmpeg
 
 Also needed (usually already present on Omarchy): NetworkManager, PipeWire /
 WirePlumber or PulseAudio, `iw`, `nmcli`, Python 3. Optional: `ufw` so
-**Check & fix** can open Miracast ports for you.
+**Doctor** can open Miracast ports for you.
 
 ### 2. Install the plugin
 
@@ -128,7 +128,7 @@ miracast-ctl doctor
 ### 5. Smoke-check
 
 ```bash
-miracast-ctl doctor          # or: Check & fix in the Display panel
+miracast-ctl doctor          # or: Doctor in the Display panel
 miracast-ctl scan            # nearby Miracast sinks
 ```
 
@@ -198,7 +198,7 @@ controls). To restore single-row accordion behavior:
 While connected, the Miracast display row shows **CAST MODE** / **EXTEND
 POSITION** (← ↑ ↓ → when Extend) and **SCALE**. Under **MIRACAST** (below **CONTROLS**): collapsible **ADVANCED SETTINGS**
 (**STREAM MODE**, **RENDER ENGINE**, **PRESET QUALITY**, **RADIO**).
-Scan / Check & fix / Info / Stop stay under **CONTROLS**. Only the focused
+Scan / Doctor / Info / Stop stay under **CONTROLS**. Only the focused
 display row expands nested brightness/scale/cast controls.
 
 With focus on the CAST MODE / EXTEND POSITION row and Extend active, vim
@@ -365,7 +365,7 @@ connect or disconnect — those calls have frozen the primary display for
 | Key | Action |
 |-----|--------|
 | S | Scan sinks |
-| D | Check & fix (diagnose; open UFW ports if needed) |
+| D | Doctor (diagnose; open UFW ports if needed) |
 | I | Miracast help (themed card; CLI uses terminal) |
 | C | Connect last device / reconnect |
 | X | Stop cast |

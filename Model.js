@@ -187,7 +187,7 @@ function miracastPhaseHint(phase, message) {
   if (value === "dhcp") return "P2P is up — waiting for DHCP / RTSP"
   if (value === "rtsp") return "Negotiating Miracast media"
   if (value === "streaming") return "Desktop is casting"
-  if (value === "error") return "Cast failed — run Check & fix"
+  if (value === "error") return "Cast failed — run Doctor"
   return "Ready"
 }
 
@@ -197,7 +197,7 @@ function miracastIsActive(phase) {
 }
 
 function miracastDoctorSummary(doctor) {
-  if (!doctor) return "Check & fix not run yet"
+  if (!doctor) return "Doctor not run yet"
   var suffix = ""
   if (doctor.firewall_fix_started === true)
     suffix = " — opening UFW ports (approve sudo if prompted)"

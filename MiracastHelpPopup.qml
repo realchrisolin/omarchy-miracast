@@ -165,7 +165,7 @@ Item {
         Repeater {
           model: [
             { k: "Scan", v: "Find nearby Miracast sinks." },
-            { k: "Check & fix", v: "Runs Doctor (tools, engines, encode, audio, radio, workspaces). If UFW is blocking Miracast ports, offers to open them (sudo)." },
+            { k: "Doctor", v: "Diagnose tools, engines, encode, audio, radio, workspaces. If UFW is blocking Miracast ports, offers to open them (sudo)." },
             { k: "Info", v: "This help window." },
             { k: "Stop / Reconnect", v: "End the cast, or reconnect to the last device." }
           ]
@@ -258,7 +258,7 @@ Item {
 
       Text {
         width: parent.width
-        text: "If ufw is not installed, Check & fix cannot open ports for you — allow the list above in nftables/firewalld/your router policy as needed."
+        text: "If ufw is not installed, Doctor cannot open ports for you — allow the list above in nftables/firewalld/your router policy as needed."
         color: root.faint
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
@@ -311,7 +311,7 @@ Item {
         spacing: Style.space(3)
         Repeater {
           model: [
-            "Run Check & fix and read STATUS (warnings name the area: audio, firewall, link, radio_channel, …).",
+            "Run Doctor and read STATUS (warnings name the area: audio, firewall, link, radio_channel, …).",
             "Confirm the TV is in Miracast / screen-mirroring receive mode.",
             "If video is fine but silent: set Sound default to Miracast (or enable auto-switch) and raise that sink’s volume.",
             "If Doctor says live encode ≠ settings: reconnect.",
