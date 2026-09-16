@@ -88,21 +88,116 @@ def _go_channel(iface: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
-def _station_retries(iface: str) -> tuple[int, int] | None:
-    """Return (tx_packets, tx_retries) or None."""
+def _station_dump(iface: str) -> str:
     if not iface:
-        return None
+        return ""
     try:
-        dump = subprocess.check_output(
+        return subprocess.check_output(
             ["iw", "dev", iface, "station", "dump"], text=True, timeout=3.0
         )
     except Exception:
+        return ""
+
+
+def _station_retries(iface: str) -> tuple[int, int, int] | None:
+    """Return (tx_packets, tx_retries, tx_failed) or None."""
+    dump = _station_dump(iface)
+    if not dump:
         return None
     pk = re.search(r"tx packets:\s*(\d+)", dump)
     rt = re.search(r"tx retries:\s*(\d+)", dump)
     if not pk or not rt:
         return None
-    return int(pk.group(1)), int(rt.group(1))
+    fail_m = re.search(r"tx failed:\s*(\d+)", dump)
+    failed = int(fail_m.group(1)) if fail_m else 0
+    return int(pk.group(1)), int(rt.group(1)), failed
+
+
+def _station_signal_dbm(iface: str) -> float | None:
+    """Peer signal (dBm) from iw station dump, or None."""
+    dump = _station_dump(iface)
+    if not dump:
+        return None
+    m = re.search(r"signal:\s*(-?\d+)", dump)
+    return float(m.group(1)) if m else None
+
+
+def _go_width_mhz(iface: str) -> float | None:
+    """P2P GO channel width (MHz) from ``iw dev INFO``, or None."""
+    try:
+        out = subprocess.check_output(
+            ["iw", "dev", iface, "info"], text=True, timeout=2.0
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"width:\s*(\d+)\s*MHz", out)
+    return float(m.group(1)) if m else None
+
+
+def _station_inactive_ms(iface: str) -> int | None:
+    """Peer inactive time in ms (iw station dump), or None if no station."""
+    dump = _station_dump(iface)
+    if not dump.strip():
+        return None
+    m = re.search(r"inactive time:\s*(\d+)\s*ms", dump)
+    return int(m.group(1)) if m else None
+
+
+def _udp_send_errors(chunk: str) -> int:
+    return len(re.findall(r"UDP send error", chunk))
+
+
+def _recent_video_fps(cast_log: Path) -> float | None:
+    """Estimate video fps from the last two Sender health lines (None if unknown)."""
+    try:
+        lines = [
+            ln
+            for ln in cast_log.read_text(errors="ignore").splitlines()
+            if "Sender health" in ln and "video_frames=" in ln
+        ][-4:]
+    except OSError:
+        return None
+    samples: list[tuple[float, int]] = []
+    for ln in lines:
+        m = re.search(
+            r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}).*video_frames=(\d+)", ln
+        )
+        if not m:
+            continue
+        try:
+            # Accept with or without TZ suffix by truncating to seconds.
+            ts = time.mktime(time.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S"))
+            samples.append((ts, int(m.group(2))))
+        except Exception:
+            continue
+    if len(samples) < 2:
+        return None
+    (t0, f0), (t1, f1) = samples[-2], samples[-1]
+    dt = t1 - t0
+    if dt <= 0 or dt > 30:
+        return None
+    return (f1 - f0) / dt
+
+
+def _video_fps_healthy(vfps: float | None, *, min_fps: float = 20.0) -> bool:
+    """True when Sender health shows video still advancing (Waydroid/UI OK)."""
+    return vfps is not None and vfps >= min_fps
+
+
+def _soft_tx_counts_as_stall(
+    mbps: float | None,
+    vfps: float | None,
+    *,
+    stall_mbps: float,
+) -> bool:
+    """Soft TX is a stall only if video fps is unhealthy (or TX≈0)."""
+    if mbps is None:
+        return False
+    if mbps < 0.15:
+        return True
+    if mbps < stall_mbps and not _video_fps_healthy(vfps):
+        return True
+    return False
 
 
 def _idr_count_since(cast_log: Path, start_size: int) -> int:
@@ -261,12 +356,55 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--csa-max-per-hour", type=int, default=2)
     p.add_argument("--score-margin-ratio", type=float, default=1.25)
     p.add_argument("--score-margin-abs", type=float, default=15.0)
+    p.add_argument(
+        "--dynamic-cooldown",
+        type=float,
+        default=60.0,
+        help="min seconds between Best (Dynamic) tier changes",
+    )
+    p.add_argument(
+        "--peer-inactive-ms",
+        type=int,
+        default=45000,
+        help="iw station inactive time (ms) before treating the sink as gone",
+    )
+    p.add_argument(
+        "--peer-inactive-ticks",
+        type=int,
+        default=2,
+        help="consecutive inactive samples before stop (avoids one-shot blips)",
+    )
+    p.add_argument(
+        "--udp-error-threshold",
+        type=int,
+        default=8,
+        help="UDP send error lines in one cast.log chunk → dead media path",
+    )
+    p.add_argument(
+        "--zero-tx-stop-ticks",
+        type=int,
+        default=6,
+        help="ticks with TX≈0 after stall restarts before stop (not endless rebind)",
+    )
+    p.add_argument(
+        "--settings",
+        default="",
+        help="settings.json path (default: ~/.config/omarchy-miracast/settings.json)",
+    )
     args = p.parse_args(argv)
 
     status_path = Path(args.status)
     cast_log = Path(args.cast_log)
     plugin = Path(args.plugin)
     ctl = args.ctl
+    settings_path = Path(
+        args.settings
+        or (
+            Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+            / "omarchy-miracast"
+            / "settings.json"
+        )
+    )
 
     _log(cast_log, f"started interval={args.interval}s stall<{args.stall_mbps}Mbps")
 
@@ -281,6 +419,8 @@ def main(argv: list[str] | None = None) -> int:
     last_score = 0.0
     last_csa = 0.0
     csa_times: list[float] = []
+    peer_inactive_streak = 0
+    zero_tx_streak = 0
     log_size = 0
     try:
         log_size = cast_log.stat().st_size
@@ -288,6 +428,28 @@ def main(argv: list[str] | None = None) -> int:
         pass
 
     pick_mod = None
+    dyn_mod = None
+    dyn_presets = None  # encode_quality_presets module
+    dyn_state = None  # dynamic_encode.LadderState (fine step index)
+    last_dyn_change = 0.0
+    last_retry_pct: float | None = None
+    last_retries_ps: float | None = None
+    last_tx_failed: int | None = None
+    last_stats_t = 0.0
+    delivery_fail_tick = False
+
+    def _stop_session(reason: str) -> None:
+        """End Miracast so the UI does not stay on streaming after a dead sink."""
+        _log(cast_log, f"stop session: {reason}")
+        try:
+            subprocess.run(
+                [ctl, "stop"],
+                capture_output=True,
+                text=True,
+                timeout=60.0,
+            )
+        except Exception as exc:
+            _log(cast_log, f"stop failed: {exc}")
 
     def _capture_paused() -> bool:
         """True when FluxCast/Omarchy is mid-rebind (pause file or status)."""
@@ -352,6 +514,13 @@ def main(argv: list[str] | None = None) -> int:
             log_size = cast_log.stat().st_size
         except OSError:
             pass
+
+        # UDP send errors = media socket dead while processes may still look "up".
+        udp_errs = _udp_send_errors(chunk)
+        if udp_errs >= max(1, args.udp_error_threshold):
+            _stop_session(f"UDP send errors×{udp_errs} in cast.log (dead media path)")
+            return 0
+
         if _video_stall_logged(chunk) or _bufs_size_storm(chunk):
             reason = (
                 "VIDEO_STALL in cast.log"
@@ -362,46 +531,102 @@ def main(argv: list[str] | None = None) -> int:
                 continue
 
         # --- stall detection (cheap) ---
-        if mbps is not None and mbps < args.stall_mbps:
+        # Under CQP, quiet UI (e.g. Waydroid) often sits ~1.5–3 Mbps at 30 fps.
+        # That is NOT a stall — only treat soft TX as pain when video fps dies
+        # or TX is essentially zero.
+        vfps = _recent_video_fps(cast_log)
+        video_ok = _video_fps_healthy(vfps)
+
+        if mbps is not None and mbps < 0.15:
             stall_streak += 1
+            zero_tx_streak += 1
+        elif _soft_tx_counts_as_stall(mbps, vfps, stall_mbps=args.stall_mbps):
+            stall_streak += 1
+            zero_tx_streak = 0
         else:
             stall_streak = 0
+            zero_tx_streak = 0
 
-        # Audio-only band: LPCM ~1.5 Mbps + RTP overhead ≈ 1.7–1.9 Mbps while
-        # video RTP is dead. Catch this even when above --stall-mbps floor.
+        # Audio-only band ≈ LPCM while video RTP is dead — require unhealthy fps.
         if (
             mbps is not None
             and args.audio_band_low <= mbps <= args.audio_band_high
+            and not video_ok
         ):
             audio_band_streak += 1
         else:
             audio_band_streak = 0
 
+        # Endless restart-capture while TX stays ~0 leaves UI on "streaming".
+        if zero_tx_streak >= max(1, args.zero_tx_stop_ticks):
+            mbps_s = f"{mbps:.2f}" if mbps is not None else "?"
+            _stop_session(
+                f"TX≈0 for {zero_tx_streak} ticks (mbps={mbps_s}) — sink gone"
+            )
+            return 0
+
         if stall_streak >= args.stall_ticks:
+            fps_s = f"{vfps:.1f}" if vfps is not None else "?"
             if _do_restart(
-                f"stall TX={mbps:.2f}Mbps for {stall_streak} ticks",
+                f"stall TX={mbps:.2f}Mbps fps={fps_s} for {stall_streak} ticks",
                 cooldown=args.restart_cooldown,
             ):
                 continue
 
         if audio_band_streak >= args.audio_band_ticks:
+            fps_s = f"{vfps:.1f}" if vfps is not None else "?"
             if _do_restart(
-                f"audio-only TX band={mbps:.2f}Mbps for {audio_band_streak} ticks",
+                f"audio-only TX band={mbps:.2f}Mbps fps={fps_s} "
+                f"for {audio_band_streak} ticks",
                 cooldown=args.video_signal_cooldown,
             ):
                 continue
 
-        # --- retries / IDR (cheap-ish) ---
+        # --- retries / IDR / peer liveness (cheap-ish) ---
         tick += 1
         go = _go_iface()
         rf_pain = False
         if tick % max(1, args.retry_sample_every) == 0 and go:
+            # Associated but idle peer (TV left) — P2P group can linger.
+            dump = _station_dump(go)
+            if not dump.strip():
+                peer_inactive_streak += 1
+                _log(
+                    cast_log,
+                    f"no P2P stations on GO streak={peer_inactive_streak}",
+                )
+                if peer_inactive_streak >= max(1, args.peer_inactive_ticks):
+                    _stop_session("no P2P stations on GO (peer left)")
+                    return 0
+            else:
+                inactive_m = re.search(r"inactive time:\s*(\d+)\s*ms", dump)
+                inactive = int(inactive_m.group(1)) if inactive_m else None
+                if inactive is not None and inactive >= max(1000, args.peer_inactive_ms):
+                    peer_inactive_streak += 1
+                    _log(
+                        cast_log,
+                        f"peer inactive {inactive}ms streak={peer_inactive_streak}",
+                    )
+                    if peer_inactive_streak >= max(1, args.peer_inactive_ticks):
+                        _stop_session(
+                            f"peer inactive {inactive}ms "
+                            f"(≥{args.peer_inactive_ms}ms ×{peer_inactive_streak})"
+                        )
+                        return 0
+                else:
+                    peer_inactive_streak = 0
+
+            delivery_fail_tick = False
             stats = _station_retries(go)
             if stats and last_pk is not None:
                 dpk = stats[0] - last_pk
                 drt = stats[1] - last_rt
+                dfail = stats[2] - (last_tx_failed if last_tx_failed is not None else stats[2])
+                dt_s = max(0.001, now - last_stats_t) if last_stats_t else float(args.interval)
+                last_retries_ps = drt / dt_s
                 if dpk > 100:
                     rate = 100.0 * drt / dpk
+                    last_retry_pct = rate
                     if rate >= args.retry_rate_threshold:
                         high_retry_streak += 1
                         rf_pain = True
@@ -411,12 +636,204 @@ def main(argv: list[str] | None = None) -> int:
                         )
                     else:
                         high_retry_streak = 0
+                if dfail > 0:
+                    delivery_fail_tick = True
+                    rf_pain = True
+                    _log(cast_log, f"tx failed Δ={dfail}")
             if stats:
-                last_pk, last_rt = stats
+                last_pk, last_rt = stats[0], stats[1]
+                last_tx_failed = stats[2]
+                last_stats_t = now
+        elif tick % max(1, args.retry_sample_every) == 0 and not go:
+            # Streaming status but no GO iface — reclaim.
+            _stop_session("streaming status but no P2P GO/client iface")
+            return 0
 
         idr = len(re.findall(r"Sink requested IDR", chunk))
         if idr >= 2:
             rf_pain = True
+
+        # --- Best (Dynamic) encode ladder (only when profile=best) ---
+        try:
+            import json
+
+            settings = json.loads(settings_path.read_text()) if settings_path.is_file() else {}
+            profile = str(settings.get("encodeProfile") or "").strip().lower()
+            if profile == "best" and bool(settings.get("encodeBestLocked")):
+                # Freeze current fine-step QP/bitrate; stall recovery above still runs.
+                dyn_state = None  # clear streaks so unlock starts clean
+            elif profile == "best":
+                if dyn_mod is None:
+                    dyn_path = plugin / "scripts" / "dynamic_encode.py"
+                    spec = importlib.util.spec_from_file_location("dynamic_encode", dyn_path)
+                    dyn_mod = importlib.util.module_from_spec(spec)
+                    assert spec.loader is not None
+                    # Required on Python 3.14+ before exec_module (dataclasses).
+                    sys.modules[spec.name] = dyn_mod
+                    spec.loader.exec_module(dyn_mod)
+                if dyn_presets is None:
+                    presets_path = plugin / "scripts" / "encode_quality_presets.py"
+                    pspec = importlib.util.spec_from_file_location(
+                        "encode_quality_presets", presets_path
+                    )
+                    dyn_presets = importlib.util.module_from_spec(pspec)
+                    assert pspec.loader is not None
+                    sys.modules[pspec.name] = dyn_presets
+                    pspec.loader.exec_module(dyn_presets)
+                engine = str(settings.get("captureEncode") or "dmabuf")
+                if dyn_state is None:
+                    try:
+                        step0 = int(settings.get("encodeProfileEffectiveStep"))
+                    except (TypeError, ValueError):
+                        step0 = dyn_presets.named_tier_to_step(
+                            settings.get("encodeProfileEffective") or "high",
+                            engine,
+                        )
+                    try:
+                        demotes0 = int(settings.get("encodeBestDemoteCount") or 0)
+                    except (TypeError, ValueError):
+                        demotes0 = 0
+                    sig_floor0 = None
+                    try:
+                        if settings.get("encodeBestSignalFloorDbm") is not None:
+                            sig_floor0 = float(settings.get("encodeBestSignalFloorDbm"))
+                    except (TypeError, ValueError):
+                        sig_floor0 = None
+                    try:
+                        climb_floor0 = int(settings.get("encodeBestClimbFloorStep") or 0)
+                    except (TypeError, ValueError):
+                        climb_floor0 = 0
+                    dyn_state = dyn_mod.LadderState(
+                        step=step0,
+                        demote_count=demotes0,
+                        signal_floor_dbm=sig_floor0,
+                        climb_floor_step=climb_floor0,
+                    )
+                # ABR stall = real delivery failure or soft TX *with* dead fps.
+                # Quiet Waydroid/UI under CQP at ~2 Mbps / 30 fps is healthy.
+                abr_stalled = (
+                    (stall_streak >= max(1, int(args.stall_ticks) - 1) and not video_ok)
+                    or (
+                        audio_band_streak >= max(1, int(args.audio_band_ticks) - 1)
+                        and not video_ok
+                    )
+                    or _video_stall_logged(chunk)
+                    or _bufs_size_storm(chunk)
+                    or (mbps is not None and mbps < 0.15)
+                )
+                rc_mode = str(settings.get("vaapiRcMode") or "CQP")
+                # Full QP/bitrate ladder — demote on retries / stalls / delivery
+                # failures only (no hard Mbps ceiling).
+                min_step = 0
+                max_step = dyn_presets.best_step_count(engine) - 1
+                target = dyn_presets.step_target_mbps(engine, dyn_state.step)
+                band_5ghz = False
+                width_mhz = _go_width_mhz(go) if go else None
+                signal_dbm = _station_signal_dbm(go) if go else None
+                try:
+                    st_live = (
+                        json.loads(status_path.read_text())
+                        if status_path.is_file()
+                        else {}
+                    )
+                    freq = st_live.get("p2pFreqMHz") or st_live.get("p2pListenFreqMHz")
+                    if freq is not None and float(freq) >= 4900.0:
+                        band_5ghz = True
+                    elif go:
+                        # Fall back to iw channel when status lacks freq.
+                        ch = _go_channel(go)
+                        if ch is not None and int(ch) >= 36:
+                            band_5ghz = True
+                    if st_live.get("p2pWidthMHz") is not None and width_mhz is None:
+                        width_mhz = float(st_live.get("p2pWidthMHz"))
+                    if st_live.get("p2pSignalDbm") is not None and signal_dbm is None:
+                        signal_dbm = float(st_live.get("p2pSignalDbm"))
+                except (TypeError, ValueError, OSError, json.JSONDecodeError):
+                    pass
+                sample = dyn_mod.LinkSample(
+                    throughput_mbps=mbps,
+                    retry_percent=last_retry_pct,
+                    retries_per_sec=last_retries_ps,
+                    signal_dbm=signal_dbm,
+                    stalled=bool(abr_stalled),
+                    delivery_fail=bool(delivery_fail_tick or udp_errs > 0),
+                )
+                cooldown_ok = (now - last_dyn_change) >= args.dynamic_cooldown
+                decision = dyn_mod.decide(
+                    dyn_state,
+                    sample,
+                    cooldown_ok=cooldown_ok,
+                    rc_mode=rc_mode,
+                    min_step=min_step,
+                    max_step=max_step,
+                    target_mbps=target,
+                    band_5ghz=band_5ghz,
+                    width_mhz=width_mhz,
+                )
+                prev_demotes = int(getattr(dyn_state, "demote_count", 0) or 0)
+                prev_floor = int(getattr(dyn_state, "climb_floor_step", 0) or 0)
+                dyn_state = dyn_mod.LadderState(
+                    step=decision.step,
+                    bad_streak=decision.bad_streak,
+                    good_streak=decision.good_streak,
+                    demote_count=decision.demote_count,
+                    signal_floor_dbm=decision.signal_floor_dbm,
+                    climb_floor_step=decision.climb_floor_step,
+                )
+                # Persist demote settle + climb floor across watcher restarts.
+                if (
+                    decision.demote_count != prev_demotes
+                    or decision.climb_floor_step != prev_floor
+                    or decision.reason.startswith("signal_recover")
+                    or "signal_recover" in decision.reason
+                ):
+                    try:
+                        settings["encodeBestDemoteCount"] = int(decision.demote_count)
+                        settings["encodeBestClimbFloorStep"] = int(
+                            decision.climb_floor_step or 0
+                        )
+                        if decision.signal_floor_dbm is None:
+                            settings.pop("encodeBestSignalFloorDbm", None)
+                        else:
+                            settings["encodeBestSignalFloorDbm"] = float(
+                                decision.signal_floor_dbm
+                            )
+                        settings_path.write_text(
+                            json.dumps(settings, separators=(",", ":")) + "\n"
+                        )
+                    except Exception as exc:
+                        _log(cast_log, f"dynamic persist demotes error: {exc}")
+                if decision.changed:
+                    label = dyn_presets.step_display_label(engine, decision.step)
+                    _log(
+                        cast_log,
+                        f"dynamic: → step {decision.step} ({label}, {decision.reason})",
+                    )
+                    try:
+                        subprocess.run(
+                            [ctl, "set-quality-effective", f"step:{decision.step}"],
+                            capture_output=True,
+                            text=True,
+                            timeout=45.0,
+                        )
+                    except Exception as exc:
+                        _log(cast_log, f"dynamic apply error: {exc}")
+                    last_dyn_change = now
+                    last_restart = now  # share cooldown with capture restarts
+                    last_tx = None
+                    time.sleep(max(args.interval, 12.0))
+                    continue
+                if (
+                    decision.reason.startswith("hold:no_climb")
+                    or decision.reason.startswith("hold:floor")
+                    or decision.reason.startswith("signal_recover")
+                    or "signal_recover" in decision.reason
+                ):
+                    _log(cast_log, f"dynamic: {decision.reason}")
+            else:
+                dyn_state = None
+        except Exception as exc:
+            _log(cast_log, f"dynamic skipped: {exc}")
             _log(cast_log, f"IDR burst count={idr} since last check")
 
         # --- rare score + optional CSA ---
