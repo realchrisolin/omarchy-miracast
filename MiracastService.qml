@@ -74,14 +74,92 @@ Item {
   // Background status polls must NOT count as busy — they run every 2s while
   // streaming and would grey out Miracast action buttons via enabled:!busy.
   readonly property bool busy: doctorProcess.running || scanProcess.running || startProcess.running || stopProcess.running || firewallProcess.running || modeProcess.running || positionProcess.running || streamModeProcess.running || captureEncodeProcess.running || encodeProfileProcess.running || preserveDisplayProcess.running || autoSwitchAudioProcess.running || p2pWifiProcess.running
-  // Pill values: Auto + each discovered managed iface.
-  readonly property var p2pWifiValues: {
-    var out = ["auto"]
+  // All managed ifaces (for helpers / MORE list).
+  readonly property var p2pWifiAllIfaces: {
+    var out = []
     var radios = p2pWifiRadios || []
     for (var i = 0; i < radios.length; i++) {
       var iface = radios[i] && radios[i].iface ? String(radios[i].iface) : ""
       if (iface !== "" && out.indexOf(iface) < 0)
         out.push(iface)
+    }
+    return out
+  }
+
+  // Same preference as scripts/list_p2p_radios.py resolve_iface("auto"):
+  // P2P-GO → prefer idle → wlan/wlp name → iface sort. USB dongles without a
+  // STA association typically win over the laptop NIC that holds home Wi‑Fi.
+  readonly property string p2pWifiBestIface: {
+    var radios = p2pWifiRadios || []
+    if (radios.length === 0)
+      return ""
+    var go = []
+    var i
+    for (i = 0; i < radios.length; i++) {
+      if (radios[i] && radios[i].p2pGo)
+        go.push(radios[i])
+    }
+    var pool = go.length > 0 ? go : radios.slice()
+    var idle = []
+    for (i = 0; i < pool.length; i++) {
+      if (pool[i] && !pool[i].inUse)
+        idle.push(pool[i])
+    }
+    if (idle.length > 0)
+      pool = idle
+    function score(r) {
+      var iface = String((r && r.iface) || "")
+      var goBit = (r && r.p2pGo) ? 1 : 0
+      var idleBit = (r && r.inUse) ? 0 : 1
+      var nameBit = /^(wlan|wlp)\d/.test(iface) ? 1 : 0
+      return [goBit, idleBit, nameBit, iface]
+    }
+    function better(a, b) {
+      var sa = score(a), sb = score(b)
+      for (var k = 0; k < 3; k++) {
+        if (sa[k] !== sb[k])
+          return sa[k] > sb[k]
+      }
+      return sa[3] > sb[3]  // reverse=True string sort → lexicographically greater wins? 
+      // Python: sorted(..., reverse=True) on (int,int,int,str) — for equal ints, larger str wins.
+    }
+    var best = pool[0]
+    for (i = 1; i < pool.length; i++) {
+      if (better(pool[i], best))
+        best = pool[i]
+    }
+    return best && best.iface ? String(best.iface) : ""
+  }
+
+  // Primary pills: Auto + single best iface (dongle-ready when one appears).
+  readonly property var p2pWifiPrimaryValues: {
+    var out = ["auto"]
+    var best = String(p2pWifiBestIface || "")
+    if (best !== "")
+      out.push(best)
+    return out
+  }
+
+  // Extra ifaces behind MORE INTERFACES (everything except the best pick).
+  readonly property var p2pWifiMoreValues: {
+    var best = String(p2pWifiBestIface || "")
+    var out = []
+    var all = p2pWifiAllIfaces || []
+    for (var i = 0; i < all.length; i++) {
+      var iface = String(all[i] || "")
+      if (iface !== "" && iface !== best)
+        out.push(iface)
+    }
+    return out
+  }
+
+  // Back-compat: all pill values Auto + every iface (keyboard may use primary+more).
+  readonly property var p2pWifiValues: {
+    var out = ["auto"]
+    var all = p2pWifiAllIfaces || []
+    for (var i = 0; i < all.length; i++) {
+      if (out.indexOf(all[i]) < 0)
+        out.push(all[i])
     }
     return out
   }
@@ -132,7 +210,7 @@ Item {
     statusProcess.running = true
   }
 
-  // fix=true (panel Check & fix): diagnose + open UFW ports when missing.
+  // fix=true (panel Doctor): diagnose + open UFW ports when missing.
   // Startup / refresh uses fix=false so we never pop sudo on panel open.
   function runDoctor(fix) {
     if (doctorProcess.running) return

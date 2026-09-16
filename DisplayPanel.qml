@@ -46,8 +46,25 @@ Panel {
   readonly property var miracastPosValues: ["left", "above", "below", "right"]
   readonly property var miracastEncodeValues: Model.miracastCaptureEncodeValues()
   readonly property var miracastEncodeProfileValues: Model.miracastEncodeProfileValues()
-  readonly property var miracastRadioValues: (miracast && miracast.p2pWifiValues)
-    ? miracast.p2pWifiValues : ["auto"]
+  // Visible RADIO targets for keyboard: primary always; MORE when expanded.
+  readonly property var miracastRadioPrimaryValues: (miracast && miracast.p2pWifiPrimaryValues)
+    ? miracast.p2pWifiPrimaryValues : ["auto"]
+  readonly property var miracastRadioMoreValues: (miracast && miracast.p2pWifiMoreValues)
+    ? miracast.p2pWifiMoreValues : []
+  readonly property var miracastRadioValues: {
+    var out = miracastRadioPrimaryValues.slice()
+    if (root.moreRadiosExpanded) {
+      var more = miracastRadioMoreValues
+      for (var i = 0; i < more.length; i++) {
+        if (out.indexOf(more[i]) < 0)
+          out.push(more[i])
+      }
+    }
+    return out
+  }
+  // Expand MORE when the active selection lives there (e.g. after picking a dongle).
+  readonly property bool moreRadiosNeeded: miracastRadioMoreValues.length > 0
+  property bool moreRadiosExpanded: false
   readonly property var miracastStreamModeIds: {
     var out = []
     var modes = (miracast && miracast.streamModes) ? miracast.streamModes : []
@@ -72,6 +89,13 @@ Panel {
   // Themed Miracast help window (Info button / I). Independent of the Display
   // dropdown: the KeyboardPanel overlay would steal clicks from a FloatingWindow.
   property bool helpOpen: false
+
+  function syncMoreRadiosExpanded() {
+    var cur = String((miracast && miracast.p2pWifiInterface) || "auto")
+    if (cur !== "auto" && miracastRadioMoreValues.indexOf(cur) >= 0)
+      root.moreRadiosExpanded = true
+  }
+
   function showHelp() {
     root.helpOpen = true
     // Drop the Display overlay so the help window can take focus/clicks.
@@ -825,9 +849,14 @@ Panel {
     target: miracast
     function onPeersChanged() { root.clampCursor() }
     function onPhaseChanged() { root.clampCursor() }
+    function onP2pWifiInterfaceChanged() { root.syncMoreRadiosExpanded() }
+    function onP2pWifiRadiosChanged() { root.syncMoreRadiosExpanded() }
   }
 
-  Component.onCompleted: refresh()
+  Component.onCompleted: {
+    refresh()
+    root.syncMoreRadiosExpanded()
+  }
 
   // KeyboardPanel primes focus at open-time, so SUPER-bound IPC summons land
   // with j/k ready to navigate. Keep a default landing point, but don't paint
@@ -1349,9 +1378,9 @@ Panel {
                     onClicked: miracast.scanPeers()
                   }
                   PanelActionButton {
-                    // nf-md-bandage — Check & fix (diagnose + open UFW if needed)
-                    iconText: "󱣥"
-                    tooltipText: "Check & fix (D)"
+                    // nf-md-stethoscope — Doctor (diagnose + open UFW if needed)
+                    iconText: "󰓙"
+                    tooltipText: "Doctor (D)"
                     foreground: root.bar.foreground
                     fontFamily: root.bar.fontFamily
                     enabled: !miracast.busy
@@ -1648,20 +1677,101 @@ Panel {
                   Grid {
                     id: miracastRadioRow
                     width: parent.width
-                    columns: Math.min(root.miracastRadioValues.length, 3)
+                    columns: Math.min(root.miracastRadioPrimaryValues.length, 2)
                     spacing: Style.spacing.xs
                     readonly property real cellWidth: columns > 0
                       ? (width - spacing * (columns - 1)) / columns
                       : 0
 
                     Repeater {
-                      model: root.miracastRadioValues
+                      model: root.miracastRadioPrimaryValues
                       MiracastRadioPill {
                         required property string modelData
                         required property int index
                         radioValue: modelData
                         radioIndex: index
                         width: miracastRadioRow.cellWidth
+                        height: implicitHeight
+                      }
+                    }
+                  }
+
+                  Column {
+                    width: parent.width
+                    spacing: Style.space(4)
+                    visible: root.moreRadiosNeeded
+
+                    CursorSurface {
+                      id: moreRadiosHeader
+                      width: parent.width
+                      hasCursor: false
+                      foreground: root.bar.foreground
+                      fill: Style.hoverFillFor(root.bar.foreground, Color.accent)
+                      implicitHeight: moreRadiosHeaderInner.implicitHeight + Style.space(6)
+                      opacity: 0.95
+
+                      Row {
+                        id: moreRadiosHeaderInner
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.leftMargin: Style.space(4)
+                        anchors.rightMargin: Style.space(4)
+                        spacing: Style.space(6)
+
+                        Text {
+                          text: root.moreRadiosExpanded ? "󰅀" : "󰅂"
+                          color: root.bar.foreground
+                          font.family: root.bar.fontFamily
+                          font.pixelSize: Style.font.caption
+                          width: Style.space(14)
+                          horizontalAlignment: Text.AlignHCenter
+                          anchors.verticalCenter: parent.verticalCenter
+                        }
+                        Text {
+                          text: "MORE INTERFACES"
+                          color: Qt.darker(root.bar.foreground, 1.25)
+                          font.family: root.bar.fontFamily
+                          font.pixelSize: Style.font.caption
+                          font.bold: true
+                          anchors.verticalCenter: parent.verticalCenter
+                        }
+                        Text {
+                          text: "(" + root.miracastRadioMoreValues.length + ")"
+                          color: Qt.darker(root.bar.foreground, 1.55)
+                          font.family: root.bar.fontFamily
+                          font.pixelSize: Style.font.caption
+                          anchors.verticalCenter: parent.verticalCenter
+                        }
+                      }
+
+                      MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.moreRadiosExpanded = !root.moreRadiosExpanded
+                      }
+                    }
+
+                    Grid {
+                      id: miracastRadioMoreRow
+                      width: parent.width
+                      visible: root.moreRadiosExpanded
+                      columns: Math.min(Math.max(root.miracastRadioMoreValues.length, 1), 2)
+                      spacing: Style.spacing.xs
+                      readonly property real cellWidth: columns > 0
+                        ? (width - spacing * (columns - 1)) / columns
+                        : 0
+
+                      Repeater {
+                        model: root.miracastRadioMoreValues
+                        MiracastRadioPill {
+                          required property string modelData
+                          required property int index
+                          radioValue: modelData
+                          radioIndex: root.miracastRadioPrimaryValues.length + index
+                          width: miracastRadioMoreRow.cellWidth
+                          height: implicitHeight
+                        }
                       }
                     }
                   }
@@ -2004,30 +2114,95 @@ Panel {
     }
   }
 
-  component MiracastRadioPill: Button {
+  // Custom pill — qs.Ui.Button's Text does not wrap or honor cell width.
+  component MiracastRadioPill: BorderSurface {
     id: radioPill
     required property string radioValue
     required property int radioIndex
 
-    // Title on first line, "(adapter name)" on the second (Qt Text honors \n).
-    text: miracast.p2pWifiPillText(radioValue)
-    fontSize: Style.font.caption
-    foreground: root.bar.foreground
-    fontFamily: root.bar.fontFamily
-    horizontalPadding: Style.spacing.sm
-    verticalPadding: Style.spacing.controlPaddingY
-    bordered: true
+    readonly property string _device: miracast.p2pWifiDeviceName(radioValue)
+    readonly property bool active: (miracast.p2pWifiInterface || "auto") === radioValue
+    readonly property bool hasCursor: root.cursorActive && root.focusSection === "miracastRadio"
+                                      && root.selectedIndex === radioIndex
+    readonly property bool hot: mouseArea.containsMouse || hasCursor
+    readonly property color foreground: root.bar.foreground
+    readonly property real horizontalPadding: Style.spacing.sm
+    readonly property real verticalPadding: Style.spacing.controlPaddingY
+    readonly property bool pillEnabled: !miracast.busy
 
-    active: (miracast.p2pWifiInterface || "auto") === radioValue
-    hasCursor: root.cursorActive && root.focusSection === "miracastRadio" && root.selectedIndex === radioIndex
-    enabled: !miracast.busy
+    radius: Style.cornerRadius
+    clip: true
+    leftPadding: horizontalPadding
+    rightPadding: horizontalPadding
+    topPadding: verticalPadding
+    bottomPadding: verticalPadding
 
-    onClicked: miracast.setP2pWifiInterface(radioValue)
-    onHovered: function(isHovered) {
-      if (!isHovered || root.reflowingText) return
-      root.cursorActive = true
-      root.focusSection = "miracastRadio"
-      root.selectedIndex = radioPill.radioIndex
+    readonly property var _hoverBorderSpec: Border.controlSpec("hover-cursor", foreground, Color.accent)
+    readonly property var _selectedBorderSpec: Border.controlSpec("selected", foreground, Color.accent)
+    readonly property var _normalBorderSpec: Border.controlSpec("normal", foreground, Color.accent)
+    borderSpec: hot ? _hoverBorderSpec
+      : active ? (Border.controlHasWidth("selected") ? _selectedBorderSpec : _normalBorderSpec)
+      : _normalBorderSpec
+
+    color: mouseArea.pressed ? Style.pressedFillFor(foreground, Color.accent)
+      : hot ? Style.hoverFillFor(foreground, Color.accent)
+      : active ? Style.selectedFillFor(foreground, Color.accent)
+      : "transparent"
+
+    implicitHeight: labelCol.implicitHeight + verticalPadding * 2
+                    + Border.top(borderSpec) + Border.bottom(borderSpec)
+
+    Column {
+      id: labelCol
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.leftMargin: radioPill.contentLeftInset
+      anchors.rightMargin: radioPill.contentRightInset
+      spacing: Style.space(1)
+
+      Text {
+        width: parent.width
+        text: miracast.p2pWifiLabel(radioValue)
+        color: radioPill.foreground
+        opacity: radioPill.pillEnabled ? 1 : 0.45
+        font.family: root.bar.fontFamily
+        font.pixelSize: Style.font.caption
+        font.bold: radioPill.active
+        horizontalAlignment: Text.AlignHCenter
+        wrapMode: Text.WordWrap
+      }
+
+      Text {
+        width: parent.width
+        visible: radioPill._device !== ""
+        text: "(" + radioPill._device + ")"
+        color: Qt.darker(radioPill.foreground, 1.35)
+        opacity: radioPill.pillEnabled ? 1 : 0.45
+        font.family: root.bar.fontFamily
+        font.pixelSize: Math.max(Style.font.caption - 1, 9)
+        horizontalAlignment: Text.AlignHCenter
+        wrapMode: Text.WordWrap
+      }
+    }
+
+    MouseArea {
+      id: mouseArea
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: radioPill.pillEnabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+      enabled: radioPill.pillEnabled
+      onClicked: miracast.setP2pWifiInterface(radioValue)
+    }
+
+    HoverHandler {
+      enabled: radioPill.pillEnabled
+      onHoveredChanged: {
+        if (!hovered || root.reflowingText) return
+        root.cursorActive = true
+        root.focusSection = "miracastRadio"
+        root.selectedIndex = radioPill.radioIndex
+      }
     }
   }
 
