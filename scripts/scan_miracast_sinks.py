@@ -72,8 +72,8 @@ def _parse_ay(blob: str) -> list[int]:
     return [int(x, 0) for x in re.findall(r"0x[0-9a-fA-F]+|\b\d+\b", blob)]
 
 
-def _wfd_rtsp_port(ies: list[int]) -> int:
-    # Subelement 0 (Device Info): 6 bytes; RTSP port is last 2 bytes BE.
+def _wfd_device_info(ies: list[int]) -> Optional[bytes]:
+    """Return WFD Device Information subelement body (6 bytes) if present."""
     i = 0
     while i + 2 <= len(ies):
         sub_id, length = ies[i], ies[i + 1]
@@ -83,8 +83,148 @@ def _wfd_rtsp_port(ies: list[int]) -> int:
         body = ies[i : i + length]
         i += length
         if sub_id == 0 and length >= 6:
-            return (body[4] << 8) | body[5]
+            return bytes(body[:6])
+    return None
+
+
+def _wfd_rtsp_port(ies: list[int]) -> int:
+    # Subelement 0 (Device Info): 6 bytes; RTSP port is last 2 bytes BE.
+    body = _wfd_device_info(ies)
+    if body and len(body) >= 6:
+        return (body[4] << 8) | body[5]
     return 7236
+
+
+def _wfd_device_type_label(ies: list[int]) -> Optional[str]:
+    """Best-effort role from WFD Device Information bitmap (bits 0–1)."""
+    body = _wfd_device_info(ies)
+    if not body or len(body) < 2:
+        return None
+    # First two bytes are device info bitmap (BE).
+    info = (body[0] << 8) | body[1]
+    role = info & 0x3
+    return {0: "Source", 1: "Primary sink", 2: "Secondary sink", 3: "Source+sink"}.get(role)
+
+
+_WPS_CATEGORY = {
+    1: "Computer",
+    2: "Input",
+    3: "Printer",
+    4: "Camera",
+    5: "Storage",
+    6: "Network",
+    7: "Display",
+    8: "Multimedia",
+    9: "Gaming",
+    10: "Telephone",
+    11: "Audio",
+}
+
+
+def _parse_pri_dev_type(value: Optional[str]) -> Optional[str]:
+    """``7-0050F204-1`` → Display."""
+    if not value:
+        return None
+    m = re.fullmatch(r"(\d+)-([0-9A-Fa-f]{8})-(\d+)", str(value).strip())
+    if not m:
+        return None
+    return _WPS_CATEGORY.get(int(m.group(1)))
+
+
+def _band_from_freq(mhz: Optional[int]) -> Optional[str]:
+    if mhz is None:
+        return None
+    try:
+        f = int(mhz)
+    except (TypeError, ValueError):
+        return None
+    if 2400 <= f < 2500:
+        return "2.4 GHz"
+    if 4900 <= f < 5925:
+        return "5 GHz"
+    if 5925 <= f < 7125:
+        return "6 GHz"
+    return None
+
+
+def _peer_dict_from_wpa_fields(
+    mac: str,
+    fields: dict[str, str],
+    *,
+    source: str,
+    iface: Optional[str] = None,
+) -> dict[str, Any]:
+    name = fields.get("device_name") or mac
+    has_wfd = "wfd_subelems" in fields or "wfd_dev_info" in fields
+    listen_freq = oper_freq = None
+    try:
+        if fields.get("listen_freq"):
+            listen_freq = int(fields["listen_freq"])
+        if fields.get("oper_freq"):
+            oper_freq = int(fields["oper_freq"])
+    except ValueError:
+        pass
+    out: dict[str, Any] = {
+        "mac": str(mac).upper(),
+        "name": name,
+        "manufacturer": fields.get("manufacturer"),
+        "model": fields.get("model_name") or fields.get("model_number"),
+        "wfd": has_wfd,
+        "rtsp_port": 7236 if has_wfd else None,
+        "listenFreqMHz": listen_freq,
+        "operFreqMHz": oper_freq,
+        "band": _band_from_freq(listen_freq or oper_freq),
+        "category": _parse_pri_dev_type(fields.get("pri_dev_type")),
+        "source": source,
+    }
+    if iface:
+        out["iface"] = iface
+    return out
+
+
+def _enrich_peers_with_wpa(
+    peers: list[dict[str, Any]], wifi_iface: Optional[str] = None
+) -> list[dict[str, Any]]:
+    """Fill listen band / WPS fields via ``p2p_peer`` when NM omitted them."""
+    iface = wifi_iface or _wifi_iface()
+    if not iface or not peers:
+        return peers
+    out: list[dict[str, Any]] = []
+    for peer in peers:
+        mac = str(peer.get("mac") or "")
+        need = not peer.get("listenFreqMHz") or not peer.get("manufacturer")
+        if not need or not re.fullmatch(r"[0-9A-Fa-f:]{17}", mac):
+            out.append(peer)
+            continue
+        text = ""
+        for prefix in (
+            ["sudo", "-n", "wpa_cli", "-i", iface],
+            ["wpa_cli", "-i", iface],
+        ):
+            try:
+                r = _run([*prefix, "p2p_peer", mac.lower()], timeout=3.0)
+                if r.returncode == 0 and (r.stdout or "").strip():
+                    text = r.stdout or ""
+                    break
+            except Exception:
+                continue
+        if not text:
+            out.append(peer)
+            continue
+        fields: dict[str, str] = {}
+        for line in text.splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                fields[k.strip()] = v.strip()
+        enriched = _peer_dict_from_wpa_fields(
+            mac, fields, source=str(peer.get("source") or "wpa_cli")
+        )
+        merged = {
+            **peer,
+            **{k: v for k, v in enriched.items() if v not in (None, "", [])},
+        }
+        out.append(merged)
+    return out
 
 
 def _nm_p2p_path(prefer_iface: Optional[str] = None) -> Optional[str]:
@@ -198,6 +338,7 @@ def scan_nm(timeout: int, wifi_iface: Optional[str] = None) -> list[dict[str, An
                         "model": model or None,
                         "wfd": has_wfd,
                         "rtsp_port": _wfd_rtsp_port(wfd_ies) if has_wfd else None,
+                        "device_type": _wfd_device_type_label(wfd_ies) if has_wfd else None,
                         "source": "NetworkManager",
                         "iface": iface,
                     }
@@ -279,24 +420,15 @@ def scan_wpa(timeout: int, wifi_iface: Optional[str] = None) -> list[dict[str, A
             for mac in macs:
                 details = wpa("p2p_peer", mac.lower())
                 text = details.stdout or ""
-                fields = {}
+                fields: dict[str, str] = {}
                 for line in text.splitlines():
                     if "=" in line:
                         k, v = line.split("=", 1)
                         fields[k.strip()] = v.strip()
-                name = fields.get("device_name") or mac
-                has_wfd = "wfd_subelems" in fields or "wfd_dev_info" in fields
                 peers.append(
-                    {
-                        "mac": mac.upper(),
-                        "name": name,
-                        "manufacturer": fields.get("manufacturer"),
-                        "model": fields.get("model_name") or fields.get("model_number"),
-                        "wfd": has_wfd,
-                        "rtsp_port": 7236 if has_wfd else None,
-                        "source": "wpa_cli",
-                        "iface": iface,
-                    }
+                    _peer_dict_from_wpa_fields(
+                        mac, fields, source="wpa_cli", iface=iface
+                    )
                 )
             wfd_peers = [p for p in peers if p.get("wfd")]
             elapsed = timeout - (deadline - time.monotonic())
@@ -404,6 +536,7 @@ def collect_peers_readonly() -> list[dict[str, Any]]:
                         "model": model or None,
                         "wfd": bool(wfd_ies),
                         "rtsp_port": _wfd_rtsp_port(wfd_ies) if wfd_ies else None,
+                        "device_type": _wfd_device_type_label(wfd_ies) if wfd_ies else None,
                         "source": "nm-cache",
                     }
                 )
@@ -437,17 +570,10 @@ def collect_peers_readonly() -> list[dict[str, Any]]:
                     if "=" in line:
                         k, v = line.split("=", 1)
                         fields[k.strip()] = v.strip()
-                has_wfd = "wfd_subelems" in fields or "wfd_dev_info" in fields
                 upsert(
-                    {
-                        "mac": mac.upper(),
-                        "name": fields.get("device_name") or mac.upper(),
-                        "manufacturer": fields.get("manufacturer"),
-                        "model": fields.get("model_name") or fields.get("model_number"),
-                        "wfd": has_wfd,
-                        "rtsp_port": 7236 if has_wfd else None,
-                        "source": "wpa-cache",
-                    }
+                    _peer_dict_from_wpa_fields(
+                        mac, fields, source="wpa-cache", iface=iface
+                    )
                 )
             break
 
@@ -620,6 +746,7 @@ def scan(
     if not active:
         try:
             peers = scan_nm(timeout, wifi_iface=resolved)
+            peers = _enrich_peers_with_wpa(peers, wifi_iface=resolved)
             return peers, "NetworkManager", {**meta, "live_discovery": True}
         except Exception as exc:
             errors.append(f"NM: {exc}")
@@ -629,7 +756,7 @@ def scan(
         except Exception as exc:
             errors.append(f"wpa_cli: {exc}")
         if cached:
-            return cached, "cache", meta
+            return _enrich_peers_with_wpa(cached, wifi_iface=resolved), "cache", meta
         raise RuntimeError("; ".join(errors) or "scan failed")
 
     # Active cast: prefer short wpa find (proven safe without flush on AX201),
@@ -654,6 +781,7 @@ def scan(
             errors.append(f"NM: {exc2}")
 
     peers = _merge_peers(cached, discovered)
+    peers = _enrich_peers_with_wpa(peers, wifi_iface=resolved)
     if not peers:
         raise RuntimeError(
             "; ".join(errors) or "no peers (cache empty and live discovery failed)"

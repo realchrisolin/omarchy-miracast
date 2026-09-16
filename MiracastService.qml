@@ -26,8 +26,29 @@ Item {
   property var streamModes: []
   // RENDER ENGINE preference: dmabuf | vaapi | cpu
   property string captureEncode: "dmabuf"
-  // Encode quality tier: high | medium | low (knobs depend on captureEncode)
+  // Card-reported GPU product string for RENDER ENGINE pill subtitles.
+  property string gpuDeviceName: ""
+  property string gpuVendor: ""
+  property bool gpuDmabufLikely: true
+  // Encode quality: best | veryhigh | high | medium | low (knobs depend on captureEncode)
   property string encodeProfile: "medium"
+  // Concrete ladder step while Best (Dynamic) is selected (legacy named map).
+  property string encodeProfileEffective: "medium"
+  // Fine Best step index + short label (qp18 / 15M).
+  property var encodeProfileEffectiveStep: null
+  property string encodeProfileEffectiveLabel: ""
+  // Freeze Best fine-step (default off); only meaningful while Best is selected.
+  property bool encodeBestLocked: false
+  // Live encode knobs (from settings via status) for ENCODER DETAILS.
+  property string vaapiRcMode: ""
+  property var vaapiQp: null
+  property string vaapiQuality: ""
+  property string vaapiIQfactor: ""
+  property string bitrate: ""
+  property string vaapiBitrate: ""
+  property var vaapiGop: null
+  property var vaapiAsyncDepth: null
+  property string vbvMultiplier: ""
   // Resolved while streaming (from status / latency): dmabuf | pipe
   property string capturePath: ""
   property string encoder: ""
@@ -36,6 +57,54 @@ Item {
   property string p2pWifiInterface: "auto"
   property string p2pWifiResolved: ""
   property var p2pWifiRadios: []
+
+  // Live P2P / STA radio snapshot (from status → attach_radio_channel_fields).
+  property var p2pChannel: null
+  property var p2pFreqMHz: null
+  property var p2pWidthMHz: null
+  property string p2pRole: ""
+  property var staChannel: null
+  property var staFreqMHz: null
+  property var staWidthMHz: null
+  property var radioMcc: null
+  property var p2pSignalDbm: null
+  property var p2pTxBitrateMbps: null
+  // Very High bitrate exceeds 2.4 GHz / 20 MHz — only when P2P is 5 GHz+.
+  readonly property bool encodeVeryHighAllowed: Model.miracastFreqAllowsVeryHigh(p2pFreqMHz)
+  property var p2pRxBitrateMbps: null
+  property var p2pTxFailed: null
+  property var p2pRxDropMisc: null
+  property var p2pTxRetryPercent: null
+  // Windowed stats from consecutive status samples (status polls ~2s while casting).
+  property var p2pTxRetryPercentWindow: null
+  property var p2pThroughputMbps: null   // Δ tx_bytes / Δt
+  property var p2pRetriesPerSec: null    // Δ tx_retries / Δt
+  property var _prevTxPackets: null
+  property var _prevTxRetries: null
+  property var _prevTxBytes: null
+  property var _prevSampleMs: null
+
+  readonly property var radioLink: ({
+    p2pChannel: p2pChannel,
+    p2pFreqMHz: p2pFreqMHz,
+    p2pWidthMHz: p2pWidthMHz,
+    p2pRole: p2pRole,
+    staChannel: staChannel,
+    staFreqMHz: staFreqMHz,
+    staWidthMHz: staWidthMHz,
+    radioMcc: radioMcc,
+    p2pSignalDbm: p2pSignalDbm,
+    p2pTxBitrateMbps: p2pTxBitrateMbps,
+    p2pRxBitrateMbps: p2pRxBitrateMbps,
+    p2pTxFailed: p2pTxFailed,
+    p2pRxDropMisc: p2pRxDropMisc,
+    p2pThroughputMbps: p2pThroughputMbps,
+    p2pRetriesPerSec: p2pRetriesPerSec,
+    p2pTxRetryPercent: (p2pTxRetryPercentWindow !== null && p2pTxRetryPercentWindow !== undefined)
+      ? p2pTxRetryPercentWindow : p2pTxRetryPercent
+  })
+  readonly property bool hasRadioLink: p2pChannel !== null && p2pChannel !== undefined
+
   // Human adapter name for the resolved P2P Wi-Fi iface (from list_p2p_radios).
   readonly property string p2pWifiAdapterName: {
     var want = String(p2pWifiResolved || "")
@@ -73,7 +142,7 @@ Item {
   readonly property string ctl: pluginDir !== "" ? (pluginDir + "/bin/miracast-ctl") : "miracast-ctl"
   // Background status polls must NOT count as busy — they run every 2s while
   // streaming and would grey out Miracast action buttons via enabled:!busy.
-  readonly property bool busy: doctorProcess.running || scanProcess.running || startProcess.running || stopProcess.running || firewallProcess.running || modeProcess.running || positionProcess.running || streamModeProcess.running || captureEncodeProcess.running || encodeProfileProcess.running || preserveDisplayProcess.running || autoSwitchAudioProcess.running || p2pWifiProcess.running
+  readonly property bool busy: doctorProcess.running || scanProcess.running || startProcess.running || stopProcess.running || firewallProcess.running || modeProcess.running || positionProcess.running || streamModeProcess.running || captureEncodeProcess.running || encodeProfileProcess.running || preserveDisplayProcess.running || autoSwitchAudioProcess.running || bestLockProcess.running || p2pWifiProcess.running
   // All managed ifaces (for helpers / MORE list).
   readonly property var p2pWifiAllIfaces: {
     var out = []
@@ -172,6 +241,24 @@ Item {
       return Model.miracastCaptureEncodeActive(capturePath, encoder, captureEncode)
     return captureEncode
   }
+  readonly property var encoderDetailLines: Model.miracastEncoderDetailLines({
+    captureEncode: captureEncode,
+    capturePath: capturePath,
+    encoder: encoder,
+    vaapiRcMode: vaapiRcMode,
+    vaapiQp: vaapiQp,
+    vaapiQuality: vaapiQuality,
+    vaapiIQfactor: vaapiIQfactor,
+    bitrate: bitrate,
+    vaapiBitrate: vaapiBitrate,
+    vaapiGop: vaapiGop,
+    vaapiAsyncDepth: vaapiAsyncDepth,
+    vbvMultiplier: vbvMultiplier,
+    encodeProfile: encodeProfile,
+    encodeProfileEffective: encodeProfileEffective,
+    encodeProfileEffectiveLabel: encodeProfileEffectiveLabel,
+    encodeBestLocked: encodeBestLocked
+  })
 
   onStreamingChanged: {
     if (streaming && _awaitingPositionRecover) {
@@ -195,6 +282,28 @@ Item {
     if (extendPosition === "above") return "Above"
     if (extendPosition === "below") return "Below"
     return "Right"
+  }
+
+  function applyEncodeKnobsFromStatus(data) {
+    if (!data) return
+    if (data.vaapiRcMode !== undefined && data.vaapiRcMode !== null)
+      vaapiRcMode = String(data.vaapiRcMode || "")
+    if (data.vaapiQp !== undefined && data.vaapiQp !== null && data.vaapiQp !== "")
+      vaapiQp = data.vaapiQp
+    if (data.vaapiQuality !== undefined && data.vaapiQuality !== null)
+      vaapiQuality = String(data.vaapiQuality || "")
+    if (data.vaapiIQfactor !== undefined && data.vaapiIQfactor !== null)
+      vaapiIQfactor = String(data.vaapiIQfactor || "")
+    if (data.bitrate !== undefined && data.bitrate !== null)
+      bitrate = String(data.bitrate || "")
+    if (data.vaapiBitrate !== undefined && data.vaapiBitrate !== null)
+      vaapiBitrate = String(data.vaapiBitrate || "")
+    if (data.vaapiGop !== undefined && data.vaapiGop !== null && data.vaapiGop !== "")
+      vaapiGop = data.vaapiGop
+    if (data.vaapiAsyncDepth !== undefined && data.vaapiAsyncDepth !== null && data.vaapiAsyncDepth !== "")
+      vaapiAsyncDepth = data.vaapiAsyncDepth
+    if (data.vbvMultiplier !== undefined && data.vbvMultiplier !== null)
+      vbvMultiplier = String(data.vbvMultiplier || "")
   }
 
   function persistPeer(mac, name) {
@@ -294,6 +403,18 @@ Item {
     actionStatus = on
       ? "Automatically switch audio output: on"
       : "Automatically switch audio output: off"
+  }
+
+  function setEncodeBestLocked(enabled) {
+    var on = !!enabled
+    if (encodeProfile !== "best") return
+    if (on === encodeBestLocked && !bestLockProcess.running) return
+    encodeBestLocked = on
+    if (bestLockProcess.running) return
+    lastError = ""
+    actionStatus = on ? "Lock Best: on" : "Lock Best: off"
+    bestLockProcess.command = [ctl, "set-best-lock", on ? "true" : "false"]
+    bestLockProcess.running = true
   }
 
   function positionLabelFor(value) {
@@ -396,6 +517,14 @@ Item {
     return Model.miracastCaptureEncodeLabel(id)
   }
 
+  function captureEncodePillTitle(id) {
+    return Model.miracastCaptureEncodePillTitle(id)
+  }
+
+  function captureEncodePillSubtitle(id) {
+    return Model.miracastCaptureEncodePillSubtitle(id, gpuDeviceName)
+  }
+
   function encodeProfileLabel(id) {
     return Model.miracastEncodeProfileLabel(id)
   }
@@ -416,15 +545,30 @@ Item {
   }
 
   function setEncodeProfile(value) {
-    var next = String(value || "").toLowerCase()
-    if (next !== "high" && next !== "medium" && next !== "low") return
+    var next = String(value || "").toLowerCase().replace(/[-_]/g, "")
+    if (next !== "best" && next !== "veryhigh" && next !== "high"
+        && next !== "medium" && next !== "low") return
     if (encodeProfileProcess.running || stopProcess.running) return
+    if (next === "veryhigh" && !encodeVeryHighAllowed) {
+      lastError = "Very High needs 5 GHz+ P2P (bitrate exceeds 2.4 GHz budget)"
+      actionStatus = lastError
+      return
+    }
     if (next === encodeProfile && !active) return
     encodeProfile = next
+    if (next === "best") {
+      encodeProfileEffective = "high"
+      encodeProfileEffectiveLabel = ""
+      encodeProfileEffectiveStep = null
+    } else {
+      encodeProfileEffective = next
+      encodeProfileEffectiveLabel = ""
+      encodeProfileEffectiveStep = null
+      encodeBestLocked = false
+    }
     lastError = ""
     if (active)
-      actionStatus = "PRESET QUALITY " + encodeProfileLabel(next)
-          + " saved — reconnect to apply…"
+      actionStatus = "PRESET QUALITY → " + encodeProfileLabel(next) + "…"
     else
       actionStatus = "PRESET QUALITY: " + encodeProfileLabel(next)
     encodeProfileProcess.command = [ctl, "set-quality", next]
@@ -783,15 +927,35 @@ Item {
             root.preserveDisplayAcrossMonitors = data.preserveDisplayAcrossMonitors === true
           if (data.autoSwitchAudioOutput !== undefined)
             root.autoSwitchAudioOutput = data.autoSwitchAudioOutput === true
+          if (data.encodeBestLocked !== undefined)
+            root.encodeBestLocked = data.encodeBestLocked === true
           if (data.streamMode) root.streamMode = String(data.streamMode)
           if (data.streamModes && data.streamModes.length)
             root.streamModes = data.streamModes
           if (data.captureEncode) root.captureEncode = String(data.captureEncode)
+          if (data.gpuDeviceName !== undefined && data.gpuDeviceName !== null)
+            root.gpuDeviceName = String(data.gpuDeviceName || "")
+          if (data.gpuVendor !== undefined && data.gpuVendor !== null)
+            root.gpuVendor = String(data.gpuVendor || "")
+          if (data.gpuDmabufLikely !== undefined)
+            root.gpuDmabufLikely = data.gpuDmabufLikely === true
           if (data.encodeProfile) {
-            var ep = String(data.encodeProfile).toLowerCase()
-            if (ep === "high" || ep === "medium" || ep === "low")
+            var ep = String(data.encodeProfile).toLowerCase().replace(/[-_]/g, "")
+            if (ep === "best" || ep === "veryhigh" || ep === "high"
+                || ep === "medium" || ep === "low")
               root.encodeProfile = ep
           }
+          if (data.encodeProfileEffective) {
+            var epe = String(data.encodeProfileEffective).toLowerCase().replace(/[-_]/g, "")
+            if (epe === "veryhigh" || epe === "high" || epe === "medium" || epe === "low")
+              root.encodeProfileEffective = epe
+          }
+          if (data.encodeProfileEffectiveStep !== undefined && data.encodeProfileEffectiveStep !== null
+              && data.encodeProfileEffectiveStep !== "")
+            root.encodeProfileEffectiveStep = data.encodeProfileEffectiveStep
+          if (data.encodeProfileEffectiveLabel !== undefined && data.encodeProfileEffectiveLabel !== null)
+            root.encodeProfileEffectiveLabel = String(data.encodeProfileEffectiveLabel || "")
+          root.applyEncodeKnobsFromStatus(data)
           if (data.capturePath) root.capturePath = String(data.capturePath)
           else if (!root.streaming) root.capturePath = ""
           if (data.encoder) root.encoder = String(data.encoder)
@@ -803,6 +967,69 @@ Item {
             root.p2pWifiResolved = String(data.p2pWifiResolved || "")
           if (data.p2pWifiRadios)
             root.p2pWifiRadios = data.p2pWifiRadios
+
+          // Radio / link snapshot for the Display hero (no SSIDs).
+          function _num(v) {
+            if (v === undefined || v === null || v === "") return null
+            var n = Number(v)
+            return isFinite(n) ? n : null
+          }
+          root.p2pChannel = _num(data.p2pChannel)
+          root.p2pFreqMHz = _num(data.p2pFreqMHz)
+          root.p2pWidthMHz = _num(data.p2pWidthMHz)
+          root.p2pRole = data.p2pRole ? String(data.p2pRole) : ""
+          root.staChannel = _num(data.staChannel)
+          root.staFreqMHz = _num(data.staFreqMHz)
+          root.staWidthMHz = _num(data.staWidthMHz)
+          root.radioMcc = (data.radioMcc === true) ? true
+            : (data.radioMcc === false) ? false : null
+          root.p2pSignalDbm = _num(data.p2pSignalDbm)
+          root.p2pTxBitrateMbps = _num(data.p2pTxBitrateMbps)
+          root.p2pRxBitrateMbps = _num(data.p2pRxBitrateMbps)
+          root.p2pTxFailed = _num(data.p2pTxFailed)
+          root.p2pRxDropMisc = _num(data.p2pRxDropMisc)
+          root.p2pTxRetryPercent = _num(data.p2pTxRetryPercent)
+          var pk = _num(data.p2pTxPackets)
+          var rt = _num(data.p2pTxRetries)
+          var tb = _num(data.p2pTxBytes)
+          var nowMs = Date.now()
+          if (root._prevSampleMs !== null && nowMs > root._prevSampleMs) {
+            var dtSec = (nowMs - root._prevSampleMs) / 1000.0
+            if (dtSec > 0.2 && dtSec < 30) {
+              if (tb !== null && root._prevTxBytes !== null && tb >= root._prevTxBytes) {
+                // bytes/sec → megabits/sec (SI): *8 / 1e6
+                var bitsPerSec = 8.0 * (tb - root._prevTxBytes) / dtSec
+                root.p2pThroughputMbps = Math.round(bitsPerSec / 1e6 * 100) / 100
+              }
+              if (rt !== null && root._prevTxRetries !== null && rt >= root._prevTxRetries) {
+                root.p2pRetriesPerSec =
+                  Math.round(10.0 * (rt - root._prevTxRetries) / dtSec) / 10
+              }
+              if (pk !== null && rt !== null && root._prevTxPackets !== null
+                  && root._prevTxRetries !== null) {
+                var dpk = pk - root._prevTxPackets
+                var drt = rt - root._prevTxRetries
+                if (dpk > 0 && drt >= 0)
+                  root.p2pTxRetryPercentWindow = Math.round(10000.0 * drt / dpk) / 100.0
+                else if (dpk === 0)
+                  root.p2pTxRetryPercentWindow = 0
+              }
+            }
+          }
+          if (pk !== null) root._prevTxPackets = pk
+          if (rt !== null) root._prevTxRetries = rt
+          if (tb !== null) root._prevTxBytes = tb
+          root._prevSampleMs = nowMs
+          if (root.p2pChannel === null) {
+            root.p2pTxRetryPercentWindow = null
+            root.p2pThroughputMbps = null
+            root.p2pRetriesPerSec = null
+            root._prevTxPackets = null
+            root._prevTxRetries = null
+            root._prevTxBytes = null
+            root._prevSampleMs = null
+          }
+
           if (root.captureFallback && root.streaming
               && String(root.actionStatus).indexOf("RENDER ENGINE") < 0)
             root.actionStatus = "RENDER ENGINE fell back to "
@@ -921,11 +1148,29 @@ Item {
             root.actionStatus = ""
           } else {
             if (data.captureEncode) root.captureEncode = String(data.captureEncode)
+          if (data.gpuDeviceName !== undefined && data.gpuDeviceName !== null)
+            root.gpuDeviceName = String(data.gpuDeviceName || "")
+          if (data.gpuVendor !== undefined && data.gpuVendor !== null)
+            root.gpuVendor = String(data.gpuVendor || "")
+          if (data.gpuDmabufLikely !== undefined)
+            root.gpuDmabufLikely = data.gpuDmabufLikely === true
             if (data.encodeProfile) {
-              var ep = String(data.encodeProfile).toLowerCase()
-              if (ep === "high" || ep === "medium" || ep === "low")
+              var ep = String(data.encodeProfile).toLowerCase().replace(/[-_]/g, "")
+              if (ep === "best" || ep === "veryhigh" || ep === "high"
+                  || ep === "medium" || ep === "low")
                 root.encodeProfile = ep
             }
+            if (data.encodeProfileEffective) {
+              var epe2 = String(data.encodeProfileEffective).toLowerCase().replace(/[-_]/g, "")
+              if (epe2 === "veryhigh" || epe2 === "high" || epe2 === "medium" || epe2 === "low")
+                root.encodeProfileEffective = epe2
+            }
+            if (data.encodeProfileEffectiveStep !== undefined && data.encodeProfileEffectiveStep !== null
+                && data.encodeProfileEffectiveStep !== "")
+              root.encodeProfileEffectiveStep = data.encodeProfileEffectiveStep
+            if (data.encodeProfileEffectiveLabel !== undefined && data.encodeProfileEffectiveLabel !== null)
+              root.encodeProfileEffectiveLabel = String(data.encodeProfileEffectiveLabel || "")
+            root.applyEncodeKnobsFromStatus(data)
             if (data.capturePath) root.capturePath = String(data.capturePath)
             if (data.encoder) root.encoder = String(data.encoder)
             root.captureFallback = data.captureFallback === true
@@ -960,12 +1205,37 @@ Item {
             root.lastError = String(data.error || "Failed to set PRESET QUALITY")
             root.actionStatus = ""
           } else {
-            if (data.encodeProfile) root.encodeProfile = String(data.encodeProfile)
+            if (data.encodeProfile) {
+              var ep3 = String(data.encodeProfile).toLowerCase().replace(/[-_]/g, "")
+              if (ep3 === "best" || ep3 === "veryhigh" || ep3 === "high"
+                  || ep3 === "medium" || ep3 === "low")
+                root.encodeProfile = ep3
+            }
+            if (data.encodeProfileEffective) {
+              var epe3 = String(data.encodeProfileEffective).toLowerCase().replace(/[-_]/g, "")
+              if (epe3 === "veryhigh" || epe3 === "high" || epe3 === "medium" || epe3 === "low")
+                root.encodeProfileEffective = epe3
+            }
+            if (data.encodeProfileEffectiveStep !== undefined && data.encodeProfileEffectiveStep !== null
+                && data.encodeProfileEffectiveStep !== "")
+              root.encodeProfileEffectiveStep = data.encodeProfileEffectiveStep
+            if (data.encodeProfileEffectiveLabel !== undefined && data.encodeProfileEffectiveLabel !== null)
+              root.encodeProfileEffectiveLabel = String(data.encodeProfileEffectiveLabel || "")
+            if (data.encodeBestLocked !== undefined)
+              root.encodeBestLocked = data.encodeBestLocked === true
+            else if (root.encodeProfile !== "best")
+              root.encodeBestLocked = false
+            root.applyEncodeKnobsFromStatus(data)
             var label = root.encodeProfileLabel(root.encodeProfile)
+            if (root.encodeProfile === "best") {
+              var bl = String(root.encodeProfileEffectiveLabel || "").trim()
+              if (bl !== "")
+                label = "Best (" + bl + ")"
+              else if (root.encodeProfileEffective)
+                label = "Best (" + root.encodeProfileLabel(root.encodeProfileEffective) + ")"
+            }
             if (data.captureRestarted)
               root.actionStatus = "PRESET QUALITY: " + label + " (applied)"
-            else if (data.needsReconnect)
-              root.actionStatus = "PRESET QUALITY " + label + " — reconnect to apply"
             else
               root.actionStatus = "PRESET QUALITY: " + label
             root.lastError = ""
@@ -1087,6 +1357,30 @@ Item {
           }
           if (data.autoSwitchAudioOutput !== undefined)
             root.autoSwitchAudioOutput = data.autoSwitchAudioOutput === true
+        } catch (e) {
+        }
+        root.refresh()
+      }
+    }
+  }
+
+  Process {
+    id: bestLockProcess
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        try {
+          var data = JSON.parse(String(text || "{}"))
+          if (data.ok === false) {
+            root.lastError = String(data.error || "Failed to set Lock Best")
+            root.encodeBestLocked = false
+            return
+          }
+          if (data.encodeBestLocked !== undefined)
+            root.encodeBestLocked = data.encodeBestLocked === true
+          root.actionStatus = root.encodeBestLocked
+            ? "Lock Best: on (QP frozen)"
+            : "Lock Best: off"
         } catch (e) {
         }
         root.refresh()

@@ -230,7 +230,21 @@ function miracastPeerTitle(peer) {
 
 function miracastPeerSubtitle(peer) {
   if (!peer) return ""
-  return String(peer.mac || "")
+  var parts = []
+  var mac = String(peer.mac || "").trim()
+  if (mac !== "") parts.push(mac)
+  var brand = [peer.manufacturer, peer.model].filter(function (x) {
+    return x !== undefined && x !== null && String(x).trim() !== ""
+  }).map(function (x) { return String(x).trim() }).join(" ")
+  if (brand !== "") parts.push(brand)
+  var band = String(peer.band || "").trim()
+  if (band === "")
+    band = miracastBandLabel(peer.listenFreqMHz || peer.operFreqMHz)
+  if (band !== "" && band !== "--") parts.push(band)
+  var cat = String(peer.category || peer.device_type || "").trim()
+  if (cat !== "") parts.push(cat)
+  else if (peer.wfd) parts.push("Miracast")
+  return parts.join(" · ")
 }
 
 function miracastBarGlyph(phase, multiDisplay) {
@@ -241,23 +255,102 @@ function miracastBarGlyph(phase, multiDisplay) {
   return multiDisplay ? "󰍺" : "󰍹"
 }
 
-function miracastConnectionSummary(phase, peerName, peerMac, mode) {
+function miracastConnectionSummary(phase, peerName, peerMac, mode, p2pFreqMHz) {
+  // Peer name lives in the hero title — one state line (mode + freq when known).
   var label = String(peerName || "").trim()
   if (label === "") label = String(peerMac || "").trim()
   var modeLabel = String(mode || "mirror") === "extend" ? "Extend" : "Mirror"
   var value = String(phase || "idle")
   if (value === "streaming") {
-    if (label !== "") return "Connected · " + label + " · " + modeLabel
+    var freq = miracastFormatFreq(p2pFreqMHz)
+    if (freq !== "" && freq !== "--")
+      return "Connected on " + freq + " · " + modeLabel
     return "Connected · " + modeLabel
   }
-  if (value === "connecting" || value === "dhcp" || value === "rtsp") {
-    if (label !== "") return "Connecting · " + label
+  if (value === "connecting" || value === "dhcp" || value === "rtsp")
     return "Connecting…"
-  }
-  if (value === "scanning") return "Scanning for Miracast sinks…"
+  if (value === "scanning") return "Scanning…"
   if (value === "error") return "Miracast error"
-  if (label !== "") return "Last sink · " + label
+  if (label !== "") return "Last sink"
   return ""
+}
+
+function miracastBandLabel(freqMHz) {
+  var v = parseFloat(freqMHz)
+  if (!v) return ""
+  if (v >= 2400 && v < 2500) return "2.4 GHz"
+  if (v >= 4900 && v < 5925) return "5 GHz"
+  if (v >= 5925 && v < 7125) return "6 GHz"
+  var ghz = v / 1000
+  return ghz.toFixed(ghz % 1 === 0 ? 0 : 1) + " GHz"
+}
+
+function miracastFormatChannel(channel) {
+  if (channel === undefined || channel === null || channel === "") return "--"
+  return String(channel)
+}
+
+/** Frequency for UI: prefer band label (2.4 / 5 GHz); fall back to MHz. */
+function miracastFormatFreq(freqMHz) {
+  var band = miracastBandLabel(freqMHz)
+  if (band !== "") return band
+  var v = parseFloat(freqMHz)
+  if (!v) return "--"
+  return Math.round(v) + " MHz"
+}
+
+function miracastFormatBandwidth(widthMHz) {
+  var v = parseInt(widthMHz, 10)
+  if (!v) return "--"
+  return String(v) + " MHz"
+}
+
+function miracastFormatLinkMode(radioMcc, p2pRole, p2pFreqMHz, staFreqMHz) {
+  // Spell out bands — "same channel" alone is easy to misread when drivers lie.
+  var mira = miracastBandLabel(p2pFreqMHz)
+  var wifi = miracastBandLabel(staFreqMHz)
+  if (mira !== "" && wifi !== "") {
+    if (radioMcc === true || mira !== wifi)
+      return "Miracast on " + mira + " · Wi‑Fi on " + wifi
+    return "Miracast & Wi‑Fi both on " + mira
+  }
+  if (radioMcc === true)
+    return "Miracast on a different channel than Wi‑Fi"
+  if (radioMcc === false)
+    return "Miracast sharing Wi‑Fi’s channel"
+  return "--"
+}
+
+/** @deprecated — freq is folded into miracastConnectionSummary. */
+function miracastRadioHeroSummary(radio) {
+  return ""
+}
+
+function miracastFormatMbps(v) {
+  var n = parseFloat(v)
+  if (!n && n !== 0) return "--"
+  if (n >= 100) return Math.round(n) + " Mbps"
+  return n.toFixed(n >= 10 ? 1 : 2) + " Mbps"
+}
+
+function miracastFormatRetryPercent(v) {
+  var n = parseFloat(v)
+  if (!n && n !== 0) return "--"
+  return n.toFixed(n >= 10 ? 1 : 2) + "%"
+}
+
+function miracastFormatPerSec(v) {
+  var n = parseFloat(v)
+  if (!n && n !== 0) return "--"
+  if (n >= 100) return Math.round(n) + "/s"
+  if (n >= 10) return n.toFixed(1) + "/s"
+  return n.toFixed(n >= 1 ? 1 : 2) + "/s"
+}
+
+function miracastFormatSignal(v) {
+  var n = parseInt(v, 10)
+  if (!n && n !== 0) return "--"
+  return String(n) + " dBm"
 }
 
 /** RENDER ENGINE preference / pill ids. */
@@ -265,25 +358,148 @@ function miracastCaptureEncodeValues() {
   return ["dmabuf", "vaapi", "cpu"]
 }
 
-/** Encode quality tier pill ids (per-engine knobs). */
+/** Encode quality profile pill ids (includes Best (Dynamic)). */
 function miracastEncodeProfileValues() {
-  return ["high", "medium", "low"]
+  return ["best", "veryhigh", "high", "medium", "low"]
 }
 
 function miracastEncodeProfileLabel(id) {
-  var v = String(id || "")
+  var v = String(id || "").toLowerCase().replace(/[-_]/g, "")
+  if (v === "best") return "Best (Dynamic)"
+  if (v === "veryhigh" || v === "vh") return "Very High"
   if (v === "high") return "High"
   if (v === "medium") return "Medium"
   if (v === "low") return "Low"
-  return v || "Medium"
+  return id || "Medium"
+}
+
+function miracastRcModeLabel(rc) {
+  var r = String(rc || "").trim().toUpperCase()
+  if (r === "CQP") return "CQP (constant quality)"
+  if (r === "CBR") return "CBR (constant bitrate)"
+  if (r === "VBR") return "VBR (variable bitrate)"
+  if (r === "QVBR") return "QVBR (quality-defined VBR)"
+  if (r === "") return "--"
+  return r
+}
+
+function miracastEngineDetailLabel(captureEncode, capturePath, encoder) {
+  var pref = String(captureEncode || "").toLowerCase()
+  var path = String(capturePath || "").toLowerCase()
+  var enc = String(encoder || "")
+  var engine = "--"
+  if (path === "dmabuf" || pref === "dmabuf") engine = "DMA-BUF (zero-copy)"
+  else if (path === "pipe" || pref === "vaapi") engine = "VAAPI pipe (raw frames)"
+  else if (pref === "cpu") engine = "CPU (libx264)"
+  else if (pref) engine = pref
+  var codec = enc !== "" ? enc : (pref === "cpu" ? "libx264" : "h264_vaapi")
+  return "Engine: " + engine + " · Codec: " + codec
+}
+
+/** Human-readable encode snapshot lines for the bar dropdown. */
+function miracastEncoderDetailLines(m) {
+  if (!m) return []
+  var lines = []
+  lines.push(miracastEngineDetailLabel(m.captureEncode, m.capturePath, m.encoder))
+  var rc = String(m.vaapiRcMode || "").trim().toUpperCase()
+  lines.push("Rate control: " + miracastRcModeLabel(rc))
+
+  var qp = m.vaapiQp
+  var q = m.vaapiQuality
+  var iqf = m.vaapiIQfactor
+  var bits = []
+  if (qp !== undefined && qp !== null && String(qp) !== "")
+    bits.push("QP " + String(qp))
+  if (q !== undefined && q !== null && String(q) !== "")
+    bits.push("quality " + String(q))
+  if (iqf !== undefined && iqf !== null && String(iqf) !== "")
+    bits.push("I-frame factor " + String(iqf))
+  if (bits.length > 0)
+    lines.push(bits.join(" · "))
+
+  var br = String(m.bitrate || "").trim()
+  var peak = String(m.vaapiBitrate || "").trim()
+  if (rc === "CQP") {
+    if (br !== "")
+      lines.push("Bitrate label: " + br + " (CQP — content decides wire rate)")
+  } else if (br !== "" || peak !== "") {
+    if (peak !== "" && peak !== br)
+      lines.push("Target " + (br || "--") + " · Peak " + peak)
+    else
+      lines.push("Target bitrate: " + (br || peak))
+  }
+
+  var gop = m.vaapiGop
+  var asyncDepth = m.vaapiAsyncDepth
+  var vbv = m.vbvMultiplier
+  var trail = []
+  if (gop !== undefined && gop !== null && String(gop) !== "")
+    trail.push("GOP " + String(gop))
+  if (asyncDepth !== undefined && asyncDepth !== null && String(asyncDepth) !== "")
+    trail.push("async " + String(asyncDepth))
+  if (rc === "CBR" && vbv !== undefined && vbv !== null && String(vbv) !== "")
+    trail.push("VBV " + String(vbv))
+  if (trail.length > 0)
+    lines.push(trail.join(" · "))
+
+  var profile = String(m.encodeProfile || "").toLowerCase()
+  if (profile === "best") {
+    var lab = String(m.encodeProfileEffectiveLabel || "").trim()
+    if (lab === "" && m.encodeProfileEffective)
+      lab = miracastEncodeProfileLabel(m.encodeProfileEffective)
+    var best = "Best"
+    if (lab !== "") best += " (" + lab + ")"
+    if (m.encodeBestLocked) best += " · locked"
+    lines.push(best)
+  } else if (profile !== "") {
+    lines.push("Preset: " + miracastEncodeProfileLabel(profile))
+  }
+  return lines
+}
+
+/**
+ * Very High bitrate exceeds 2.4 GHz / 20 MHz Miracast headroom — only when P2P
+ * is on 5 GHz or 6 GHz.
+ */
+function miracastFreqAllowsVeryHigh(freqMHz) {
+  var n = parseFloat(freqMHz)
+  if (!n) return false
+  return n >= 4900
 }
 
 function miracastCaptureEncodeLabel(value) {
   var v = String(value || "")
-  if (v === "dmabuf") return "GPU · DMA-BUF"
-  if (v === "vaapi") return "GPU · VAAPI"
+  if (v === "dmabuf") return "GPU + DMA-BUF"
+  if (v === "vaapi") return "GPU"
   if (v === "cpu") return "CPU"
   return v
+}
+
+/** Two-line RENDER ENGINE pill: title + (card-reported device name). */
+function miracastCaptureEncodePillTitle(value) {
+  return miracastCaptureEncodeLabel(value)
+}
+
+/** Strip legal-entity prefixes; keep the card's own product text for pills. */
+function miracastGpuPillDeviceName(name) {
+  var s = String(name || "").trim()
+  if (s === "") return ""
+  s = s.replace(/^Intel Corporation\s+/i, "")
+  s = s.replace(/^NVIDIA Corporation\s+/i, "")
+  s = s.replace(/^Advanced Micro Devices,\s*Inc\.\s*\[AMD\/ATI\]\s+/i, "")
+  s = s.replace(/^Advanced Micro Devices,\s*Inc\.\s*/i, "")
+  return s
+}
+
+function miracastCaptureEncodePillSubtitle(value, gpuDeviceName) {
+  var v = String(value || "")
+  if (v === "cpu") return ""
+  var name = miracastGpuPillDeviceName(gpuDeviceName)
+  if (name === "") return ""
+  // Break before "[Iris Xe Graphics]"-style tails so WordWrap never leaves
+  // a last line that is only "])" / punctuation.
+  name = name.replace(/\s+\[/g, "\n[")
+  return "(" + name + ")"
 }
 
 /**
@@ -297,7 +513,8 @@ function miracastCaptureEncodeActive(capturePath, encoder, preference) {
   if (enc === "libx264" || enc === "x264" || enc === "software" || enc === "sw")
     return "cpu"
   if (path === "pipe") {
-    if (enc.indexOf("vaapi") >= 0 || enc.indexOf("qsv") >= 0 || enc === "vaapi" || enc === "qsv")
+    if (enc.indexOf("vaapi") >= 0 || enc.indexOf("qsv") >= 0 || enc.indexOf("nvenc") >= 0
+        || enc.indexOf("amf") >= 0 || enc === "vaapi" || enc === "qsv" || enc === "nvenc")
       return "vaapi"
     if (enc) return "cpu"
     return "vaapi"
@@ -326,8 +543,27 @@ if (typeof module !== "undefined") {
     miracastPeerSubtitle: miracastPeerSubtitle,
     miracastBarGlyph: miracastBarGlyph,
     miracastConnectionSummary: miracastConnectionSummary,
+    miracastBandLabel: miracastBandLabel,
+    miracastFormatChannel: miracastFormatChannel,
+    miracastFormatFreq: miracastFormatFreq,
+    miracastFormatBandwidth: miracastFormatBandwidth,
+    miracastFormatLinkMode: miracastFormatLinkMode,
+    miracastRadioHeroSummary: miracastRadioHeroSummary,
+    miracastFormatMbps: miracastFormatMbps,
+    miracastFormatRetryPercent: miracastFormatRetryPercent,
+    miracastFormatPerSec: miracastFormatPerSec,
+    miracastFormatSignal: miracastFormatSignal,
     miracastCaptureEncodeValues: miracastCaptureEncodeValues,
     miracastCaptureEncodeLabel: miracastCaptureEncodeLabel,
-    miracastCaptureEncodeActive: miracastCaptureEncodeActive
+    miracastCaptureEncodePillTitle: miracastCaptureEncodePillTitle,
+    miracastGpuPillDeviceName: miracastGpuPillDeviceName,
+    miracastCaptureEncodePillSubtitle: miracastCaptureEncodePillSubtitle,
+    miracastCaptureEncodeActive: miracastCaptureEncodeActive,
+    miracastEncodeProfileValues: miracastEncodeProfileValues,
+    miracastEncodeProfileLabel: miracastEncodeProfileLabel,
+    miracastFreqAllowsVeryHigh: miracastFreqAllowsVeryHigh,
+    miracastRcModeLabel: miracastRcModeLabel,
+    miracastEngineDetailLabel: miracastEngineDetailLabel,
+    miracastEncoderDetailLines: miracastEncoderDetailLines
   }
 }

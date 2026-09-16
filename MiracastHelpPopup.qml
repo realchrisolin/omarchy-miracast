@@ -279,7 +279,7 @@ Item {
         spacing: Style.space(3)
         Repeater {
           model: [
-            "20 MHz P2P budget ≈ 12–14 Mbps video. VAAPI pipe High uses CBR ~12M (quality=4); avoid quality=1 (can hang the pipe).",
+            "20 MHz P2P budget ≈ 12–14 Mbps video. Best (Dynamic) starts Medium and adapts from retries/throughput; avoid pipe quality=1 (can hang).",
             "2.4-only sinks (e.g. Realtek 8192CU) force MCC when laptop Wi‑Fi is on 5 GHz — occasional brief glitches are expected; a dual-band sink unlocks 5 GHz SCC.",
             "“Quiet” channel pick ranks AP interference scores (lower better); that ranking matched TX retries on-device.",
             "After changing engine or preset quality, reconnect (or restart-capture) so encode settings reload.",

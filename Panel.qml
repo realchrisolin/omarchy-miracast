@@ -1143,7 +1143,7 @@ Panel {
           // Slightly denser than stock, but leave room to breathe.
           spacing: Style.space(6)
 
-          // ---------- Hero: display icon · title/status ----------
+          // ---------- Hero (Wi‑Fi-panel shape): icon · name · state · radio ----------
           Item {
             width: parent.width
             implicitHeight: Math.max(heroIcon.implicitHeight, heroLabels.implicitHeight)
@@ -1157,7 +1157,6 @@ Panel {
               phase: miracast.phase
               multiDisplay: root.displays.length > 1
               fontFamily: root.bar.fontFamily
-              // Drop the wifi arcs inside the monitor glass (hero size).
               wifiVerticalNudge: 1
               anchors.left: parent.left
               anchors.verticalCenter: parent.verticalCenter
@@ -1166,15 +1165,18 @@ Panel {
             Column {
               id: heroLabels
               anchors.left: heroIcon.right
-              anchors.leftMargin: Style.space(10)
+              anchors.leftMargin: Style.space(14)
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
-              spacing: Style.space(1)
+              spacing: Style.space(2)
 
               Text {
-                text: miracast.streaming && miracast.connectedLabel !== ""
-                      ? miracast.connectedLabel
-                      : "Display"
+                // Title = peer when known; otherwise the panel name.
+                text: {
+                  if (miracast.connectedLabel !== "")
+                    return miracast.connectedLabel
+                  return "Display"
+                }
                 color: root.bar.foreground
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.title
@@ -1185,15 +1187,19 @@ Panel {
 
               Text {
                 id: heroLabel
+                // Single state line: Connected on 2.4 GHz · Extend
                 text: {
                   var summary = Model.miracastConnectionSummary(
-                    miracast.phase, miracast.lastPeerName, miracast.lastPeerMac, miracast.mode)
+                    miracast.phase, miracast.lastPeerName, miracast.lastPeerMac,
+                    miracast.mode, miracast.p2pFreqMHz)
                   if (summary !== "") return summary.toUpperCase()
-                  if (root.brightnessAvailable) {
+                  if (!miracast.active && root.brightnessAvailable)
                     return root.brightnessName(root.brightnessPercent).toUpperCase()
-                  }
-                  return "FIXED BRIGHTNESS"
+                  if (!miracast.active)
+                    return "NOT CONNECTED"
+                  return ""
                 }
+                visible: text !== ""
                 color: Qt.darker(root.bar.foreground, 1.4)
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.caption
@@ -1205,7 +1211,103 @@ Panel {
             }
           }
 
-          // ---------- Displays + Miracast (single column; no rule between them) ----------
+          // Link details — three stacked pairs per row (label above value) so
+          // the rightmost column is not clipped by a 6-cell flat Grid.
+          Row {
+            id: linkDetailsRow
+            width: parent.width
+            visible: miracast.hasRadioLink || miracast.streaming
+            spacing: Style.space(10)
+            readonly property real colWidth: Math.max(
+              0, (width - spacing * 2) / 3)
+
+            component LinkMetricCol: Column {
+              property string label
+              property string value
+              property color valueColor: root.bar.foreground
+              width: linkDetailsRow.colWidth
+              spacing: Style.space(1)
+              Text {
+                width: parent.width
+                text: label
+                color: Qt.darker(root.bar.foreground, 1.5)
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.caption
+                elide: Text.ElideRight
+              }
+              Text {
+                width: parent.width
+                text: value
+                color: valueColor
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+                elide: Text.ElideRight
+              }
+            }
+
+            Column {
+              width: linkDetailsRow.colWidth
+              spacing: Style.space(6)
+              LinkMetricCol {
+                label: "Channel"
+                value: Model.miracastFormatChannel(miracast.p2pChannel)
+              }
+              LinkMetricCol {
+                label: "Throughput"
+                value: Model.miracastFormatMbps(miracast.p2pThroughputMbps)
+                valueColor: (miracast.streaming && miracast.p2pThroughputMbps !== null
+                             && miracast.p2pThroughputMbps < 3)
+                            ? (root.bar.urgent || root.bar.foreground) : root.bar.foreground
+              }
+              LinkMetricCol {
+                label: "Retry %"
+                value: Model.miracastFormatRetryPercent(miracast.radioLink.p2pTxRetryPercent)
+                valueColor: (miracast.radioLink.p2pTxRetryPercent !== null
+                             && miracast.radioLink.p2pTxRetryPercent >= 0.8)
+                            ? (root.bar.urgent || root.bar.foreground) : root.bar.foreground
+              }
+            }
+            Column {
+              width: linkDetailsRow.colWidth
+              spacing: Style.space(6)
+              LinkMetricCol {
+                label: "Freq."
+                value: Model.miracastFormatFreq(miracast.p2pFreqMHz)
+              }
+              LinkMetricCol {
+                label: "Link rate"
+                value: Model.miracastFormatMbps(miracast.p2pTxBitrateMbps)
+              }
+              LinkMetricCol {
+                label: "Signal"
+                value: Model.miracastFormatSignal(miracast.p2pSignalDbm)
+              }
+            }
+            Column {
+              width: linkDetailsRow.colWidth
+              spacing: Style.space(6)
+              LinkMetricCol {
+                label: "Bandwidth"
+                value: Model.miracastFormatBandwidth(miracast.p2pWidthMHz)
+              }
+              LinkMetricCol {
+                label: "Retries/s"
+                value: Model.miracastFormatPerSec(miracast.p2pRetriesPerSec)
+                valueColor: (miracast.p2pRetriesPerSec !== null && miracast.p2pRetriesPerSec >= 20)
+                            ? (root.bar.urgent || root.bar.foreground) : root.bar.foreground
+              }
+              LinkMetricCol {
+                label: "Failed"
+                value: (miracast.p2pTxFailed === null || miracast.p2pTxFailed === undefined)
+                       ? "--" : String(miracast.p2pTxFailed)
+                valueColor: (miracast.p2pTxFailed !== null && miracast.p2pTxFailed > 0)
+                            ? (root.bar.urgent || root.bar.foreground) : root.bar.foreground
+              }
+            }
+          }
+
+          // ---------- Displays + Miracast ----------
           PanelSeparator {
             foreground: root.bar.foreground
           }
@@ -1259,11 +1361,12 @@ Panel {
               fontFamily: root.bar.fontFamily
             }
 
-            // ---- STATUS (indented under MIRACAST, above CONTROLS) ----
+            // ---- STATUS: idle/error messages only (hero owns live cast state) ----
             Column {
               x: Style.space(10)
               width: parent.width - Style.space(10)
               spacing: Style.space(4)
+              visible: !miracast.active
 
               Text {
                 text: "STATUS"
@@ -1280,7 +1383,7 @@ Panel {
                         miracast.phase,
                         miracast.p2pWifiResolved,
                         miracast.p2pWifiAdapterName).toUpperCase()
-                color: miracast.active ? root.bar.foreground : Qt.darker(root.bar.foreground, 1.4)
+                color: Qt.darker(root.bar.foreground, 1.4)
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.caption
                 font.bold: true
@@ -1288,40 +1391,11 @@ Panel {
               }
 
               Text {
-                // Hero already shows the peer name while streaming — skip the
-                // duplicate "Connected to …" line to save vertical space.
-                visible: {
-                  if (miracast.streaming) return false
-                  if (miracast.connecting) return true
-                  return miracast.connectedLabel !== ""
-                }
-                width: parent.width
-                text: {
-                  if (miracast.connecting)
-                    return "Connecting to " + (miracast.connectedLabel || "Miracast sink") + "…"
-                  if (miracast.connectedLabel !== "")
-                    return "Last device: " + miracast.connectedLabel
-                  return ""
-                }
-                color: root.bar.foreground
-                font.family: root.bar.fontFamily
-                font.pixelSize: Style.font.bodySmall
-                wrapMode: Text.WordWrap
-              }
-
-              Text {
-                // While connected, the phase line is enough — don't also show
-                // idle/doctor hints like "Ready to cast".
                 readonly property string detail: {
                   if (miracast.lastError !== "" && miracast.actionStatus === "")
                     return miracast.lastError
-                  if (miracast.actionStatus !== "") {
-                    if (miracast.active && String(miracast.actionStatus).indexOf("Ready") === 0)
-                      return ""
+                  if (miracast.actionStatus !== "")
                     return miracast.actionStatus
-                  }
-                  if (miracast.active)
-                    return ""
                   return miracast.statusText
                 }
                 visible: detail !== ""
@@ -1334,6 +1408,27 @@ Panel {
                 font.pixelSize: Style.font.caption
                 wrapMode: Text.WordWrap
               }
+            }
+
+            // Action/error toast while casting (no STATUS header — hero owns state).
+            Text {
+              x: Style.space(10)
+              width: parent.width - Style.space(10)
+              visible: miracast.active && text !== ""
+              text: {
+                if (miracast.lastError !== "" && miracast.actionStatus === "")
+                  return miracast.lastError
+                if (miracast.actionStatus !== ""
+                    && String(miracast.actionStatus).indexOf("Ready") !== 0)
+                  return miracast.actionStatus
+                return ""
+              }
+              color: miracast.lastError !== "" && miracast.actionStatus === ""
+                     ? (root.bar.urgent || root.bar.foreground)
+                     : Qt.darker(root.bar.foreground, 1.4)
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
             }
 
             // ---- CONTROLS (indented under MIRACAST) ----
@@ -1414,96 +1509,210 @@ Panel {
                 }
               }
 
-              // Options directly under CONTROLS buttons
+              // CAST MODE + EXTEND POSITION under the action buttons.
               Column {
+                visible: root.showMiracastSessionControls
                 width: parent.width
-                spacing: Style.space(4)
+                spacing: Style.space(3)
 
                 Row {
+                  id: controlsCastRow
                   width: parent.width
                   spacing: Style.spacing.sm
+                  readonly property bool showPos: miracast.mode === "extend"
+                  readonly property int pillCount: root.miracastModeValues.length
+                    + (showPos ? root.miracastPosValues.length : 0)
+                  readonly property real sepWidth: showPos ? 1 : 0
+                  readonly property real pillWidth: pillCount > 0
+                    ? (width - sepWidth - (showPos ? spacing : 0)
+                       - Style.spacing.xs * (
+                           Math.max(0, root.miracastModeValues.length - 1)
+                           + (showPos ? Math.max(0, root.miracastPosValues.length - 1) : 0)
+                         )) / pillCount
+                    : 0
 
-                  Text {
-                    text: miracast.preserveDisplayAcrossMonitors ? "󰄬" : "󰄱"
-                    color: root.bar.foreground
-                    font.family: root.bar.fontFamily
-                    font.pixelSize: Style.font.body
-                    verticalAlignment: Text.AlignVCenter
+                  Column {
+                    id: controlsModeGroup
+                    width: controlsCastRow.pillWidth * root.miracastModeValues.length
+                      + Style.spacing.xs * Math.max(0, root.miracastModeValues.length - 1)
+                    spacing: Style.space(3)
 
-                    MouseArea {
-                      anchors.fill: parent
-                      cursorShape: Qt.PointingHandCursor
-                      onClicked: miracast.setPreserveDisplayAcrossMonitors(
-                        !miracast.preserveDisplayAcrossMonitors)
+                    Text {
+                      text: "CAST MODE"
+                      color: Qt.darker(root.bar.foreground, 1.25)
+                      font.family: root.bar.fontFamily
+                      font.pixelSize: Style.font.caption
+                      font.bold: true
+                    }
+
+                    Row {
+                      width: parent.width
+                      spacing: Style.spacing.xs
+                      Repeater {
+                        model: root.miracastModeValues
+                        MiracastModePill {
+                          required property string modelData
+                          required property int index
+                          modeValue: modelData
+                          modeIndex: index
+                          width: controlsCastRow.pillWidth
+                        }
+                      }
                     }
                   }
 
-                  Text {
-                    text: "Persist display across monitors"
-                    color: Qt.darker(root.bar.foreground, 1.15)
-                    font.family: root.bar.fontFamily
-                    font.pixelSize: Style.font.caption
-                    verticalAlignment: Text.AlignVCenter
-                    width: parent.width - parent.spacing - 28
-                    wrapMode: Text.WordWrap
+                  Rectangle {
+                    visible: controlsCastRow.showPos
+                    width: controlsCastRow.sepWidth
+                    height: Math.max(controlsModeGroup.height, controlsPosGroup.height)
+                    color: root.bar.foreground
+                    opacity: 0.25
+                  }
 
-                    MouseArea {
-                      anchors.fill: parent
-                      cursorShape: Qt.PointingHandCursor
-                      onClicked: miracast.setPreserveDisplayAcrossMonitors(
-                        !miracast.preserveDisplayAcrossMonitors)
+                  Column {
+                    id: controlsPosGroup
+                    visible: controlsCastRow.showPos
+                    width: controlsCastRow.showPos
+                      ? controlsCastRow.pillWidth * root.miracastPosValues.length
+                        + Style.spacing.xs * Math.max(0, root.miracastPosValues.length - 1)
+                      : 0
+                    spacing: Style.space(3)
+
+                    Text {
+                      text: "EXTEND POSITION"
+                      color: Qt.darker(root.bar.foreground, 1.25)
+                      font.family: root.bar.fontFamily
+                      font.pixelSize: Style.font.caption
+                      font.bold: true
                     }
 
-                    PanelToolTip {
-                      delay: 400
-                      text: miracast.preserveDisplayAcrossMonitors
-                        ? "On: switching TVs keeps the Extend desktop on the shared persistent-miracast output."
-                        : "Off: switching TVs migrates windows to the laptop and seeds a fresh peer-named Extend desktop."
+                    Row {
+                      width: parent.width
+                      spacing: Style.spacing.xs
+                      Repeater {
+                        model: root.miracastPosValues
+                        MiracastPosPill {
+                          required property string modelData
+                          required property int index
+                          posValue: modelData
+                          posIndex: index
+                          width: controlsCastRow.pillWidth
+                        }
+                      }
                     }
                   }
                 }
 
-                Row {
+                Text {
+                  visible: miracast.mode === "extend" && miracast.positionWarning !== ""
                   width: parent.width
-                  spacing: Style.spacing.sm
+                  text: miracast.positionWarning
+                  color: root.bar.urgent || root.bar.foreground
+                  font.family: root.bar.fontFamily
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WordWrap
+                }
+              }
+            }
 
-                  Text {
-                    text: miracast.autoSwitchAudioOutput ? "󰄬" : "󰄱"
-                    color: root.bar.foreground
-                    font.family: root.bar.fontFamily
-                    font.pixelSize: Style.font.body
-                    verticalAlignment: Text.AlignVCenter
+            // ---- SETTINGS (checkboxes) ----
+            Column {
+              x: Style.space(10)
+              width: parent.width - Style.space(10)
+              spacing: Style.space(4)
 
-                    MouseArea {
-                      anchors.fill: parent
-                      cursorShape: Qt.PointingHandCursor
-                      onClicked: miracast.setAutoSwitchAudioOutput(
-                        !miracast.autoSwitchAudioOutput)
-                    }
+              Text {
+                text: "SETTINGS"
+                color: Qt.darker(root.bar.foreground, 1.25)
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
+
+              Row {
+                width: parent.width
+                spacing: Style.spacing.sm
+
+                Text {
+                  text: miracast.preserveDisplayAcrossMonitors ? "󰄬" : "󰄱"
+                  color: root.bar.foreground
+                  font.family: root.bar.fontFamily
+                  font.pixelSize: Style.font.body
+                  verticalAlignment: Text.AlignVCenter
+
+                  MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: miracast.setPreserveDisplayAcrossMonitors(
+                      !miracast.preserveDisplayAcrossMonitors)
+                  }
+                }
+
+                Text {
+                  text: "Persist display across monitors"
+                  color: Qt.darker(root.bar.foreground, 1.15)
+                  font.family: root.bar.fontFamily
+                  font.pixelSize: Style.font.caption
+                  verticalAlignment: Text.AlignVCenter
+                  width: parent.width - parent.spacing - 28
+                  wrapMode: Text.WordWrap
+
+                  MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: miracast.setPreserveDisplayAcrossMonitors(
+                      !miracast.preserveDisplayAcrossMonitors)
                   }
 
-                  Text {
-                    text: "Automatically switch audio output"
-                    color: Qt.darker(root.bar.foreground, 1.15)
-                    font.family: root.bar.fontFamily
-                    font.pixelSize: Style.font.caption
-                    verticalAlignment: Text.AlignVCenter
-                    width: parent.width - parent.spacing - 28
-                    wrapMode: Text.WordWrap
+                  PanelToolTip {
+                    delay: 400
+                    text: miracast.preserveDisplayAcrossMonitors
+                      ? "On: switching TVs keeps the Extend desktop on the shared persistent-miracast output."
+                      : "Off: switching TVs migrates windows to the laptop and seeds a fresh peer-named Extend desktop."
+                  }
+                }
+              }
 
-                    MouseArea {
-                      anchors.fill: parent
-                      cursorShape: Qt.PointingHandCursor
-                      onClicked: miracast.setAutoSwitchAudioOutput(
-                        !miracast.autoSwitchAudioOutput)
-                    }
+              Row {
+                width: parent.width
+                spacing: Style.spacing.sm
 
-                    PanelToolTip {
-                      delay: 400
-                      text: miracast.autoSwitchAudioOutput
-                        ? "On: after the cast is streaming, set the default audio output to Miracast (speakers stay default during connect)."
-                        : "Off: leave the current audio output selected; Miracast sink is still used for capture if you route to it manually."
-                    }
+                Text {
+                  text: miracast.autoSwitchAudioOutput ? "󰄬" : "󰄱"
+                  color: root.bar.foreground
+                  font.family: root.bar.fontFamily
+                  font.pixelSize: Style.font.body
+                  verticalAlignment: Text.AlignVCenter
+
+                  MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: miracast.setAutoSwitchAudioOutput(
+                      !miracast.autoSwitchAudioOutput)
+                  }
+                }
+
+                Text {
+                  text: "Automatically switch audio output"
+                  color: Qt.darker(root.bar.foreground, 1.15)
+                  font.family: root.bar.fontFamily
+                  font.pixelSize: Style.font.caption
+                  verticalAlignment: Text.AlignVCenter
+                  width: parent.width - parent.spacing - 28
+                  wrapMode: Text.WordWrap
+
+                  MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: miracast.setAutoSwitchAudioOutput(
+                      !miracast.autoSwitchAudioOutput)
+                  }
+
+                  PanelToolTip {
+                    delay: 400
+                    text: miracast.autoSwitchAudioOutput
+                      ? "On: after the cast is streaming, set the default audio output to Miracast (speakers stay default during connect)."
+                      : "Off: leave the current audio output selected; Miracast sink is still used for capture if you route to it manually."
                   }
                 }
               }
@@ -1657,6 +1866,55 @@ Panel {
                       }
                     }
                   }
+
+                  Row {
+                    width: parent.width
+                    spacing: Style.spacing.sm
+                    visible: miracast.encodeProfile === "best"
+
+                    Text {
+                      text: miracast.encodeBestLocked ? "󰄬" : "󰄱"
+                      color: root.bar.foreground
+                      font.family: root.bar.fontFamily
+                      font.pixelSize: Style.font.body
+                      verticalAlignment: Text.AlignVCenter
+
+                      MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        enabled: !miracast.busy
+                        onClicked: miracast.setEncodeBestLocked(!miracast.encodeBestLocked)
+                      }
+                    }
+
+                    Text {
+                      text: {
+                        var lab = String(miracast.encodeProfileEffectiveLabel || "").trim()
+                        return lab !== "" ? ("Lock Best (" + lab + ")") : "Lock Best"
+                      }
+                      color: Qt.darker(root.bar.foreground, 1.15)
+                      font.family: root.bar.fontFamily
+                      font.pixelSize: Style.font.caption
+                      verticalAlignment: Text.AlignVCenter
+                      width: parent.width - parent.spacing - 28
+                      wrapMode: Text.WordWrap
+
+                      MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        enabled: !miracast.busy
+                        onClicked: miracast.setEncodeBestLocked(!miracast.encodeBestLocked)
+                      }
+
+                      PanelToolTip {
+                        delay: 400
+                        text: miracast.encodeBestLocked
+                          ? "On: Best will not change QP/bitrate until you unlock."
+                          : "Off: Best may step QP/bitrate from link health (default)."
+                      }
+                    }
+                  }
+
                 }
 
                 Column {
@@ -2060,56 +2318,205 @@ Panel {
     }
   }
 
-  component MiracastEncodePill: Button {
+  // Two-line RENDER ENGINE pill: "GPU + DMA-BUF" / "(card-reported name)"
+  component MiracastEncodePill: BorderSurface {
     id: encodePill
     required property string encodeValue
     required property int encodeIndex
 
-    text: miracast.captureEncodeLabel(encodeValue)
-    fontSize: Style.font.caption
-    foreground: root.bar.foreground
-    fontFamily: root.bar.fontFamily
-    horizontalPadding: Style.spacing.sm
-    verticalPadding: Style.spacing.controlPaddingY
-    bordered: true
+    readonly property bool active: miracast.captureEncodeActive === encodeValue
+    readonly property bool hasCursor: root.cursorActive
+        && root.focusSection === "miracastEncode" && root.selectedIndex === encodeIndex
+    readonly property bool hot: mouseArea.containsMouse || hasCursor
+    readonly property color foreground: root.bar.foreground
+    readonly property real horizontalPadding: Style.spacing.sm
+    readonly property real verticalPadding: Style.spacing.controlPaddingY
+    readonly property string _title: miracast.captureEncodePillTitle(encodeValue)
+    readonly property string _subtitle: miracast.captureEncodePillSubtitle(encodeValue)
 
-    active: miracast.captureEncodeActive === encodeValue
-    hasCursor: root.cursorActive && root.focusSection === "miracastEncode" && root.selectedIndex === encodeIndex
-    enabled: !miracast.busy
+    radius: Style.cornerRadius
+    // Don't clip — long GPU product names must wrap fully inside the pill.
+    clip: false
+    leftPadding: horizontalPadding
+    rightPadding: horizontalPadding
+    topPadding: verticalPadding
+    bottomPadding: verticalPadding
 
-    onClicked: miracast.setCaptureEncode(encodeValue)
-    onHovered: function(isHovered) {
-      if (!isHovered || root.reflowingText) return
-      root.cursorActive = true
-      root.focusSection = "miracastEncode"
-      root.selectedIndex = encodePill.encodeIndex
+    readonly property var _hoverBorderSpec: Border.controlSpec("hover-cursor", foreground, Color.accent)
+    readonly property var _selectedBorderSpec: Border.controlSpec("selected", foreground, Color.accent)
+    readonly property var _normalBorderSpec: Border.controlSpec("normal", foreground, Color.accent)
+    borderSpec: hot ? _hoverBorderSpec
+      : active ? (Border.controlHasWidth("selected") ? _selectedBorderSpec : _normalBorderSpec)
+      : _normalBorderSpec
+
+    color: mouseArea.pressed ? Style.pressedFillFor(foreground, Color.accent)
+      : hot ? Style.hoverFillFor(foreground, Color.accent)
+      : active ? Style.selectedFillFor(foreground, Color.accent)
+      : "transparent"
+
+    implicitHeight: labelCol.implicitHeight + verticalPadding * 2
+                    + Border.top(borderSpec) + Border.bottom(borderSpec)
+
+    Column {
+      id: labelCol
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.leftMargin: encodePill.contentLeftInset
+      anchors.rightMargin: encodePill.contentRightInset
+      spacing: Style.space(1)
+
+      Text {
+        width: parent.width
+        text: encodePill._title
+        color: encodePill.foreground
+        font.family: root.bar.fontFamily
+        font.pixelSize: Style.font.caption
+        font.bold: encodePill.active
+        horizontalAlignment: Text.AlignHCenter
+        wrapMode: Text.WordWrap
+      }
+
+      Text {
+        width: parent.width
+        visible: encodePill._subtitle !== ""
+        text: encodePill._subtitle
+        color: Qt.darker(encodePill.foreground, 1.35)
+        font.family: root.bar.fontFamily
+        font.pixelSize: Math.max(Style.font.caption - 2, 8)
+        horizontalAlignment: Text.AlignHCenter
+        // WordWrap only — WrapAnywhere was orphaning "])" on its own line.
+        wrapMode: Text.WordWrap
+        elide: Text.ElideNone
+        maximumLineCount: 6
+      }
+    }
+
+    MouseArea {
+      id: mouseArea
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: miracast.busy ? Qt.ArrowCursor : Qt.PointingHandCursor
+      enabled: !miracast.busy
+      onClicked: miracast.setCaptureEncode(encodeValue)
+    }
+
+    HoverHandler {
+      enabled: !miracast.busy
+      onHoveredChanged: {
+        if (!hovered || root.reflowingText) return
+        root.cursorActive = true
+        root.focusSection = "miracastEncode"
+        root.selectedIndex = encodePill.encodeIndex
+      }
     }
   }
 
-  component MiracastEncodeProfilePill: Button {
+  // Custom pill — qs.Ui.Button's Text does not wrap or honor cell width.
+  // Best uses two lines (title + parenthetical tier) like RADIO device pills.
+  component MiracastEncodeProfilePill: BorderSurface {
     id: profilePill
     required property string profileValue
     required property int profileIndex
 
-    text: miracast.encodeProfileLabel(profileValue)
-    fontSize: Style.font.caption
-    foreground: root.bar.foreground
-    fontFamily: root.bar.fontFamily
-    horizontalPadding: Style.spacing.sm
-    verticalPadding: Style.spacing.controlPaddingY
-    bordered: true
+    readonly property bool active: miracast.encodeProfile === profileValue
+    readonly property bool hasCursor: root.cursorActive
+        && root.focusSection === "miracastEncodeProfile"
+        && root.selectedIndex === profileIndex
+    readonly property bool hot: mouseArea.containsMouse || hasCursor
+    readonly property color foreground: root.bar.foreground
+    readonly property real horizontalPadding: Style.spacing.sm
+    readonly property real verticalPadding: Style.spacing.controlPaddingY
+    readonly property bool pillEnabled: !miracast.busy
+        && (profileValue !== "veryhigh" || miracast.encodeVeryHighAllowed)
 
-    active: miracast.encodeProfile === profileValue
-    hasCursor: root.cursorActive && root.focusSection === "miracastEncodeProfile"
-               && root.selectedIndex === profileIndex
-    enabled: !miracast.busy
+    // Best: "Best" + "(qp18)" / "(Dynamic)". Others: single wrapping label.
+    readonly property bool _bestTwoLine: profileValue === "best"
+    readonly property string _title: _bestTwoLine ? "Best"
+        : miracast.encodeProfileLabel(profileValue)
+    readonly property string _subtitle: {
+      if (!_bestTwoLine) return ""
+      if (miracast.encodeProfile === "best") {
+        var lab = String(miracast.encodeProfileEffectiveLabel || "").trim()
+        if (lab !== "") return "(" + lab + ")"
+        if (miracast.encodeProfileEffective)
+          return "(" + miracast.encodeProfileLabel(miracast.encodeProfileEffective) + ")"
+      }
+      return "(Dynamic)"
+    }
 
-    onClicked: miracast.setEncodeProfile(profileValue)
-    onHovered: function(isHovered) {
-      if (!isHovered || root.reflowingText) return
-      root.cursorActive = true
-      root.focusSection = "miracastEncodeProfile"
-      root.selectedIndex = profilePill.profileIndex
+    radius: Style.cornerRadius
+    clip: true
+    leftPadding: horizontalPadding
+    rightPadding: horizontalPadding
+    topPadding: verticalPadding
+    bottomPadding: verticalPadding
+    opacity: profilePill.pillEnabled ? 1 : 0.45
+
+    readonly property var _hoverBorderSpec: Border.controlSpec("hover-cursor", foreground, Color.accent)
+    readonly property var _selectedBorderSpec: Border.controlSpec("selected", foreground, Color.accent)
+    readonly property var _normalBorderSpec: Border.controlSpec("normal", foreground, Color.accent)
+    borderSpec: hot ? _hoverBorderSpec
+      : active ? (Border.controlHasWidth("selected") ? _selectedBorderSpec : _normalBorderSpec)
+      : _normalBorderSpec
+
+    color: mouseArea.pressed ? Style.pressedFillFor(foreground, Color.accent)
+      : hot ? Style.hoverFillFor(foreground, Color.accent)
+      : active ? Style.selectedFillFor(foreground, Color.accent)
+      : "transparent"
+
+    implicitHeight: labelCol.implicitHeight + verticalPadding * 2
+                    + Border.top(borderSpec) + Border.bottom(borderSpec)
+
+    Column {
+      id: labelCol
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.leftMargin: profilePill.contentLeftInset
+      anchors.rightMargin: profilePill.contentRightInset
+      spacing: Style.space(1)
+
+      Text {
+        width: parent.width
+        text: profilePill._title
+        color: profilePill.foreground
+        font.family: root.bar.fontFamily
+        font.pixelSize: Style.font.caption
+        font.bold: profilePill.active
+        horizontalAlignment: Text.AlignHCenter
+        wrapMode: Text.WordWrap
+      }
+
+      Text {
+        width: parent.width
+        visible: profilePill._subtitle !== ""
+        text: profilePill._subtitle
+        color: Qt.darker(profilePill.foreground, 1.35)
+        font.family: root.bar.fontFamily
+        font.pixelSize: Math.max(Style.font.caption - 1, 9)
+        horizontalAlignment: Text.AlignHCenter
+        wrapMode: Text.WordWrap
+      }
+    }
+
+    MouseArea {
+      id: mouseArea
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: profilePill.pillEnabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+      enabled: profilePill.pillEnabled
+      onClicked: miracast.setEncodeProfile(profileValue)
+    }
+
+    HoverHandler {
+      enabled: profilePill.pillEnabled
+      onHoveredChanged: {
+        if (!hovered || root.reflowingText) return
+        root.cursorActive = true
+        root.focusSection = "miracastEncodeProfile"
+        root.selectedIndex = profilePill.profileIndex
+      }
     }
   }
 
@@ -2403,123 +2810,8 @@ Panel {
         }
       }
 
-      // ---- CAST MODE / POSITION (before SCALE; on eDP when Mirror, Miracast when Extend) ----
-      Column {
-        visible: monitorRow.showMiracastCastControls
-        width: parent.width
-        spacing: monitorRow.settingsLabelGap
-
-        // CAST MODE | EXTEND POSITION — shared row, vertical separator when Extend.
-        Row {
-          id: miracastCastRow
-          width: parent.width
-          spacing: Style.spacing.sm
-          readonly property bool showPos: miracast.mode === "extend"
-                                          && !!(monitorRow.display && monitorRow.display.miracast)
-          // Equal pill width across both groups (2 mode + 4 arrows when Extend).
-          readonly property int pillCount: root.miracastModeValues.length
-            + (showPos ? root.miracastPosValues.length : 0)
-          readonly property real sepWidth: showPos ? 1 : 0
-          // Gaps: xs between pills within each group + sm on each side of the separator.
-          readonly property real pillWidth: pillCount > 0
-            ? (width - sepWidth - (showPos ? spacing : 0)
-               - Style.spacing.xs * (
-                   Math.max(0, root.miracastModeValues.length - 1)
-                   + (showPos ? Math.max(0, root.miracastPosValues.length - 1) : 0)
-                 )) / pillCount
-            : 0
-
-          Column {
-            id: miracastModeGroup
-            width: miracastCastRow.pillWidth * root.miracastModeValues.length
-              + Style.spacing.xs * Math.max(0, root.miracastModeValues.length - 1)
-            spacing: monitorRow.settingsLabelGap
-
-            Text {
-              text: "CAST MODE"
-              color: Qt.darker(root.bar.foreground, 1.25)
-              font.family: root.bar.fontFamily
-              font.pixelSize: Style.font.caption
-              font.bold: true
-            }
-
-            Row {
-              width: parent.width
-              spacing: Style.spacing.xs
-              Repeater {
-                model: root.miracastModeValues
-                MiracastModePill {
-                  required property string modelData
-                  required property int index
-                  modeValue: modelData
-                  modeIndex: index
-                  width: miracastCastRow.pillWidth
-                }
-              }
-            }
-          }
-
-          Rectangle {
-            visible: miracastCastRow.showPos
-            width: miracastCastRow.sepWidth
-            height: Math.max(miracastModeGroup.height, miracastPosGroup.height)
-            color: root.bar.foreground
-            opacity: 0.25
-            radius: 0
-          }
-
-          Column {
-            id: miracastPosGroup
-            visible: miracastCastRow.showPos
-            width: miracastCastRow.showPos
-              ? miracastCastRow.pillWidth * root.miracastPosValues.length
-                + Style.spacing.xs * Math.max(0, root.miracastPosValues.length - 1)
-              : 0
-            spacing: monitorRow.settingsLabelGap
-
-            Text {
-              text: "EXTEND POSITION"
-              color: Qt.darker(root.bar.foreground, 1.25)
-              font.family: root.bar.fontFamily
-              font.pixelSize: Style.font.caption
-              font.bold: true
-            }
-
-            Row {
-              width: parent.width
-              spacing: Style.spacing.xs
-              Repeater {
-                model: root.miracastPosValues
-                MiracastPosPill {
-                  required property string modelData
-                  required property int index
-                  posValue: modelData
-                  posIndex: index
-                  width: miracastCastRow.pillWidth
-                }
-              }
-            }
-          }
-        }
-
-        Text {
-          visible: miracast.mode === "extend" && miracast.positionWarning !== ""
-          width: parent.width
-          text: miracast.positionWarning
-          color: root.bar.urgent || root.bar.foreground
-          font.family: root.bar.fontFamily
-          font.pixelSize: Style.font.caption
-          wrapMode: Text.WordWrap
-
-          PanelToolTip {
-            visible: parent.visible
-            delay: 0
-            text: miracast.positionWarning
-          }
-        }
-      }
-
-      // ---- Scale (after CAST MODE on Miracast rows) ----
+      // ---- Scale ----
+ (after CAST MODE on Miracast rows) ----
       Column {
         width: parent.width
         spacing: monitorRow.settingsLabelGap
@@ -2600,7 +2892,7 @@ Panel {
           color: root.bar.foreground
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.body
-          elide: Text.ElideRight
+          wrapMode: Text.WordWrap
         }
         Text {
           width: parent.width
@@ -2608,7 +2900,7 @@ Panel {
           color: Qt.darker(root.bar.foreground, 1.4)
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.caption
-          elide: Text.ElideRight
+          wrapMode: Text.WordWrap
         }
       }
     }

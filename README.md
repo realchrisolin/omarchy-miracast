@@ -159,10 +159,10 @@ Override in `~/.config/omarchy-miracast/settings.json` (merged with
 | `extendResolution` | `1280x720` | Extend virtual output size (fallback) |
 | `extendRefresh` | `30` | Preferred virtual output Hz (keep aligned with stream) |
 | `bitrate` | `8M` | Pipe-path / fallback bitrate; DMA path uses CQP (not this ceiling) |
-| `videoEncoder` | `auto` | `auto` → VAAPI, else QSV, else `libx264` |
+| `videoEncoder` | `auto` | `auto` → VAAPI, else NVENC, else QSV, else `libx264` |
 | *(env)* `FLUXCAST_WFD_CAPTURE_ENCODE` | `auto` (Omarchy) / `pipe` (upstream) | `auto`/`vaapi` = wf-recorder DMA-BUF encode (incl. scaled outputs); `pipe` = raw→ffmpeg hwupload |
 | *(env)* `FLUXCAST_WFD_DMABUF_ALLOW_SCALED` | allow (default) | `0`/`false` = force pipe when Hyprland scale ≠ 1 |
-| `captureEncode` | `dmabuf` | RENDER ENGINE: `dmabuf` (GPU·DMA-BUF) / `vaapi` (GPU·VAAPI) / `cpu` |
+| `captureEncode` | `dmabuf` | RENDER ENGINE: `dmabuf` (GPU + DMA-BUF) / `vaapi` (GPU pipe) / `cpu` |
 | `audioEnabled` | `true` | Creates a PipeWire/Pulse **Miracast** null sink for capture. FluxCast captures **`miracast.monitor`**. LPCM-only TVs use WFD `stream_type=0x83`; keep the Miracast sink near **100%** or the TV sounds faded. See [BUILD.md §6](BUILD.md). |
 | `autoSwitchAudioOutput` | `true` | Panel: **Automatically switch audio output**. On: default sink → Miracast at PLAY (speakers held during connect). Off: leave the currently selected output; still create the Miracast sink for manual routing / capture. |
 | `extendRefresh` | `30` | Hyprland refresh for the Extend virtual output. Keep matched to stream fps (30) so capture does not outrun encode. |
@@ -170,8 +170,8 @@ Override in `~/.config/omarchy-miracast/settings.json` (merged with
 | `wfRecorderBin` | unset | Absolute path to a custom `wf-recorder` (e.g. ICC / PR #347). Empty = **PATH** stock. ICC preferred for perf; see [BUILD.md §7](BUILD.md) for Extend terminal typing lag. |
 | `wfRecorderProto` | `auto` | `auto` / `icc` / `wlr`. `auto` upgrades to `icc` when a configured binary advertises ICC. Use `wlr` + stock binary if cast-head terminal keys feel buffered until the pointer moves. |
 | `wfRecorderDamage` | `"1"` | `"1"` = damage-aware (omit `wf-recorder -D`); `"0"` = continuous `-D`. Set by `scripts/recommend-cast-profile.py --apply` or manually. |
-| `captureEncode` | `dmabuf` | Render engine: `dmabuf` \| `vaapi` (pipe) \| `cpu`. |
-| `encodeProfile` | `medium` | Quality tier **high\|medium\|low** — knobs are **per engine** (`scripts/encode_quality_presets.py`). |
+| `captureEncode` | `dmabuf` | Render engine: `dmabuf` \| `vaapi` (GPU pipe) \| `cpu`. |
+| `encodeProfile` | `medium` | Quality: **best\|veryhigh\|high\|medium\|low** — knobs **per engine** (`scripts/encode_quality_presets.py`). |
 | `castPreset` | `desktop` | Content hint: `desktop` = damage-aware; `movie` = continuous `-D`. |
 | `vaapiQuality` | *(from profile)* | ffmpeg `h264_vaapi` `-quality` (1–8; higher = faster/worse). |
 | `vbvMultiplier` | `0.5` | CBR VBV as a fraction of bitrate (~0.5 s). → `FLUXCAST_WFD_VBV_MULTIPLIER`. |
@@ -207,39 +207,38 @@ With focus on the CAST MODE / EXTEND POSITION row and Extend active, vim
 ### RENDER ENGINE
 
 Shown only after the Miracast display exists (connected session). Default is
-**GPU · DMA-BUF**. Pills:
+**GPU + DMA-BUF**. Pills (two lines — title + card-reported GPU name):
 
 | Pill | `captureEncode` | Path |
 |------|-----------------|------|
-| GPU · DMA-BUF | `dmabuf` | `wf-recorder` VAAPI DMA-BUF |
-| GPU · VAAPI | `vaapi` | raw pipe → `hwupload` → `h264_vaapi` |
+| GPU + DMA-BUF | `dmabuf` | `wf-recorder` DMA-BUF encode when VAAPI DMA works; else falls back to GPU pipe → CPU |
+| GPU | `vaapi` | Hardware pipe: VAAPI / NVENC / QSV as probed |
 | CPU | `cpu` | raw pipe → `libx264` |
 
 ```bash
 miracast-ctl set-render-engine dmabuf|vaapi|cpu
-# alias: set-capture-encode
+# aliases: gpu-dmabuf | gpu | cpu
+miracast-ctl gpu-info   # JSON: card-reported deviceName, vendor, dmabufLikely, …
 ```
 
 Preference is stored in `settings.json` and `$XDG_STATE_HOME/omarchy-miracast/capture-encode`.
 Changing engine **retargets** the current **QUALITY** tier (same label, different
-knobs). Encode RC/QP/bitrate need a **reconnect** to apply (process env); a
-SIGUSR1 capture restart alone is not enough for those. If a GPU path fails,
-FluxCast falls back toward CPU; the **active** pill follows the resolved path
-(`capturePath` / `encoder` in `miracast-ctl status`), not only the preference.
+knobs). Live knob changes while streaming usually apply via `restart-capture`
+(SIGUSR1). If a GPU path fails, FluxCast falls back toward CPU; the **active**
+pill follows the resolved path (`capturePath` / `encoder` in status).
 
 ### PRESET QUALITY
 
-Independent of render engine: **High** / **Medium** / **Low**. Knobs are looked
-up per engine in `scripts/encode_quality_presets.py` (DMA-BUF high ≠ VAAPI-pipe
-high). Under **MIRACAST → ADVANCED SETTINGS** (collapsed by default).
+Independent of render engine: **Best (Dynamic)** / **Very High** / **High** /
+**Medium** / **Low**. Knobs are per engine in `scripts/encode_quality_presets.py`
+(DMA-BUF high ≠ GPU-pipe high). Under **MIRACAST → ADVANCED SETTINGS**.
 
 ```bash
-miracast-ctl set-quality high|medium|low
-# alias: set-encode-profile
+miracast-ctl set-quality best|veryhigh|high|medium|low
+miracast-ctl set-quality-effective step:N   # Best fine-step only
 ```
 
-Reconnect if streaming (`needsReconnect: true`). `castPreset` (`desktop` /
-`movie`) only toggles damage-aware vs continuous `-D`; it does not own RC/QP.
+`castPreset` (`desktop` / `movie`) only toggles damage-aware vs continuous `-D`.
 
 **Capture cadence:** Miracast Extend defaults to **damage-aware** capture
 (omit `wf-recorder -D`) so Hyprland only produces frames when the output

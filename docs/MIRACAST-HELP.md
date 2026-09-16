@@ -34,7 +34,8 @@ Optional: **UFW** — if enabled, Miracast ports must be allowed (see below).
 **Persist display** — keep the Extend desktop when switching TVs.  
 **Automatically switch audio** — after the cast is *streaming*, set default output to Miracast (speakers stay default during connect).
 
-**ADVANCED SETTINGS** — stream mode, render engine (DMA-BUF / VAAPI / CPU), preset quality, P2P radio.
+**ADVANCED SETTINGS** — stream mode, render engine (**GPU + DMA-BUF** / **GPU** / **CPU**),
+preset quality, P2P radio.
 
 ---
 
@@ -54,15 +55,30 @@ list above in nftables/firewalld/your router policy as needed.
 
 ## Tips for a good picture
 
-- **20 MHz** P2P budget ≈ **12–15 Mbps** video (corruption seen above ~22).  
-- **VAAPI pipe** presets use hard **CBR** (High = **15 M / quality=3 / async=1 / VBV 1.0**;
-  Medium 12 M; Low 8 M). **DMA-BUF High** uses **CQP qp=18 / quality=2 / i_qfactor=1.3**
-  (peaks ~19 Mbps in soak — do not pair low qp with quality=1 on 20 MHz).  
-  Do **not** use QVBR on pipe (undershoots).  
+- **20 MHz / 2.4 GHz:** can sustain **>20 Mbps** clear video on current DMA-BUF
+  CQP (older ~22 Mbps “corruption” line was too pessimistic). Distortion / drop
+  on hotyeah MCC showed up nearer **~40–50 Mbps** with very sharp QP (e.g. qp1).
+- **GPU pipe** (id `vaapi`) presets use hard **CBR** when the encoder is VAAPI
+  (High = **15 M / quality=3 / async=1 / VBV 1.0**; Medium 12 M; Low 8 M).
+  **GPU + DMA-BUF High** uses **CQP qp=18 / quality=2 / i_qfactor=1.3**.  
+  Do **not** use QVBR on VAAPI pipe (undershoots).  
   Avoid pipe **quality < 3** / **async > 1** — quality=1 hung the encode pipe.  
   FluxCast clamps those and auto-rebinds on `VIDEO_STALL` / `bufs_size` storms.  
-  Sinks that advertise CHP get **H.264 High** on both pipe and DMA-BUF.  
-- After changing engine or preset quality, **reconnect** (or `restart-capture`) so encode settings reload.  
+  NVIDIA hosts use **NVENC** on the GPU pipe when available (DMA-BUF skipped).  
+- **Best (Dynamic)** walks the full encode ladder from link health — DMA-BUF
+  **every H.264 QP 1–51**, pipe/CPU dense CBR ~48→3 Mbps — not only the named
+  High/Medium/Low pills. Starts near **High** (qp18). Demotes on **retries /
+  delivery failures / true stalls** (not a fixed Mbps cap). After **3 demotes**,
+  climbing stops; each demote raises a **climb floor** (won’t return to the QP
+  that failed). If **signal improves ≥6 dB**, settle clears but the floor only
+  relaxes **one step** (no free-run to qp1). Under DMA-BUF **CQP**, soft TX
+  alone does **not** demote — quiet UI (e.g. Waydroid) at ~2 Mbps / 30 fps is
+  normal. Each step rebinds capture (brief freeze). Pill shows e.g.
+  **Best (qp18)**. **Lock Best** freezes the current QP. Manual **Very High**
+  remains 5 GHz-gated.  
+
+- After changing engine or preset quality while streaming, capture restarts
+  automatically (`restart-capture` / SIGUSR1) — full reconnect is usually not required.  
 - Soak continuous `-D` VAAPI pipe: `./scripts/soak_vaapi_pipe.py --duration 1800`.  
 - Keep eDP and Miracast desktops separate (`ext-*` on the TV, numbers on the laptop).
 
@@ -87,8 +103,10 @@ on the dongle. A dual‑band sink unlocks real 5 GHz SCC.
 
 While streaming, a **link watcher** keeps cost low: it polls P2P TX bytes every
 few seconds and only runs a **cached** `nmcli` score (no forced rescan) after
-sustained high retries. Frozen video (TX stuck near audio-only ~2 Mbps) triggers
-`restart-capture`; a much quieter channel can trigger a CSA (cooldown + hysteresis).
+sustained high retries. Soft TX (~2 Mbps) with **healthy video fps (~30)** is
+**not** treated as frozen (common for CQP + quiet UI). True freezes need collapsed
+fps / `VIDEO_STALL` / UDP errors / TX≈0. A much quieter channel can trigger a CSA
+(cooldown + hysteresis).
 
 ---
 
