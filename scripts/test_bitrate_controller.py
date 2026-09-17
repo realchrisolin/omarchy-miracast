@@ -19,7 +19,7 @@ _spec.loader.exec_module(bc)
 class BitrateControllerTest(unittest.TestCase):
     def test_stall_decreases(self):
         cfg = bc.BitrateConfig(init_kbps=10000, min_kbps=1500, max_kbps=15000)
-        st = bc.BitrateState(kbps=10000)
+        st = bc.BitrateState(kbps=10000, qp=22)
         d = bc.decide(
             st,
             bc.LinkSignals(video_fps=22.0),
@@ -28,11 +28,12 @@ class BitrateControllerTest(unittest.TestCase):
         )
         self.assertTrue(d.changed)
         self.assertLess(d.kbps, 10000)
+        self.assertGreaterEqual(d.qp, 22)
         self.assertIn("net_stall", d.reason)
 
     def test_loss_decreases(self):
         cfg = bc.BitrateConfig()
-        st = bc.BitrateState(kbps=10000)
+        st = bc.BitrateState(kbps=10000, qp=22)
         d = bc.decide(
             st,
             bc.LinkSignals(tx_failed_delta=5, video_fps=30.0),
@@ -44,36 +45,68 @@ class BitrateControllerTest(unittest.TestCase):
         self.assertIn("loss", d.reason)
 
     def test_no_loss_increases_after_streak(self):
-        cfg = bc.BitrateConfig()
-        st = bc.BitrateState(kbps=8000, good_streak=0)
-        for i in range(3):
+        cfg = bc.BitrateConfig(max_kbps=20000)
+        st = bc.BitrateState(kbps=8000, qp=22, good_streak=0)
+        for _ in range(3):
             d = bc.decide(
                 st,
-                bc.LinkSignals(retry_percent=0.1, video_fps=30.0),
+                bc.LinkSignals(retry_percent=0.1, video_fps=30.0, link_capacity_mbps=72.0),
                 cfg,
                 cooldown_ok=True,
             )
             st = bc.BitrateState(
-                kbps=d.kbps, good_streak=d.good_streak, bad_streak=d.bad_streak
+                kbps=d.kbps,
+                qp=d.qp,
+                good_streak=d.good_streak,
+                bad_streak=d.bad_streak,
+                underfill_streak=d.underfill_streak,
             )
         self.assertTrue(d.changed)
         self.assertGreater(d.kbps, 8000)
         self.assertEqual(d.reason, "no_loss_increase")
 
-    def test_respects_min_max(self):
-        cfg = bc.BitrateConfig(init_kbps=2000, min_kbps=2000, max_kbps=3000)
-        st = bc.BitrateState(kbps=2000)
+    def test_qp_fill_when_under_55pct_of_setpoint(self):
+        # Target at ceiling (~54M on 72 MCS) but air only ~7 Mbps → sharpen QP.
+        cfg = bc.config_for_band(band_5ghz=True, width_mhz=20)
+        ceiling = bc._clamp_kbps(10**9, cfg, 72.2)
+        st = bc.BitrateState(kbps=ceiling, qp=22, good_streak=2, underfill_streak=1)
         d = bc.decide(
             st,
-            bc.LinkSignals(video_fps=20.0),
+            bc.LinkSignals(
+                retry_percent=0.0,
+                video_fps=60.0,
+                link_capacity_mbps=72.2,
+                air_tx_mbps=7.0,
+            ),
             cfg,
             cooldown_ok=True,
         )
-        self.assertEqual(d.kbps, 2000)
+        self.assertTrue(d.changed)
+        self.assertEqual(d.kbps, ceiling)
+        self.assertEqual(d.qp, 21)
+        self.assertIn("qp_fill", d.reason)
+
+    def test_quiet_fill_hold_needs_streak(self):
+        cfg = bc.config_for_band(band_5ghz=True, width_mhz=20)
+        ceiling = bc._clamp_kbps(10**9, cfg, 72.2)
+        st = bc.BitrateState(kbps=ceiling, qp=22, good_streak=2, underfill_streak=0)
+        d = bc.decide(
+            st,
+            bc.LinkSignals(
+                retry_percent=0.0,
+                video_fps=60.0,
+                link_capacity_mbps=72.2,
+                air_tx_mbps=7.0,
+            ),
+            cfg,
+            cooldown_ok=True,
+        )
+        self.assertFalse(d.changed)
+        self.assertIn("underfill", d.reason)
 
     def test_capacity_clamps_max(self):
         cfg = bc.BitrateConfig(init_kbps=10000, min_kbps=1500, max_kbps=20000)
-        st = bc.BitrateState(kbps=10000, good_streak=3)
+        st = bc.BitrateState(kbps=10000, qp=22, good_streak=3)
         d = bc.decide(
             st,
             bc.LinkSignals(
@@ -82,7 +115,6 @@ class BitrateControllerTest(unittest.TestCase):
             cfg,
             cooldown_ok=True,
         )
-        # max ≤ CAPACITY_FRAC of 20 Mbps (0.50 → 10 Mbps)
         self.assertLessEqual(d.kbps, int(20.0 * 1000 * bc.CAPACITY_FRAC))
 
     def test_band_5ghz_higher_ceiling(self):
@@ -93,7 +125,6 @@ class BitrateControllerTest(unittest.TestCase):
         self.assertGreaterEqual(c5.max_kbps, 50_000)
         self.assertGreater(c5w.max_kbps, c5.max_kbps)
         self.assertAlmostEqual(bc.CAPACITY_FRAC, 0.75)
-        # HT20 @ 72.2 MCS → clamp ≈ 75% ≈ 54 Mbps (below config max 55M).
         self.assertEqual(
             bc._clamp_kbps(80_000, c5, 72.2),
             min(c5.max_kbps, int(72.2 * 1000 * bc.CAPACITY_FRAC)),
@@ -103,6 +134,27 @@ class BitrateControllerTest(unittest.TestCase):
         self.assertEqual(bc.ffmpeg_to_kbps("10M"), 10000)
         self.assertEqual(bc.kbps_to_ffmpeg(10000), "10M")
         self.assertEqual(bc.kbps_to_ffmpeg(8500), "8.5M")
+
+    def test_desired_fill(self):
+        self.assertAlmostEqual(bc.desired_fill_mbps(45000, 72.2), 45.0)
+        self.assertAlmostEqual(bc.desired_fill_mbps(60000, 72.2), 72.2 * 0.75)
+
+    def test_fill_high_uses_mcs_not_demoted_target(self):
+        # air 46 Mbps is fine vs 72 MCS; must NOT soften just because target is 22M.
+        cfg = bc.config_for_band(band_5ghz=True, width_mhz=20)
+        st = bc.BitrateState(kbps=22000, qp=22, good_streak=3)
+        d = bc.decide(
+            st,
+            bc.LinkSignals(
+                retry_percent=0.0,
+                video_fps=60.0,
+                link_capacity_mbps=72.2,
+                air_tx_mbps=46.7,
+            ),
+            cfg,
+            cooldown_ok=True,
+        )
+        self.assertNotIn("fill_high", d.reason)
 
 
 if __name__ == "__main__":

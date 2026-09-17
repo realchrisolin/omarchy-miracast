@@ -1044,16 +1044,20 @@ def main(argv: list[str] | None = None) -> int:
                             _log(cast_log, f"encode-strategy fallback error: {exc}")
                 if use_sv_bc:
                     if bc_mod is not None:
-                        band_5 = False
+                        band_5 = bool(band_5ghz)
                         try:
-                            # WifiDisplayAdapter used frequency=5220 for Smart View.
-                            freq = settings.get("p2pFreqMHz") or settings.get("p2pFrequency")
+                            # Prefer live status freq (settings.json has no p2pFreqMHz).
+                            freq = (
+                                (st_live or {}).get("p2pFreqMHz")
+                                or (st_live or {}).get("p2pOperFreqMHz")
+                                or settings.get("p2pFreqMHz")
+                            )
                             if freq is not None and float(freq) >= 5000:
                                 band_5 = True
                         except (TypeError, ValueError):
-                            band_5 = False
-                        if not band_5 and link_cap is not None and float(link_cap) >= 150:
-                            # High MCS often implies 5 GHz / wide channel.
+                            pass
+                        # HT20 5 GHz MCS is often ~72 — not ≥150.
+                        if not band_5 and link_cap is not None and float(link_cap) >= 50:
                             band_5 = True
                         cfg = bc_mod.config_for_band(
                             band_5ghz=band_5,
@@ -1065,13 +1069,22 @@ def main(argv: list[str] | None = None) -> int:
                             or "10M"
                         )
                         cur_kbps = bc_mod.ffmpeg_to_kbps(cur_br)
+                        try:
+                            cur_qp = int(settings.get("vaapiQp") or 22)
+                        except (TypeError, ValueError):
+                            cur_qp = 22
                         if sv_bc_state is None:
-                            sv_bc_state = bc_mod.BitrateState(kbps=cur_kbps)
+                            sv_bc_state = bc_mod.BitrateState(kbps=cur_kbps, qp=cur_qp)
                         else:
                             sv_bc_state = bc_mod.BitrateState(
                                 kbps=cur_kbps,
+                                qp=cur_qp,
                                 good_streak=sv_bc_state.good_streak,
                                 bad_streak=sv_bc_state.bad_streak,
+                                underfill_streak=getattr(
+                                    sv_bc_state, "underfill_streak", 0
+                                )
+                                or 0,
                             )
                         # Soft/zero TX is NetStall only with *known unhealthy* fps.
                         # fps=None after rebind must not demote (was 45M→12M).
@@ -1084,6 +1097,7 @@ def main(argv: list[str] | None = None) -> int:
                             stalled=bc_stall,
                             video_fps=vfps,
                             link_capacity_mbps=link_cap,
+                            air_tx_mbps=mbps,
                             tx_failed_delta=int(last_tx_failed_delta or 0)
                             if delivery_fail_tick
                             else 0,
@@ -1094,8 +1108,10 @@ def main(argv: list[str] | None = None) -> int:
                         )
                         sv_bc_state = bc_mod.BitrateState(
                             kbps=d.kbps,
+                            qp=d.qp,
                             good_streak=d.good_streak,
                             bad_streak=d.bad_streak,
+                            underfill_streak=d.underfill_streak,
                         )
                         if d.changed:
                             # Honor ABR grace for climbs *and* soft demotes; only
@@ -1107,13 +1123,15 @@ def main(argv: list[str] | None = None) -> int:
                                 _log(
                                     cast_log,
                                     f"dynamic: hold:abr_grace "
-                                    f"({d.reason} {cur_kbps}→{d.kbps}kbps)",
+                                    f"({d.reason} {cur_kbps}→{d.kbps}kbps "
+                                    f"qp{cur_qp}→{d.qp})",
                                 )
                                 continue
                             _log(
                                 cast_log,
                                 f"dynamic: sv-bitrate {cur_kbps}→{d.kbps}kbps "
-                                f"({d.reason}) rc={d.rc_mode} qp={d.qp_min}-{d.qp_max}",
+                                f"qp{cur_qp}→{d.qp} ({d.reason}) rc={d.rc_mode} "
+                                f"qpBounds={d.qp_min}-{d.qp_max}",
                             )
                             try:
                                 subprocess.run(
@@ -1121,7 +1139,7 @@ def main(argv: list[str] | None = None) -> int:
                                         ctl,
                                         "set-bitrate-kbps",
                                         str(d.kbps),
-                                        str((d.qp_min + d.qp_max) // 2),
+                                        str(d.qp),
                                         str(d.qp_min),
                                         str(d.qp_max),
                                     ],
