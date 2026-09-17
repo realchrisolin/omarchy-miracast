@@ -3697,9 +3697,18 @@ if profile == "best" and strategy == "smartview" and cap in ("vaapi", "dmabuf", 
         qi = 3
     if qi < 3 or qi > 4:
         qual = "3"
-    vbv = "1.0"
-    # QP bounds (Samsung updateConfiguration minQP/maxQP) — informational for CQP/QVBR.
+    # QVBR needs ~2s VBV or Intel BRC undershoots to ~3 Mbps despite b=.
+    vbv = "2.0"
+    # QP bounds (Samsung minQP/maxQP) — exported as qmin/qmax so bitrate drives.
     qp = str(settings.get("vaapiQp") if settings.get("vaapiQp") is not None else "22").strip() or "22"
+    try:
+        qp_min_s = str(int(settings.get("encodeQpMin") if settings.get("encodeQpMin") is not None else 15))
+    except (TypeError, ValueError):
+        qp_min_s = "15"
+    try:
+        qp_max_s = str(int(settings.get("encodeQpMax") if settings.get("encodeQpMax") is not None else 44))
+    except (TypeError, ValueError):
+        qp_max_s = "44"
     explicit = settings.get("encodeWfdBitrateMbps")
     try:
         link = float(link_mbps_raw) if link_mbps_raw else 0.0
@@ -3737,6 +3746,15 @@ lines = [
     f"FLUXCAST_WFD_VAAPI_ASYNC_DEPTH={async_d}",
     f"FLUXCAST_WFD_VBV_MULTIPLIER={vbv}",
 ]
+# qp_min_s / qp_max_s only set on smartview QVBR branch; safe defaults otherwise.
+_qp_min = locals().get("qp_min_s") or str(settings.get("encodeQpMin") or "15")
+_qp_max = locals().get("qp_max_s") or str(settings.get("encodeQpMax") or "44")
+try:
+    lines.append(f"FLUXCAST_WFD_VAAPI_QMIN={int(_qp_min)}")
+    lines.append(f"FLUXCAST_WFD_VAAPI_QMAX={int(_qp_max)}")
+except (TypeError, ValueError):
+    lines.append("FLUXCAST_WFD_VAAPI_QMIN=15")
+    lines.append("FLUXCAST_WFD_VAAPI_QMAX=44")
 if iqf:
     lines.append(f"FLUXCAST_WFD_VAAPI_I_QFACTOR={iqf}")
 else:
