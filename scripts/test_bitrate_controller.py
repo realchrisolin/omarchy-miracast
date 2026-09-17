@@ -169,6 +169,19 @@ class BitrateControllerTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("coalesce", reason)
 
+    def test_coalesce_never_flushes_qp_plus_minus_1(self):
+        # Even after a long idle, Δqp=1 must not restart capture.
+        ok, reason = bc.should_apply_encode(
+            applied_kbps=54000,
+            applied_qp=24,
+            desired_kbps=54000,
+            desired_qp=23,
+            reason="qp_fill:air=20<55%×54",
+            now=200.0,
+            last_apply_ts=100.0,
+        )
+        self.assertFalse(ok)
+
     def test_coalesce_applies_qp_delta_2_after_interval(self):
         ok, reason = bc.should_apply_encode(
             applied_kbps=54000,

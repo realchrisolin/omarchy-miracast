@@ -61,10 +61,11 @@ QP_SHARPEN_STREAK = 2
 APPLY_MIN_QP_DELTA = 2
 APPLY_MIN_KBPS_FRAC = 0.15
 APPLY_MIN_INTERVAL_S = 30.0
-# Smaller pending changes may flush after this idle interval.
-APPLY_FLUSH_INTERVAL_S = 45.0
-APPLY_FLUSH_QP_DELTA = 1
-APPLY_FLUSH_KBPS_FRAC = 0.05
+# Smaller *bitrate* drifts may flush after this idle interval.
+# QP±1 alone never flushes — that was still causing a pause ~every 45s.
+APPLY_FLUSH_INTERVAL_S = 60.0
+APPLY_FLUSH_QP_DELTA = 2  # same as min; no single-step QP flush
+APPLY_FLUSH_KBPS_FRAC = 0.08
 
 
 @dataclass
