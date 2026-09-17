@@ -1030,9 +1030,12 @@ def main(argv: list[str] | None = None) -> int:
                             data = json.loads(sf.read_text()) if sf.is_file() else {}
                             if not isinstance(data, dict):
                                 data = {}
-                            data["captureEncode"] = "vaapi"
+                            # Session-only pipe fallback — keep settings
+                            # captureEncode=dmabuf so the next start retries DMA.
                             data["encodeStrategyFallback"] = "pipe"
                             data["vaapiRcMode"] = "QVBR"
+                            if str(data.get("captureEncode") or "") != "dmabuf":
+                                data["captureEncode"] = "dmabuf"
                             sf.write_text(json.dumps(data, indent=2) + "\n")
                             subprocess.run(
                                 [ctl, "restart-capture", "quick"],
@@ -1156,7 +1159,7 @@ def main(argv: list[str] | None = None) -> int:
                                         f"→ want {pend.kbps}kbps qp{pend.qp})",
                                     )
                                 continue
-                            # Keep Smart View on DMA-BUF across ABR applies.
+                            # Keep DMA-BUF across ABR applies for QVBR strategy.
                             try:
                                 import json as _json
 

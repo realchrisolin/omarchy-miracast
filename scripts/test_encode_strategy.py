@@ -47,6 +47,19 @@ class EncodeStrategyTest(unittest.TestCase):
         self.assertEqual(s["captureEncode"], "vaapi")
         self.assertFalse(s["encodeStrategyPinnedEngine"])
 
+    def test_prepare_dmabuf_settings_clears_fallback(self):
+        s = {
+            "encodeStrategy": "smartview",
+            "encodeStrategyFallback": "pipe",
+            "captureEncode": "vaapi",
+            "encodeProfile": "best",
+        }
+        out = es.prepare_dmabuf_settings(s)
+        self.assertEqual(s["encodeStrategyFallback"], "")
+        self.assertEqual(s["captureEncode"], "dmabuf")
+        self.assertEqual(out["captureEncode"], "dmabuf")
+        self.assertEqual(s["vaapiRcMode"], "QVBR")
+
     def test_starve_detector_triggers_after_streak(self):
         streak = 0
         for _ in range(es.STARVE_TICKS - 1):

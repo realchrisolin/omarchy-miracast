@@ -43,10 +43,43 @@ def is_valid_strategy(value: Any) -> bool:
 
 
 def uses_sv_abr(settings: dict[str, Any]) -> bool:
-    """Smart View BitrateController path (Best + smartview strategy)."""
+    """QVBR BitrateController path (Best + default encode strategy)."""
     strategy = normalize_strategy(settings.get("encodeStrategy"))
     profile = str(settings.get("encodeProfile") or "").strip().lower()
     return strategy == "smartview" and profile == "best"
+
+
+def prepare_dmabuf_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    """Prefer DMA-BUF for the default QVBR encode strategy.
+
+    Clears session pipe-fallback so a fresh cast retries DMA-BUF. Does not
+    override an explicit engine pin (``encodeStrategyPinnedEngine``).
+    """
+    if not isinstance(settings, dict):
+        raise TypeError("settings must be a dict")
+    strat = normalize_strategy(settings.get("encodeStrategy"))
+    settings["encodeStrategyFallback"] = ""
+    if strat == "smartview" and not settings.get("encodeStrategyPinnedEngine"):
+        settings["captureEncode"] = "dmabuf"
+        settings["vaapiRcMode"] = "QVBR"
+        settings["encodeStrategyAbr"] = "sv"
+        try:
+            q = int(str(settings.get("vaapiQuality") or "3"))
+        except ValueError:
+            q = 3
+        if q < 3 or q > 4:
+            settings["vaapiQuality"] = "3"
+        settings.setdefault("vaapiQp", 22)
+        settings.setdefault("encodeQpMin", 12)
+        settings.setdefault("encodeQpMax", 40)
+        settings["vaapiAsyncDepth"] = 1
+        settings["vbvMultiplier"] = "1.0"
+    return {
+        "encodeStrategy": strat,
+        "captureEncode": settings.get("captureEncode"),
+        "encodeStrategyFallback": settings.get("encodeStrategyFallback") or "",
+        "vaapiRcMode": settings.get("vaapiRcMode"),
+    }
 
 
 def apply_to_settings(

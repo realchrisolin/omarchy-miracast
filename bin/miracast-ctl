@@ -611,6 +611,29 @@ print(json.dumps({"ok": True, **applied}, separators=(",", ":")))
 PY
 }
 
+# Clear session pipe-fallback and prefer DMA-BUF for the default QVBR strategy.
+prepare_dmabuf_settings() {
+  python3 - "$SETTINGS_FILE" "$PLUGIN_DIR/scripts/encode_strategy.py" <<'PY'
+import importlib.util, json, sys
+from pathlib import Path
+
+path, mod_path = Path(sys.argv[1]), Path(sys.argv[2])
+spec = importlib.util.spec_from_file_location("encode_strategy", mod_path)
+mod = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(mod)
+try:
+    data = json.loads(path.read_text())
+except Exception:
+    data = {}
+if not isinstance(data, dict):
+    data = {}
+applied = mod.prepare_dmabuf_settings(data)
+path.write_text(json.dumps(data, indent=2) + "\n")
+print(json.dumps({"ok": True, **applied}, separators=(",", ":")))
+PY
+}
+
 cmd_set_encode_strategy() {
   local strategy="${1:-}"
   [[ -n "$strategy" ]] || {
@@ -1295,6 +1318,10 @@ restart_extend_capture() {
   # Mark capture paused for the UI watchdog so ensure-capture does not fire a
   # second SIGUSR1 mid-rebuild (double rebind → session death).
   printf '%s\n' "$(date -Iseconds 2>/dev/null || date)" >"$CAPTURE_PAUSED_FILE"
+  # Prefer DMA-BUF for default QVBR strategy before refreshing encode.env.
+  # Otherwise a stale session pipe-fallback rewrites PREF=vaapi and FluxCast
+  # permanently leaves DMA on the next SIGUSR1.
+  prepare_dmabuf_settings >>"$LOG_DIR/cast.log" 2>/dev/null || true
   # Refresh encode.env from settings so FluxCast picks up bitrate/RC/quality
   # without a full reconnect (process environ is immutable after start).
   local _enc_summary=""
@@ -3606,9 +3633,18 @@ env_path = Path(sys.argv[2])
 cap_path = Path(sys.argv[3])
 link_mbps_raw = (sys.argv[4] if len(sys.argv) > 4 else "").strip()
 
+strategy = str(settings.get("encodeStrategy") or "smartview").strip().lower() or "smartview"
+fallback = str(settings.get("encodeStrategyFallback") or "").strip().lower()
 cap = str(settings.get("captureEncode") or "dmabuf").strip().lower()
 if cap not in ("dmabuf", "vaapi", "cpu"):
     cap = "dmabuf"
+# Default QVBR strategy prefers DMA-BUF. Session starve fallback may force
+# pipe for this encode.env only — captureEncode stays dmabuf for next start.
+if strategy == "smartview":
+    if fallback == "pipe":
+        cap = "vaapi"
+    elif not settings.get("encodeStrategyPinnedEngine"):
+        cap = "dmabuf"
 cap_path.write_text(cap + "\n")
 
 enc = str(settings.get("videoEncoder") or "auto").strip() or "auto"
@@ -3647,7 +3683,6 @@ def _fmt(mbps: float) -> str:
         return f"{mbps:.0f}M"
     return f"{mbps:.1f}M"
 
-strategy = str(settings.get("encodeStrategy") or "smartview").strip().lower() or "smartview"
 # Smart View strategy + Best: QVBR (CAC-in-VBR) with hard maxrate = target.
 # Performance strategy keeps CQP even when encodeProfile=best (QP ladder ABR).
 if profile == "best" and strategy == "smartview" and cap in ("vaapi", "dmabuf", "cpu"):
@@ -5635,6 +5670,9 @@ print("1" if v in (True,1,"1","true","yes","on") else "0")' "$settings")"
   # when present; power bias still prefers GPU but trims bitrate on battery /
   # power-saver. Override with settings videoEncoder or FLUXCAST_WFD_ENCODER.
   local video_encoder capture_encode
+  # Prefer DMA-BUF for default QVBR strategy; clear session pipe-fallback.
+  prepare_dmabuf_settings >>"$LOG_DIR/cast.log" || true
+  settings="$(read_settings)"
   video_encoder="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("videoEncoder","auto"))' "$settings")"
   [[ -n "$video_encoder" ]] || video_encoder="auto"
   capture_encode="$(python3 -c 'import json,sys
@@ -5664,6 +5702,14 @@ print(v if v in ("dmabuf","vaapi","cpu") else "dmabuf")' "$settings")"
       vaapi) export FLUXCAST_WFD_CAPTURE_ENCODE=pipe ;;
       cpu) export FLUXCAST_WFD_CAPTURE_ENCODE=pipe ;;
     esac
+    # Smart View + DMA-BUF: keep retrying DMA across SIGUSR1 encode rebinds.
+    _strat="$(python3 -c 'import json,sys; print(str(json.loads(sys.argv[1]).get("encodeStrategy") or "smartview").lower())' "$settings" 2>/dev/null || echo smartview)"
+    if [[ "$_strat" == "smartview" && "$capture_encode" == "dmabuf" ]]; then
+      export FLUXCAST_WFD_DMABUF_STICKY=1
+      echo "[miracast-ctl] DMA-BUF sticky=on (QVBR strategy)" >>"$LOG_DIR/cast.log"
+    else
+      export FLUXCAST_WFD_DMABUF_STICKY=0
+    fi
     # Scaled outputs use DMA-BUF by default (proven at integer scale 2 with
     # tv-range CQP). Deny with FLUXCAST_WFD_DMABUF_ALLOW_SCALED=0 if needed.
     export FLUXCAST_WFD_DMABUF_ALLOW_SCALED="${FLUXCAST_WFD_DMABUF_ALLOW_SCALED:-}"
