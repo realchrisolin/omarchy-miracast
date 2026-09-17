@@ -488,6 +488,11 @@ def main(argv: list[str] | None = None) -> int:
     dyn_presets = None  # encode_quality_presets module
     dyn_state = None  # dynamic_encode.LadderState (fine step index)
     sv_bc_state = None  # bitrate_controller.BitrateState (Smart View–style)
+    # Last knobs actually applied via SIGUSR1 (coalesced vs decide() state).
+    sv_applied_kbps: int | None = None
+    sv_applied_qp: int | None = None
+    sv_last_apply_ts = 0.0
+    sv_pending = None  # last BitrateDecision waiting for coalesce gate
     bc_mod = None  # bitrate_controller module (load once)
     es_mod = None  # encode_strategy (DMA-BUF QVBR starve → pipe)
     starve_streak = 0
@@ -1113,35 +1118,91 @@ def main(argv: list[str] | None = None) -> int:
                             bad_streak=d.bad_streak,
                             underfill_streak=d.underfill_streak,
                         )
+                        if sv_applied_kbps is None:
+                            sv_applied_kbps = cur_kbps
+                            sv_applied_qp = cur_qp
                         if d.changed:
-                            # Honor ABR grace for climbs *and* soft demotes; only
-                            # hard delivery failure (tx_failed) may cut during grace.
+                            sv_pending = d
+                        # Samsung decide() stays hot; coalesce VAAPI SIGUSR1 applies.
+                        if sv_pending is not None:
+                            pend = sv_pending
                             hard_fail = bool(delivery_fail_tick) or bool(
                                 last_tx_failed_delta and last_tx_failed_delta > 0
                             )
-                            if in_abr_grace and not hard_fail:
+                            if in_abr_grace and not hard_fail and not bc_mod.is_urgent_apply(
+                                pend.reason
+                            ):
                                 _log(
                                     cast_log,
                                     f"dynamic: hold:abr_grace "
-                                    f"({d.reason} {cur_kbps}→{d.kbps}kbps "
-                                    f"qp{cur_qp}→{d.qp})",
+                                    f"({pend.reason} want {pend.kbps}kbps qp{pend.qp})",
                                 )
                                 continue
+                            do_apply, gate = bc_mod.should_apply_encode(
+                                applied_kbps=int(sv_applied_kbps),
+                                applied_qp=int(sv_applied_qp or cur_qp),
+                                desired_kbps=int(pend.kbps),
+                                desired_qp=int(pend.qp),
+                                reason=str(pend.reason),
+                                now=now,
+                                last_apply_ts=sv_last_apply_ts,
+                            )
+                            if not do_apply:
+                                if d.changed or tick % 5 == 0:
+                                    _log(
+                                        cast_log,
+                                        f"dynamic: coalesce {gate} "
+                                        f"(applied {sv_applied_kbps}kbps qp{sv_applied_qp} "
+                                        f"→ want {pend.kbps}kbps qp{pend.qp})",
+                                    )
+                                continue
+                            # Keep Smart View on DMA-BUF across ABR applies.
+                            try:
+                                import json as _json
+
+                                sf = (
+                                    Path.home()
+                                    / ".config"
+                                    / "omarchy-miracast"
+                                    / "settings.json"
+                                )
+                                data = (
+                                    _json.loads(sf.read_text())
+                                    if sf.is_file()
+                                    else {}
+                                )
+                                if isinstance(data, dict):
+                                    data["captureEncode"] = "dmabuf"
+                                    data["encodeStrategyFallback"] = ""
+                                    data["encodeStrategy"] = "smartview"
+                                    sf.write_text(
+                                        _json.dumps(data, indent=2) + "\n"
+                                    )
+                                    (
+                                        Path.home()
+                                        / ".local"
+                                        / "state"
+                                        / "omarchy-miracast"
+                                        / "capture-encode"
+                                    ).write_text("dmabuf\n")
+                            except Exception as exc:
+                                _log(cast_log, f"dmabuf-sticky prep error: {exc}")
                             _log(
                                 cast_log,
-                                f"dynamic: sv-bitrate {cur_kbps}→{d.kbps}kbps "
-                                f"qp{cur_qp}→{d.qp} ({d.reason}) rc={d.rc_mode} "
-                                f"qpBounds={d.qp_min}-{d.qp_max}",
+                                f"dynamic: sv-apply {sv_applied_kbps}→{pend.kbps}kbps "
+                                f"qp{sv_applied_qp}→{pend.qp} ({pend.reason}) "
+                                f"[{gate}] rc={pend.rc_mode} "
+                                f"qpBounds={pend.qp_min}-{pend.qp_max}",
                             )
                             try:
                                 subprocess.run(
                                     [
                                         ctl,
                                         "set-bitrate-kbps",
-                                        str(d.kbps),
-                                        str(d.qp),
-                                        str(d.qp_min),
-                                        str(d.qp_max),
+                                        str(pend.kbps),
+                                        str(pend.qp),
+                                        str(pend.qp_min),
+                                        str(pend.qp_max),
                                     ],
                                     capture_output=True,
                                     text=True,
@@ -1149,12 +1210,16 @@ def main(argv: list[str] | None = None) -> int:
                                 )
                             except Exception as exc:
                                 _log(cast_log, f"set-bitrate-kbps error: {exc}")
+                            sv_applied_kbps = int(pend.kbps)
+                            sv_applied_qp = int(pend.qp)
+                            sv_last_apply_ts = now
+                            sv_pending = None
                             last_dyn_change = now
                             last_restart = now
                             last_tx = None
                             time.sleep(max(args.interval, 12.0))
                             continue
-                        # No change — skip legacy CQP ladder.
+                        # No pending apply — skip legacy CQP ladder.
                         continue
 
                 sample = dyn_mod.LinkSample(

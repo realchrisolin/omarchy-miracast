@@ -56,6 +56,16 @@ QP_STEP = 1
 # Need this many clean underfill ticks before lowering QP (avoid flap).
 QP_SHARPEN_STREAK = 2
 
+# Apply coalescing — Samsung decides often; we only SIGUSR1-restart when the
+# pending encode knobs moved enough (VAAPI cannot live-setParameters yet).
+APPLY_MIN_QP_DELTA = 2
+APPLY_MIN_KBPS_FRAC = 0.15
+APPLY_MIN_INTERVAL_S = 30.0
+# Smaller pending changes may flush after this idle interval.
+APPLY_FLUSH_INTERVAL_S = 45.0
+APPLY_FLUSH_QP_DELTA = 1
+APPLY_FLUSH_KBPS_FRAC = 0.05
+
 
 @dataclass
 class BitrateConfig:
@@ -385,6 +395,64 @@ def decide(
         good=good,
         bad=0,
         underfill=0,
+    )
+
+
+def is_urgent_apply(reason: str) -> bool:
+    """Hard network pain — apply immediately (do not coalesce)."""
+    r = str(reason or "")
+    return r.startswith("net_stall:") or r.startswith("loss:")
+
+
+def should_apply_encode(
+    *,
+    applied_kbps: int,
+    applied_qp: int,
+    desired_kbps: int,
+    desired_qp: int,
+    reason: str,
+    now: float,
+    last_apply_ts: float,
+) -> tuple[bool, str]:
+    """Gate SIGUSR1 encode restarts while keeping Samsung-style decide() hot.
+
+    Returns (apply_now, gate_reason).
+    """
+    if is_urgent_apply(reason):
+        return True, f"urgent:{reason}"
+
+    dq = abs(int(desired_qp) - int(applied_qp))
+    base = max(1, int(applied_kbps))
+    dfrac = abs(int(desired_kbps) - int(applied_kbps)) / float(base)
+    elapsed = float(now) - float(last_apply_ts or 0.0)
+    first = not last_apply_ts or last_apply_ts <= 0.0
+
+    if dq >= APPLY_MIN_QP_DELTA or dfrac >= APPLY_MIN_KBPS_FRAC:
+        if first or elapsed >= APPLY_MIN_INTERVAL_S:
+            return (
+                True,
+                f"ready:Δqp={dq} Δkbps={dfrac:.0%} wait={elapsed:.0f}s",
+            )
+        return (
+            False,
+            f"hold:min_interval {elapsed:.0f}/{APPLY_MIN_INTERVAL_S:.0f}s "
+            f"(Δqp={dq} Δkbps={dfrac:.0%})",
+        )
+
+    # Small drift — flush only after a longer idle so tiny qp±1 steps batch.
+    if (dq >= APPLY_FLUSH_QP_DELTA or dfrac >= APPLY_FLUSH_KBPS_FRAC) and (
+        first or elapsed >= APPLY_FLUSH_INTERVAL_S
+    ):
+        return (
+            True,
+            f"flush:Δqp={dq} Δkbps={dfrac:.0%} wait={elapsed:.0f}s",
+        )
+
+    if dq == 0 and dfrac < 0.01:
+        return False, "hold:noop"
+    return (
+        False,
+        f"hold:coalesce Δqp={dq} Δkbps={dfrac:.0%} wait={elapsed:.0f}s",
     )
 
 

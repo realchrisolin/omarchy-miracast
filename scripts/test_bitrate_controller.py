@@ -156,6 +156,45 @@ class BitrateControllerTest(unittest.TestCase):
         )
         self.assertNotIn("fill_high", d.reason)
 
+    def test_coalesce_holds_small_qp_step(self):
+        ok, reason = bc.should_apply_encode(
+            applied_kbps=54000,
+            applied_qp=22,
+            desired_kbps=54000,
+            desired_qp=21,
+            reason="qp_fill:air=20<55%×54",
+            now=100.0,
+            last_apply_ts=90.0,
+        )
+        self.assertFalse(ok)
+        self.assertIn("coalesce", reason)
+
+    def test_coalesce_applies_qp_delta_2_after_interval(self):
+        ok, reason = bc.should_apply_encode(
+            applied_kbps=54000,
+            applied_qp=22,
+            desired_kbps=54000,
+            desired_qp=20,
+            reason="qp_fill:air=20<55%×54",
+            now=130.0,
+            last_apply_ts=90.0,
+        )
+        self.assertTrue(ok)
+        self.assertIn("ready", reason)
+
+    def test_coalesce_urgent_loss_bypasses(self):
+        ok, reason = bc.should_apply_encode(
+            applied_kbps=54000,
+            applied_qp=22,
+            desired_kbps=40000,
+            desired_qp=23,
+            reason="loss:0.050",
+            now=91.0,
+            last_apply_ts=90.0,
+        )
+        self.assertTrue(ok)
+        self.assertIn("urgent", reason)
+
     def test_air_clamped_to_mcs_before_fill_high(self):
         # Impossible 200 Mbps glitch must behave like air==MCS after clamp.
         cfg = bc.config_for_band(band_5ghz=True, width_mhz=20)

@@ -24,7 +24,7 @@ if air TX stays ≪ target, link-watch falls back to **VAAPI pipe + QVBR**.
 |---------|------|
 | RTCP RR fraction lost | iw tx_failed / retry% |
 | NetworkStall | sender fps &lt; 28 / ABR stall |
-| MediaCodec live setBitrate | `set-bitrate-kbps` + capture restart (VAAPI limitation) |
+| MediaCodec live setBitrate | `set-bitrate-kbps` + SIGUSR1 restart (VAAPI limitation). **Coalesce** applies (`should_apply_encode`: Δqp≥2 or Δkbps≥15%, min 30s) so decide() stays hot without pausing every tick. DMA sticky kept on Smart View applies. |
 | CAC VBR | ffmpeg `h264_vaapi` **QVBR** + maxrate |
 | QP min/max | settings encodeQpMin/Max + vaapiQp mid |
 
