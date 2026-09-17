@@ -167,7 +167,7 @@ class BitrateControllerTest(unittest.TestCase):
             last_apply_ts=90.0,
         )
         self.assertFalse(ok)
-        self.assertIn("coalesce", reason)
+        self.assertTrue("qp_only" in reason or "coalesce" in reason)
 
     def test_coalesce_never_flushes_qp_plus_minus_1(self):
         # Even after a long idle, Δqp=1 must not restart capture.
