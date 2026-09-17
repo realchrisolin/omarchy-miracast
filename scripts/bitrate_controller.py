@@ -322,8 +322,11 @@ def decide(
 
     # 2) Target already at ceiling but QVBR under-fills → sharpen QP so more
     #    bits are spent (this is the Smart View gap on VAAPI QVBR).
+    # Ignore TX≈0 / tiny samples (sysfs counter glitches) — those are not
+    # "QVBR under-fill", and sharpening QP on them causes rebind storms.
     if (
         air is not None
+        and float(air) >= 2.0
         and fill >= 8.0
         and float(air) < fill * FILL_LOW_FRAC
         and qp > cfg.qp_min
