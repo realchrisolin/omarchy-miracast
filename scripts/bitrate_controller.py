@@ -231,7 +231,7 @@ def decide(
     *,
     cooldown_ok: bool,
 ) -> BitrateDecision:
-    """One control tick — bitrate target + QVBR QP fill toward 75% MCS."""
+    """One control tick — bitrate target + QVBR QP fill toward encode setpoint."""
     kbps = _clamp_kbps(state.kbps, cfg, sig.link_capacity_mbps)
     qp = _clamp_qp(getattr(state, "qp", DEFAULT_QP), cfg)
     good = int(state.good_streak)
