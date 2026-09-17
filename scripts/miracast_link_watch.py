@@ -192,7 +192,13 @@ def _recent_video_fps(cast_log: Path) -> float | None:
     dt = t1 - t0
     if dt <= 0 or dt > 30:
         return None
-    return (f1 - f0) / dt
+    # Counter reset after capture rebind → negative delta; not a real fps.
+    if f1 < f0:
+        return None
+    fps = (f1 - f0) / dt
+    if fps > 120.0:
+        return None
+    return fps
 
 
 def _video_fps_healthy(vfps: float | None, *, min_fps: float = 20.0) -> bool:
@@ -200,13 +206,17 @@ def _video_fps_healthy(vfps: float | None, *, min_fps: float = 20.0) -> bool:
 
     Low positive fps (0 < fps < 15) is treated as a counter-reset unknown —
     not dead — so soft TX after capture rebind does not false-stall ABR.
+    Absurd/negative readings are also unknown (never a demote signal).
     Missing fps (None) still counts as unhealthy for soft-TX gating.
     """
     if vfps is None:
         return False
-    if 0.0 < float(vfps) < 15.0:
+    v = float(vfps)
+    if v < 0.0 or v > 120.0:
         return True
-    return float(vfps) >= float(min_fps)
+    if 0.0 < v < 15.0:
+        return True
+    return v >= float(min_fps)
 
 
 def _soft_tx_counts_as_stall(

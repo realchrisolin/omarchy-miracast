@@ -146,8 +146,11 @@ def _estimate_loss_fraction(sig: LinkSignals) -> Optional[float]:
 def _is_stall(sig: LinkSignals) -> bool:
     if sig.stalled:
         return True
-    if sig.video_fps is not None and 5.0 <= float(sig.video_fps) < 28.0:
-        return True
+    # Only positive, plausible fps counts; counter-reset garbage must not demote.
+    if sig.video_fps is not None:
+        v = float(sig.video_fps)
+        if 5.0 <= v < 28.0:
+            return True
     return False
 
 
