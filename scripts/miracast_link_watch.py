@@ -99,9 +99,8 @@ def _station_dump(iface: str) -> str:
         return ""
 
 
-def _station_retries(iface: str) -> tuple[int, int, int] | None:
+def _station_retries_from_dump(dump: str) -> tuple[int, int, int] | None:
     """Return (tx_packets, tx_retries, tx_failed) or None."""
-    dump = _station_dump(iface)
     if not dump:
         return None
     pk = re.search(r"tx packets:\s*(\d+)", dump)
@@ -113,18 +112,24 @@ def _station_retries(iface: str) -> tuple[int, int, int] | None:
     return int(pk.group(1)), int(rt.group(1)), failed
 
 
-def _station_signal_dbm(iface: str) -> float | None:
-    """Peer signal (dBm) from iw station dump, or None."""
-    dump = _station_dump(iface)
+def _station_retries(iface: str) -> tuple[int, int, int] | None:
+    return _station_retries_from_dump(_station_dump(iface))
+
+
+def _station_signal_dbm_from_dump(dump: str) -> float | None:
+    """Peer signal (dBm) from iw station dump text, or None."""
     if not dump:
         return None
     m = re.search(r"signal:\s*(-?\d+)", dump)
     return float(m.group(1)) if m else None
 
 
-def _station_tx_bitrate_mbps(iface: str) -> float | None:
-    """Peer TX bitrate (MCS capacity) in Mbps from iw station dump, or None."""
-    dump = _station_dump(iface)
+def _station_signal_dbm(iface: str) -> float | None:
+    return _station_signal_dbm_from_dump(_station_dump(iface))
+
+
+def _station_tx_bitrate_mbps_from_dump(dump: str) -> float | None:
+    """Peer TX bitrate (MCS capacity) in Mbps from dump text, or None."""
     if not dump:
         return None
     # e.g. "tx bitrate:	72.2 MBit/s MCS 7 short GI"
@@ -136,6 +141,10 @@ def _station_tx_bitrate_mbps(iface: str) -> float | None:
     except ValueError:
         return None
     return val if val > 0 else None
+
+
+def _station_tx_bitrate_mbps(iface: str) -> float | None:
+    return _station_tx_bitrate_mbps_from_dump(_station_dump(iface))
 
 
 def _go_width_mhz(iface: str) -> float | None:
@@ -163,12 +172,25 @@ def _udp_send_errors(chunk: str) -> int:
     return len(re.findall(r"UDP send error", chunk))
 
 
+def _tail_text(path: Path, max_bytes: int = 65536) -> str:
+    """Read only the end of a growing log (avoid O(file) every tick)."""
+    try:
+        size = path.stat().st_size
+        with path.open("r", errors="ignore") as fh:
+            if size > max_bytes:
+                fh.seek(max(0, size - max_bytes))
+                fh.readline()  # drop partial first line
+            return fh.read()
+    except OSError:
+        return ""
+
+
 def _recent_video_fps(cast_log: Path) -> float | None:
     """Estimate video fps from the last two Sender health lines (None if unknown)."""
     try:
         lines = [
             ln
-            for ln in cast_log.read_text(errors="ignore").splitlines()
+            for ln in _tail_text(cast_log).splitlines()
             if "Sender health" in ln and "video_frames=" in ln
         ][-4:]
     except OSError:
@@ -536,6 +558,10 @@ def main(argv: list[str] | None = None) -> int:
     # the UI stuck on "streaming" forever.
     udp_rebind_suppress_until = 0.0
     last_retry_pct: float | None = None
+    last_station_dump = ""
+    last_link_cap: float | None = None
+    last_signal_dbm: float | None = None
+    last_width_mhz: float | None = None
     last_retries_ps: float | None = None
     last_tx_failed: int | None = None
     last_tx_failed_delta = 0
@@ -715,6 +741,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     zero_tx_streak = 0
                     stall_streak = 0
+                    time.sleep(args.interval)
                     continue
                 _log(
                     cast_log,
@@ -782,6 +809,10 @@ def main(argv: list[str] | None = None) -> int:
         if tick % max(1, args.retry_sample_every) == 0 and go:
             # Associated but idle peer (TV left) — P2P group can linger.
             dump = _station_dump(go)
+            last_station_dump = dump or ""
+            if dump:
+                last_signal_dbm = _station_signal_dbm_from_dump(dump)
+                last_link_cap = _station_tx_bitrate_mbps_from_dump(dump)
             if not dump.strip():
                 peer_inactive_streak += 1
                 _log(
@@ -810,7 +841,7 @@ def main(argv: list[str] | None = None) -> int:
                     peer_inactive_streak = 0
 
             delivery_fail_tick = False
-            stats = _station_retries(go)
+            stats = _station_retries_from_dump(dump)
             if stats and last_pk is not None:
                 dpk = stats[0] - last_pk
                 drt = stats[1] - last_rt
@@ -927,8 +958,10 @@ def main(argv: list[str] | None = None) -> int:
                 max_step = dyn_presets.best_step_count(engine) - 1
                 target = dyn_presets.step_target_mbps(engine, dyn_state.step)
                 band_5ghz = False
-                width_mhz = _go_width_mhz(go) if go else None
-                signal_dbm = _station_signal_dbm(go) if go else None
+                # Prefer cached station dump / status — avoid extra iw per tick.
+                width_mhz = last_width_mhz
+                signal_dbm = last_signal_dbm
+                link_cap = last_link_cap
                 st_live: dict = {}
                 try:
                     st_live = (
@@ -939,20 +972,29 @@ def main(argv: list[str] | None = None) -> int:
                     freq = st_live.get("p2pFreqMHz") or st_live.get("p2pListenFreqMHz")
                     if freq is not None and float(freq) >= 4900.0:
                         band_5ghz = True
-                    elif go:
+                    elif go and tick % max(1, args.retry_sample_every) == 0:
                         # Fall back to iw channel when status lacks freq.
                         ch = _go_channel(go)
                         if ch is not None and int(ch) >= 36:
                             band_5ghz = True
-                    if st_live.get("p2pWidthMHz") is not None and width_mhz is None:
+                    if st_live.get("p2pWidthMHz") is not None:
                         width_mhz = float(st_live.get("p2pWidthMHz"))
+                        last_width_mhz = width_mhz
+                    elif go and width_mhz is None and tick % max(1, args.retry_sample_every) == 0:
+                        width_mhz = _go_width_mhz(go)
+                        last_width_mhz = width_mhz
                     if st_live.get("p2pSignalDbm") is not None and signal_dbm is None:
                         signal_dbm = float(st_live.get("p2pSignalDbm"))
+                    if st_live.get("p2pTxBitrateMbps") is not None and link_cap is None:
+                        link_cap = float(st_live.get("p2pTxBitrateMbps"))
                 except (TypeError, ValueError, OSError, json.JSONDecodeError):
                     pass
                 # Rebind UDP EBADF is not a link-quality demote signal.
                 udp_is_delivery_fail = udp_errs > 0 and not rebind_in_chunk
-                link_cap = _station_tx_bitrate_mbps(go) if go else None
+                if link_cap is None and last_station_dump:
+                    link_cap = _station_tx_bitrate_mbps_from_dump(last_station_dump)
+                if signal_dbm is None and last_station_dump:
+                    signal_dbm = _station_signal_dbm_from_dump(last_station_dump)
                 # WFD path (Best + CBR): honor sink IDR as congestion; cut bitrate
                 # instead of walking the old CQP QP ladder / inventing headroom %.
                 # Samsung Smart View BitrateController (libremotedisplay_wfd.so):
@@ -1135,11 +1177,14 @@ def main(argv: list[str] | None = None) -> int:
                             if in_abr_grace and not hard_fail and not bc_mod.is_urgent_apply(
                                 pend.reason
                             ):
-                                _log(
-                                    cast_log,
-                                    f"dynamic: hold:abr_grace "
-                                    f"({pend.reason} want {pend.kbps}kbps qp{pend.qp})",
-                                )
+                                if tick % 10 == 0:
+                                    print(
+                                        f"[link-watch] dynamic: hold:abr_grace "
+                                        f"({pend.reason} want {pend.kbps}kbps qp{pend.qp})",
+                                        file=sys.stderr,
+                                        flush=True,
+                                    )
+                                time.sleep(args.interval)
                                 continue
                             do_apply, gate = bc_mod.should_apply_encode(
                                 applied_kbps=int(sv_applied_kbps),
@@ -1151,13 +1196,18 @@ def main(argv: list[str] | None = None) -> int:
                                 last_apply_ts=sv_last_apply_ts,
                             )
                             if not do_apply:
-                                if d.changed or tick % 5 == 0:
-                                    _log(
-                                        cast_log,
-                                        f"dynamic: coalesce {gate} "
+                                # Do not write coalesce holds into cast.log —
+                                # that inflated the file and burned CPU on
+                                # full-log fps scans. Never skip the tick sleep.
+                                if d.changed and tick % 10 == 0:
+                                    print(
+                                        f"[link-watch] dynamic: coalesce {gate} "
                                         f"(applied {sv_applied_kbps}kbps qp{sv_applied_qp} "
                                         f"→ want {pend.kbps}kbps qp{pend.qp})",
+                                        file=sys.stderr,
+                                        flush=True,
                                     )
+                                time.sleep(args.interval)
                                 continue
                             # Keep DMA-BUF across ABR applies for QVBR strategy.
                             try:
@@ -1222,7 +1272,9 @@ def main(argv: list[str] | None = None) -> int:
                             last_tx = None
                             time.sleep(max(args.interval, 12.0))
                             continue
-                        # No pending apply — skip legacy CQP ladder.
+                        # No pending apply — skip legacy CQP ladder, but still
+                        # sleep. A bare continue here spun at ~80% CPU.
+                        time.sleep(args.interval)
                         continue
 
                 sample = dyn_mod.LinkSample(
