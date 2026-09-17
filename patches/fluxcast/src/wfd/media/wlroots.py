@@ -141,6 +141,9 @@ class WlrootsMixin:
         preference: str,
         fallback: bool,
     ) -> None:
+        # Remember path so mid-session restart_video can leave a wedged DMA-BUF
+        # session for VAAPI pipe instead of recreating the same freeze.
+        self._last_capture_path = capture_path
         _append_latency_log(
             getattr(self.config, "latency_log_path", None),
             "capture_encode",
@@ -592,6 +595,7 @@ class WlrootsMixin:
             self.sink_rtp_port,
             local_ip=self.local_ip,
             local_port=self.config.source_port,
+            bind_iface=self.tx_interface,
         )
 
         # appsink: max-buffers=1 drop=true (drop whole AUs; no intermediate queue).
@@ -887,6 +891,7 @@ class WlrootsMixin:
             self.sink_rtp_port,
             local_ip=self.local_ip,
             local_port=self.config.source_port,
+            bind_iface=self.tx_interface,
         )
         vid_pipeline = (
             f"fdsrc fd={r_fd} do-timestamp=true ! "

@@ -94,6 +94,16 @@ class EncodeQualityPresetsTest(unittest.TestCase):
             self.mod.resolve_best_step("vaapi", out["encodeProfileEffectiveStep"])["bitrate"],
         )
 
+    def test_vaapi_best_ladder_is_aosp_cbr(self):
+        """AOSP WifiDisplay uses Constant bitrate on the encode path."""
+        self.assertGreater(self.mod.best_step_count("vaapi"), 10)
+        step = self.mod.best_start_step("vaapi")
+        knobs = self.mod.resolve_best_step("vaapi", step)
+        self.assertEqual(knobs["vaapiRcMode"], "CBR")
+        self.assertEqual(knobs["vaapiAsyncDepth"], 1)
+        named = self.mod.resolve_preset("vaapi", "high")
+        self.assertEqual(named["vaapiRcMode"], "CBR")
+
     def test_min_best_step_no_band_cap(self):
         self.assertEqual(self.mod.min_best_step("dmabuf", band_5ghz=False), 0)
         self.assertEqual(self.mod.min_best_step("dmabuf", band_5ghz=True), 0)

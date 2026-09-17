@@ -43,8 +43,16 @@ class LinkWatchStallGateTest(unittest.TestCase):
         )
 
     def test_soft_tx_with_dead_fps_is_stall(self):
-        self.assertTrue(
+        # Rebind-unknown band (<15) — must not soft-stall.
+        self.assertFalse(
             self.m._soft_tx_counts_as_stall(2.0, 5.0, stall_mbps=3.0)
+        )
+        self.assertFalse(
+            self.m._soft_tx_counts_as_stall(2.0, 10.6, stall_mbps=3.0)
+        )
+        # Truly soft fps (below healthy, above unknown band) still stalls.
+        self.assertTrue(
+            self.m._soft_tx_counts_as_stall(2.0, 16.0, stall_mbps=3.0)
         )
         self.assertTrue(
             self.m._soft_tx_counts_as_stall(2.0, None, stall_mbps=3.0)

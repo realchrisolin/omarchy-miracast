@@ -122,6 +122,22 @@ def _station_signal_dbm(iface: str) -> float | None:
     return float(m.group(1)) if m else None
 
 
+def _station_tx_bitrate_mbps(iface: str) -> float | None:
+    """Peer TX bitrate (MCS capacity) in Mbps from iw station dump, or None."""
+    dump = _station_dump(iface)
+    if not dump:
+        return None
+    # e.g. "tx bitrate:	72.2 MBit/s MCS 7 short GI"
+    m = re.search(r"tx bitrate:\s*([\d.]+)\s*MBit", dump, re.I)
+    if not m:
+        return None
+    try:
+        val = float(m.group(1))
+    except ValueError:
+        return None
+    return val if val > 0 else None
+
+
 def _go_width_mhz(iface: str) -> float | None:
     """P2P GO channel width (MHz) from ``iw dev INFO``, or None."""
     try:
@@ -180,8 +196,17 @@ def _recent_video_fps(cast_log: Path) -> float | None:
 
 
 def _video_fps_healthy(vfps: float | None, *, min_fps: float = 20.0) -> bool:
-    """True when Sender health shows video still advancing (Waydroid/UI OK)."""
-    return vfps is not None and vfps >= min_fps
+    """True when Sender health shows video still advancing (Waydroid/UI OK).
+
+    Low positive fps (0 < fps < 15) is treated as a counter-reset unknown —
+    not dead — so soft TX after capture rebind does not false-stall ABR.
+    Missing fps (None) still counts as unhealthy for soft-TX gating.
+    """
+    if vfps is None:
+        return False
+    if 0.0 < float(vfps) < 15.0:
+        return True
+    return float(vfps) >= float(min_fps)
 
 
 def _soft_tx_counts_as_stall(
@@ -346,11 +371,23 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--video-signal-cooldown",
         type=float,
-        default=20.0,
-        help="shorter cooldown when cast.log shows VIDEO_STALL / bufs_size storm",
+        default=90.0,
+        help="cooldown for TX/audio-band restarts that use the video-signal path "
+        "(VIDEO_STALL/bufs no longer trigger link-watch restart)",
     )
     p.add_argument("--retry-sample-every", type=int, default=3, help="ticks between iw dumps")
-    p.add_argument("--retry-rate-threshold", type=float, default=0.8, help="percent")
+    p.add_argument(
+        "--retry-rate-threshold",
+        type=float,
+        default=5.0,
+        help="percent; log/CSA only — ABR demote uses dynamic_encode.RETRY_PCT_DOWN",
+    )
+    p.add_argument(
+        "--tx-failed-threshold",
+        type=int,
+        default=1,
+        help="iw station tx-failed delta that counts as delivery pain for ABR",
+    )
     p.add_argument("--score-cooldown", type=float, default=180.0)
     p.add_argument("--csa-cooldown", type=float, default=300.0)
     p.add_argument("--csa-max-per-hour", type=int, default=2)
@@ -359,8 +396,17 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--dynamic-cooldown",
         type=float,
-        default=60.0,
+        # Each apply = SIGUSR1 capture restart. 90s keeps headroom from
+        # stacking rebinds (rebind_storm) after a big CQP jump.
+        default=90.0,
         help="min seconds between Best (Dynamic) tier changes",
+    )
+    p.add_argument(
+        "--abr-grace",
+        type=float,
+        default=90.0,
+        help="seconds after first ABR tick before demote/climb applies "
+        "(avoids SIGUSR1 restart storms right after PLAY)",
     )
     p.add_argument(
         "--peer-inactive-ms",
@@ -431,10 +477,37 @@ def main(argv: list[str] | None = None) -> int:
     dyn_mod = None
     dyn_presets = None  # encode_quality_presets module
     dyn_state = None  # dynamic_encode.LadderState (fine step index)
+    sv_bc_state = None  # bitrate_controller.BitrateState (Smart View–style)
+    bc_mod = None  # bitrate_controller module (load once)
+    try:
+        bc_path = plugin / "scripts" / "bitrate_controller.py"
+        bspec = importlib.util.spec_from_file_location(
+            "bitrate_controller", bc_path
+        )
+        if bspec is not None and bspec.loader is not None:
+            bc_mod = importlib.util.module_from_spec(bspec)
+            import sys as _sys
+
+            _sys.modules["bitrate_controller"] = bc_mod
+            bspec.loader.exec_module(bc_mod)
+            _log(cast_log, "bitrate_controller loaded (Smart View–style)")
+        else:
+            _log(cast_log, f"bitrate_controller unavailable: {bc_path}")
+    except Exception as exc:
+        _log(cast_log, f"bitrate_controller load error: {exc}")
+        bc_mod = None
     last_dyn_change = 0.0
+    abr_ready_at = 0.0  # wall time when ABR may first apply changes
+    # Also suppress stall/audio restart-capture during the same settle window —
+    # stacked SIGUSR1 while RTP is coming up → UDP EBADF death.
+    capture_grace_until = time.time() + float(args.abr_grace)
+    # Bound UDP-during-rebind suppress so endless VIDEO_STALL loops can't leave
+    # the UI stuck on "streaming" forever.
+    udp_rebind_suppress_until = 0.0
     last_retry_pct: float | None = None
     last_retries_ps: float | None = None
     last_tx_failed: int | None = None
+    last_tx_failed_delta = 0
     last_stats_t = 0.0
     delivery_fail_tick = False
 
@@ -495,9 +568,14 @@ def main(argv: list[str] | None = None) -> int:
 
     while True:
         phase = _phase(status_path)
-        if phase != "streaming":
+        # Stay alive through rtsp/connecting flicker (air-TX UI gate). Only
+        # exit when the cast is actually gone.
+        if phase in ("", "idle", "error", "failed", None):
             _log(cast_log, f"exit phase={phase!r}")
             return 0
+        if phase != "streaming":
+            time.sleep(max(1.0, min(args.interval, 3.0)))
+            continue
 
         now = time.time()
         tx = _p2p_tx_bytes()
@@ -515,20 +593,47 @@ def main(argv: list[str] | None = None) -> int:
         except OSError:
             pass
 
-        # UDP send errors = media socket dead while processes may still look "up".
+        # UDP send errors usually mean a dead media socket — but VIDEO_STALL /
+        # capture rebind closes the RTP fd briefly and floods EBADF. Suppress
+        # stop only briefly around a rebind, not forever.
         udp_errs = _udp_send_errors(chunk)
+        rebind_in_chunk = (
+            _video_stall_logged(chunk)
+            or _bufs_size_storm(chunk)
+            or "Auto-rebind" in chunk
+            or "SIGUSR1" in chunk
+            or "capture restart already in flight" in chunk
+            or "rebinding desktop capture" in chunk
+        )
+        if rebind_in_chunk:
+            udp_rebind_suppress_until = time.time() + 20.0
         if udp_errs >= max(1, args.udp_error_threshold):
-            _stop_session(f"UDP send errors×{udp_errs} in cast.log (dead media path)")
-            return 0
+            if time.time() < udp_rebind_suppress_until or time.time() < capture_grace_until:
+                _log(
+                    cast_log,
+                    f"UDP send errors×{udp_errs} during "
+                    f"{'rebind window' if time.time() < udp_rebind_suppress_until else 'capture grace'} "
+                    f"— not stopping (expected EBADF while socket recycles)",
+                )
+            else:
+                _stop_session(
+                    f"UDP send errors×{udp_errs} in cast.log (dead media path)"
+                )
+                return 0
 
+        # FluxCast already auto-rebinds on VIDEO_STALL / bufs_size storms.
+        # A second restart-capture here doubled the pause storm (same QP).
+        # Log only — TX/UDP/audio-band paths below still restart when needed.
         if _video_stall_logged(chunk) or _bufs_size_storm(chunk):
             reason = (
                 "VIDEO_STALL in cast.log"
                 if _video_stall_logged(chunk)
                 else "bufs_size storm in cast.log"
             )
-            if _do_restart(reason, cooldown=args.video_signal_cooldown):
-                continue
+            _log(
+                cast_log,
+                f"{reason} (FluxCast handles rebind; link-watch not double-restarting)",
+            )
 
         # --- stall detection (cheap) ---
         # Under CQP, quiet UI (e.g. Waydroid) often sits ~1.5–3 Mbps at 30 fps.
@@ -537,7 +642,10 @@ def main(argv: list[str] | None = None) -> int:
         vfps = _recent_video_fps(cast_log)
         video_ok = _video_fps_healthy(vfps)
 
-        if mbps is not None and mbps < 0.15:
+        # AOSP never tears capture down while frames still encode. Soft/zero TX
+        # with healthy sender fps is a counter glitch or quiet CBR interval —
+        # not a stall (false TX≈0 storms after CBR 5M→3M rebinds).
+        if mbps is not None and mbps < 0.15 and not video_ok:
             stall_streak += 1
             zero_tx_streak += 1
         elif _soft_tx_counts_as_stall(mbps, vfps, stall_mbps=args.stall_mbps):
@@ -558,16 +666,50 @@ def main(argv: list[str] | None = None) -> int:
             audio_band_streak = 0
 
         # Endless restart-capture while TX stays ~0 leaves UI on "streaming".
+        # During capture grace: allow ONE hard-zero restart (media path may not
+        # have come up yet). Soft stalls stay suppressed. Don't stop for zero-TX
+        # until grace ends — otherwise we kill a settling session.
         if zero_tx_streak >= max(1, args.zero_tx_stop_ticks):
             mbps_s = f"{mbps:.2f}" if mbps is not None else "?"
-            _stop_session(
-                f"TX≈0 for {zero_tx_streak} ticks (mbps={mbps_s}) — sink gone"
-            )
-            return 0
+            if time.time() < capture_grace_until:
+                _log(
+                    cast_log,
+                    f"TX≈0 for {zero_tx_streak} ticks (mbps={mbps_s}) during "
+                    f"capture grace — one recovery restart, not stop",
+                )
+                zero_tx_streak = 0
+                stall_streak = 0
+                if _do_restart(
+                    f"TX≈0 recovery during capture grace (mbps={mbps_s})",
+                    cooldown=max(30.0, float(args.restart_cooldown)),
+                ):
+                    continue
+            else:
+                _stop_session(
+                    f"TX≈0 for {zero_tx_streak} ticks (mbps={mbps_s}) — sink gone"
+                )
+                return 0
 
         if stall_streak >= args.stall_ticks:
             fps_s = f"{vfps:.1f}" if vfps is not None else "?"
-            if _do_restart(
+            if video_ok:
+                _log(
+                    cast_log,
+                    f"stall TX={mbps:.2f}Mbps fps={fps_s} ignored "
+                    f"(video healthy — AOSP would not restart)",
+                )
+                stall_streak = 0
+            # Hard TX≈0 is handled above. Soft stalls during grace: don't restart.
+            elif time.time() < capture_grace_until and not (
+                mbps is not None and mbps < 0.15
+            ):
+                _log(
+                    cast_log,
+                    f"stall TX={mbps:.2f}Mbps fps={fps_s} for {stall_streak} ticks "
+                    f"(capture grace — not restarting)",
+                )
+                stall_streak = 0
+            elif _do_restart(
                 f"stall TX={mbps:.2f}Mbps fps={fps_s} for {stall_streak} ticks",
                 cooldown=args.restart_cooldown,
             ):
@@ -575,7 +717,14 @@ def main(argv: list[str] | None = None) -> int:
 
         if audio_band_streak >= args.audio_band_ticks:
             fps_s = f"{vfps:.1f}" if vfps is not None else "?"
-            if _do_restart(
+            if time.time() < capture_grace_until:
+                _log(
+                    cast_log,
+                    f"audio-only TX band={mbps:.2f}Mbps fps={fps_s} "
+                    f"for {audio_band_streak} ticks (capture grace — not restarting)",
+                )
+                audio_band_streak = 0
+            elif _do_restart(
                 f"audio-only TX band={mbps:.2f}Mbps fps={fps_s} "
                 f"for {audio_band_streak} ticks",
                 cooldown=args.video_signal_cooldown,
@@ -636,10 +785,13 @@ def main(argv: list[str] | None = None) -> int:
                         )
                     else:
                         high_retry_streak = 0
-                if dfail > 0:
+                if dfail >= max(1, int(args.tx_failed_threshold)):
                     delivery_fail_tick = True
+                    last_tx_failed_delta = dfail
                     rf_pain = True
                     _log(cast_log, f"tx failed Δ={dfail}")
+                else:
+                    last_tx_failed_delta = 0
             if stats:
                 last_pk, last_rt = stats[0], stats[1]
                 last_tx_failed = stats[2]
@@ -699,10 +851,12 @@ def main(argv: list[str] | None = None) -> int:
                             sig_floor0 = float(settings.get("encodeBestSignalFloorDbm"))
                     except (TypeError, ValueError):
                         sig_floor0 = None
+                    climb_floor0 = None
                     try:
-                        climb_floor0 = int(settings.get("encodeBestClimbFloorStep") or 0)
+                        if settings.get("encodeBestClimbFloorStep") is not None:
+                            climb_floor0 = int(settings.get("encodeBestClimbFloorStep"))
                     except (TypeError, ValueError):
-                        climb_floor0 = 0
+                        climb_floor0 = None
                     dyn_state = dyn_mod.LadderState(
                         step=step0,
                         demote_count=demotes0,
@@ -711,14 +865,15 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 # ABR stall = real delivery failure or soft TX *with* dead fps.
                 # Quiet Waydroid/UI under CQP at ~2 Mbps / 30 fps is healthy.
+                # Do NOT treat FluxCast VIDEO_STALL / bufs_size log lines as ABR
+                # stalls — those already trigger capture rebind; counting them
+                # here caused a soft-QP demote spiral into UDP death.
                 abr_stalled = (
                     (stall_streak >= max(1, int(args.stall_ticks) - 1) and not video_ok)
                     or (
                         audio_band_streak >= max(1, int(args.audio_band_ticks) - 1)
                         and not video_ok
                     )
-                    or _video_stall_logged(chunk)
-                    or _bufs_size_storm(chunk)
                     or (mbps is not None and mbps < 0.15)
                 )
                 rc_mode = str(settings.get("vaapiRcMode") or "CQP")
@@ -750,19 +905,125 @@ def main(argv: list[str] | None = None) -> int:
                         signal_dbm = float(st_live.get("p2pSignalDbm"))
                 except (TypeError, ValueError, OSError, json.JSONDecodeError):
                     pass
+                # Rebind UDP EBADF is not a link-quality demote signal.
+                udp_is_delivery_fail = udp_errs > 0 and not rebind_in_chunk
+                link_cap = _station_tx_bitrate_mbps(go) if go else None
+                # WFD path (Best + CBR): honor sink IDR as congestion; cut bitrate
+                # instead of walking the old CQP QP ladder / inventing headroom %.
+                # Samsung Smart View BitrateController (libremotedisplay_wfd.so):
+                # loss/stall → decreaseUDPBitrate; no-loss streak → increase.
+                use_sv_bc = str(settings.get("encodeProfile") or "").lower() == "best"
+                if abr_ready_at <= 0.0:
+                    abr_ready_at = now + float(args.abr_grace)
+                    _log(
+                        cast_log,
+                        f"dynamic: ABR grace {args.abr_grace:.0f}s "
+                        f"(no quality changes until settle)",
+                    )
+                in_abr_grace = now < abr_ready_at
+                cooldown_ok = (not in_abr_grace) and (
+                    (now - last_dyn_change) >= args.dynamic_cooldown
+                )
+                if use_sv_bc:
+                    if bc_mod is not None:
+                        band_5 = False
+                        try:
+                            # WifiDisplayAdapter used frequency=5220 for Smart View.
+                            freq = settings.get("p2pFreqMHz") or settings.get("p2pFrequency")
+                            if freq is not None and float(freq) >= 5000:
+                                band_5 = True
+                        except (TypeError, ValueError):
+                            band_5 = False
+                        if not band_5 and link_cap is not None and float(link_cap) >= 150:
+                            # High MCS often implies 5 GHz / wide channel.
+                            band_5 = True
+                        cfg = bc_mod.config_for_band(band_5ghz=band_5, width_mhz=20.0)
+                        cur_br = str(
+                            settings.get("bitrate")
+                            or settings.get("vaapiBitrate")
+                            or "10M"
+                        )
+                        cur_kbps = bc_mod.ffmpeg_to_kbps(cur_br)
+                        if sv_bc_state is None:
+                            sv_bc_state = bc_mod.BitrateState(kbps=cur_kbps)
+                        else:
+                            sv_bc_state = bc_mod.BitrateState(
+                                kbps=cur_kbps,
+                                good_streak=sv_bc_state.good_streak,
+                                bad_streak=sv_bc_state.bad_streak,
+                            )
+                        # Do not treat soft/zero TX with healthy fps as NetStall
+                        # (sysfs air counter often reads 0 while Sender health is fine).
+                        bc_stall = bool(abr_stalled) and not video_ok
+                        sig = bc_mod.LinkSignals(
+                            stalled=bc_stall,
+                            video_fps=vfps,
+                            link_capacity_mbps=link_cap,
+                            tx_failed_delta=int(last_tx_failed_delta or 0)
+                            if delivery_fail_tick
+                            else 0,
+                            retry_percent=last_retry_pct,
+                        )
+                        d = bc_mod.decide(
+                            sv_bc_state, sig, cfg, cooldown_ok=cooldown_ok
+                        )
+                        sv_bc_state = bc_mod.BitrateState(
+                            kbps=d.kbps,
+                            good_streak=d.good_streak,
+                            bad_streak=d.bad_streak,
+                        )
+                        if d.changed:
+                            _log(
+                                cast_log,
+                                f"dynamic: sv-bitrate {cur_kbps}→{d.kbps}kbps "
+                                f"({d.reason}) rc={d.rc_mode} qp={d.qp_min}-{d.qp_max}",
+                            )
+                            try:
+                                subprocess.run(
+                                    [
+                                        ctl,
+                                        "set-bitrate-kbps",
+                                        str(d.kbps),
+                                        str((d.qp_min + d.qp_max) // 2),
+                                        str(d.qp_min),
+                                        str(d.qp_max),
+                                    ],
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=60.0,
+                                )
+                            except Exception as exc:
+                                _log(cast_log, f"set-bitrate-kbps error: {exc}")
+                            last_dyn_change = now
+                            last_restart = now
+                            last_tx = None
+                            time.sleep(max(args.interval, 12.0))
+                            continue
+                        # No change — skip legacy CQP ladder.
+                        continue
+
                 sample = dyn_mod.LinkSample(
                     throughput_mbps=mbps,
+                    link_capacity_mbps=link_cap,
                     retry_percent=last_retry_pct,
                     retries_per_sec=last_retries_ps,
                     signal_dbm=signal_dbm,
                     stalled=bool(abr_stalled),
-                    delivery_fail=bool(delivery_fail_tick or udp_errs > 0),
+                    delivery_fail=bool(delivery_fail_tick or udp_is_delivery_fail),
+                    tx_failed_delta=int(last_tx_failed_delta or 0)
+                    if delivery_fail_tick
+                    else (1 if udp_is_delivery_fail else 0),
+                    video_fps=vfps,
                 )
-                cooldown_ok = (now - last_dyn_change) >= args.dynamic_cooldown
+                # Grace: block climbs / soft applies after rebind. Demotes still
+                # apply — especially extreme_harbor (JScreenFix-class oversat).
+                cooldown_ok = (not in_abr_grace) and (
+                    (now - last_dyn_change) >= args.dynamic_cooldown
+                )
                 decision = dyn_mod.decide(
                     dyn_state,
                     sample,
-                    cooldown_ok=cooldown_ok,
+                    cooldown_ok=True if in_abr_grace else cooldown_ok,
                     rc_mode=rc_mode,
                     min_step=min_step,
                     max_step=max_step,
@@ -770,17 +1031,54 @@ def main(argv: list[str] | None = None) -> int:
                     band_5ghz=band_5ghz,
                     width_mhz=width_mhz,
                 )
+                if decision.changed and in_abr_grace:
+                    is_demote = decision.reason.startswith("down:")
+                    if not is_demote:
+                        decision = dyn_mod.LadderDecision(
+                            step=dyn_state.step,
+                            changed=False,
+                            reason=f"hold:abr_grace ({decision.reason})",
+                            bad_streak=decision.bad_streak,
+                            good_streak=decision.good_streak,
+                            demote_count=dyn_state.demote_count,
+                            signal_floor_dbm=dyn_state.signal_floor_dbm,
+                            climb_good_need=decision.climb_good_need,
+                            climb_floor_step=getattr(
+                                dyn_state, "climb_floor_step", None
+                            ),
+                        )
+                # Never apply more than one quality change per dynamic_cooldown —
+                # each set-quality restarts capture and stacked restarts → UDP death.
+                elif (
+                    decision.changed
+                    and last_dyn_change > 0.0
+                    and (now - last_dyn_change) < args.dynamic_cooldown
+                ):
+                    decision = dyn_mod.LadderDecision(
+                        step=dyn_state.step,
+                        changed=False,
+                        reason=f"hold:apply_cooldown ({decision.reason})",
+                        bad_streak=decision.bad_streak,
+                        good_streak=decision.good_streak,
+                        demote_count=decision.demote_count,
+                        signal_floor_dbm=decision.signal_floor_dbm,
+                        climb_good_need=decision.climb_good_need,
+                        climb_floor_step=decision.climb_floor_step,
+                    )
                 prev_demotes = int(getattr(dyn_state, "demote_count", 0) or 0)
-                prev_floor = int(getattr(dyn_state, "climb_floor_step", 0) or 0)
+                prev_floor = getattr(dyn_state, "climb_floor_step", None)
                 dyn_state = dyn_mod.LadderState(
                     step=decision.step,
                     bad_streak=decision.bad_streak,
                     good_streak=decision.good_streak,
                     demote_count=decision.demote_count,
                     signal_floor_dbm=decision.signal_floor_dbm,
-                    climb_floor_step=decision.climb_floor_step,
+                    climb_good_need=getattr(
+                        decision, "climb_good_need", dyn_mod.GOOD_STREAK_UP
+                    ),
+                    climb_floor_step=getattr(decision, "climb_floor_step", None),
                 )
-                # Persist demote settle + climb floor across watcher restarts.
+                # Persist demote settle + soft climb ceiling across watcher restarts.
                 if (
                     decision.demote_count != prev_demotes
                     or decision.climb_floor_step != prev_floor
@@ -789,9 +1087,12 @@ def main(argv: list[str] | None = None) -> int:
                 ):
                     try:
                         settings["encodeBestDemoteCount"] = int(decision.demote_count)
-                        settings["encodeBestClimbFloorStep"] = int(
-                            decision.climb_floor_step or 0
-                        )
+                        if decision.climb_floor_step is None:
+                            settings.pop("encodeBestClimbFloorStep", None)
+                        else:
+                            settings["encodeBestClimbFloorStep"] = int(
+                                decision.climb_floor_step
+                            )
                         if decision.signal_floor_dbm is None:
                             settings.pop("encodeBestSignalFloorDbm", None)
                         else:
@@ -825,7 +1126,6 @@ def main(argv: list[str] | None = None) -> int:
                     continue
                 if (
                     decision.reason.startswith("hold:no_climb")
-                    or decision.reason.startswith("hold:floor")
                     or decision.reason.startswith("signal_recover")
                     or "signal_recover" in decision.reason
                 ):

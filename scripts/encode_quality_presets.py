@@ -39,15 +39,19 @@ Reliable maximize-quality envelope (1080p30 + ~1.5 Mbps LPCM):
   - **Very High** (5 GHz+ only): intentionally above the 2.4 / 20 MHz budget
     (DMA-BUF qp=16 peaks that corrupted 20 MHz; pipe CBR ~28M). Gate on band —
     not an arbitrary UI lock.
-  - **VAAPI pipe**: **hard CBR** (ffmpeg BRC works). Do **not** use QVBR here —
-    on-device Intel QVBR undershot to ~5–7 Mbps (worse on lighting). High is
-    **CBR 15M + quality=3 + async=1 + VBV 1.0** (closest-to-lossless on 20 MHz
-    after hotyeah soaks; wire ~18 Mbps with LPCM; ~3–4 Mbps under the ~22 Mbps
-    corruption line). quality=1 hung the pipe; clamp floor is quality≥3.
+  - **VAAPI pipe named tiers** (high/medium/low): **hard CBR** (ffmpeg BRC
+    works). Do **not** use QVBR here — on-device Intel QVBR undershot to ~5–7
+    Mbps. High is **CBR 15M + quality=3 + async=1 + VBV 1.0**. quality=1 hung
+    the pipe; clamp floor is quality≥3.
+  - **VAAPI pipe Best (Dynamic)**: **CQP QP 1–51** with pipe-safe knobs
+    (async=1, quality≥3). Named CBR was a one-step Mbps nudge under oversat
+    (JScreenFix); CQP demotes actually soften the encode. Same QP index map
+    as DMA-BUF Best.
   - **CPU**: CBR ladder (libx264); independent of VAAPI pipe hang constraints.
 
-  ``bitrate`` / ``vaapiBitrate`` are the pipe CBR target (=maxrate); informational
-  for DMA-BUF CQP. ``vbvMultiplier`` is CBR HRD depth in seconds of bitrate.
+  ``bitrate`` / ``vaapiBitrate`` are the pipe named-tier CBR target (=maxrate);
+  informational under Best CQP. ``vbvMultiplier`` is CBR HRD depth in seconds
+  of bitrate.
 """
 
 from __future__ import annotations
@@ -105,10 +109,14 @@ def _cqp_companion(qp: int) -> tuple[str, str, str]:
     return quality, iqf, br
 
 
-def _build_dmabuf_best_steps() -> list[dict[str, Any]]:
+def _build_cqp_best_steps(*, async_depth: int, quality_floor: int = 1) -> list[dict[str, Any]]:
+    """CQP QP 1–51 ladder. Pipe uses async=1 and quality_floor=3 (hang floor)."""
     steps: list[dict[str, Any]] = []
+    floor = max(1, int(quality_floor))
     for qp in range(BEST_CQP_QP_MIN, BEST_CQP_QP_MAX + 1):
         quality, iqf, br = _cqp_companion(qp)
+        if int(quality) < floor:
+            quality = str(floor)
         steps.append(
             {
                 "vaapiRcMode": "CQP",
@@ -118,10 +126,19 @@ def _build_dmabuf_best_steps() -> list[dict[str, Any]]:
                 "vaapiBitrate": br,
                 "bitrate": br,
                 "vaapiGop": 30,
-                "vaapiAsyncDepth": 2,
+                "vaapiAsyncDepth": async_depth,
             }
         )
     return steps
+
+
+def _build_dmabuf_best_steps() -> list[dict[str, Any]]:
+    return _build_cqp_best_steps(async_depth=2, quality_floor=1)
+
+
+def _build_pipe_cqp_best_steps() -> list[dict[str, Any]]:
+    """VAAPI-pipe Best: CQP with pipe hang floor (async=1, quality≥3)."""
+    return _build_cqp_best_steps(async_depth=1, quality_floor=3)
 
 
 def _build_cbr_best_steps(
@@ -167,6 +184,9 @@ def _build_cbr_best_steps(
 
 BEST_STEPS: dict[str, list[dict[str, Any]]] = {
     "dmabuf": _build_dmabuf_best_steps(),
+    # AOSP WifiDisplay uses Constant bitrate (OMX_Video_ControlRateConstant),
+    # not unbounded CQP. Keep a CBR Mbps ladder for Best on pipe; named tiers
+    # below stay CBR as well.
     "vaapi": _build_cbr_best_steps(async_depth=1, quality_sharp="3", quality_soft="4"),
     "cpu": _build_cbr_best_steps(async_depth=2, quality_sharp="1", quality_soft="6"),
 }
@@ -195,7 +215,7 @@ def best_step_for_bitrate_mbps(engine: str, mbps: float) -> int:
     return best_i
 
 
-# Named preset → Best step (qp for dmabuf; Mbps for pipe/cpu).
+# Named preset → Best step (qp for dmabuf/vaapi Best; Mbps for cpu).
 BEST_TIER_TO_STEP: dict[str, dict[str, int]] = {
     "dmabuf": {
         "veryhigh": best_step_for_qp(16),
@@ -204,10 +224,11 @@ BEST_TIER_TO_STEP: dict[str, dict[str, int]] = {
         "low": best_step_for_qp(23),
     },
     "vaapi": {
-        "veryhigh": best_step_for_bitrate_mbps("vaapi", 28),
-        "high": best_step_for_bitrate_mbps("vaapi", 15),
-        "medium": best_step_for_bitrate_mbps("vaapi", 12),
-        "low": best_step_for_bitrate_mbps("vaapi", 8),
+        # AOSP default ~5 Mbps; high named preset historically 15M CBR.
+        "veryhigh": best_step_for_bitrate_mbps("vaapi", 10),
+        "high": best_step_for_bitrate_mbps("vaapi", 5),
+        "medium": best_step_for_bitrate_mbps("vaapi", 4),
+        "low": best_step_for_bitrate_mbps("vaapi", 3),
     },
     "cpu": {
         "veryhigh": best_step_for_bitrate_mbps("cpu", 28),
@@ -538,7 +559,7 @@ def apply_to_settings(
             step = best_start_step(eng)
             data["encodeBestDemoteCount"] = 0
             data.pop("encodeBestSignalFloorDbm", None)
-            data["encodeBestClimbFloorStep"] = 0
+            data.pop("encodeBestClimbFloorStep", None)
         elif data.get("encodeProfileEffectiveStep") is not None:
             try:
                 step = int(data.get("encodeProfileEffectiveStep"))

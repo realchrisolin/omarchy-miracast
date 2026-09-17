@@ -1,13 +1,10 @@
 """
-WFD LPCM MPEG-TS muxer (stream_type=0x83).
+WFD LPCM MPEG-TS muxer for Microsoft Wireless Display Adapter.
 
-GStreamer mpegtsmux emits Blu-ray LPCM (0x8b). Many Miracast sinks (cheap TVs,
-Microsoft Wireless Display Adapter) only accept Wi-Fi Display LPCM (0x83), so
-this pure-Python muxer builds TS/RTP itself.
-
-Framing follows the Wi-Fi Display LPCM contract used by AOSP's wifi-display
-source (design inspiration only — not an Android port). See
-omarchy-miracast/docs/aosp-wfd-audio-notes.md.
+Microsoft requires LPCM audio in MPEG-TS with stream_type=0x83 (WFD/WIDI LPCM)
+and a 4-byte WIDI PES header (0xA0 0x06 0x00 0x09) before PCM samples.
+GStreamer mpegtsmux hardcodes stream_type=0x8b (Blu-ray LPCM) and cannot
+be patched at runtime --- hence this pure-Python muxer.
 """
 
 from __future__ import annotations
@@ -23,38 +20,38 @@ from typing import Optional
 
 log = logging.getLogger("FluxCast.WFDLPCMMux")
 
-# MPEG-TS constants
+#MPEG-TS constants
 
 TS_PACKET_SIZE = 188
 TS_SYNC = 0x47
 
-# PIDs match AOSP TSPacketizer (see docs/aosp-wfd-architecture.md).
-# Video must be 0x1011 — putting H.264 on 0x1000 left sinks on "obtaining stream"
-# while RTP TX still looked healthy.
-PID_PAT = 0x0000
-PID_PMT = 0x0100
-PID_PCR = 0x1000  # dedicated PCR stream (AOSP kPID_PCR)
-PID_VID = 0x1011  # H.264 (AOSP video PIDStart)
-PID_AUD = 0x1100  # LPCM / AAC
+PID_PAT  = 0x0000
+PID_PMT  = 0x0100
+# WFD PMT lists PCR_PID apart from elementary streams: PCR is the program
+# clock reference (adaptation-only packets), video/audio are PES streams.
+# Assigned PIDs: PCR 0x1000, H.264 0x1011, LPCM 0x1100.
+PID_PCR  = 0x1000   # PCR
+PID_VID  = 0x1011   # H.264
+PID_AUD  = 0x1100   # LPCM
 
 STREAM_TYPE_H264 = 0x1B
-STREAM_TYPE_LPCM = 0x83  # WFD LPCM (NOT 0x8b Blu-ray)
+STREAM_TYPE_LPCM = 0x83   # WFD / WIDI LPCM (NOT 0x8b which is Blu-ray)
 
 PMT_PROG_NUM = 0x0001
 
-# WFD LPCM PES payload: 4-byte header + fixed PCM body.
-# 6 AUs × 80 stereo frames × 4 bytes/frame = 1920 bytes PCM.
-AUDIO_RATE = 48_000
+# Audio parameters (fixed for WFD LPCM)
+AUDIO_RATE     = 48_000
 AUDIO_CHANNELS = 2
-AUDIO_BITS = 16
+AUDIO_BITS     = 16
 LPCM_FRAMES_PER_AU = 80
 LPCM_AUS_PER_PES = 6
 LPCM_FRAME_BYTES = AUDIO_CHANNELS * (AUDIO_BITS // 8)  # 4
 LPCM_PCM_BYTES_PER_PES = LPCM_AUS_PER_PES * LPCM_FRAMES_PER_AU * LPCM_FRAME_BYTES
-# AOSP MediaSender passes numStuffingBytes=2 for audio PES headers.
 LPCM_PES_STUFFING = 2
 
-# Header byte3: quant=16-bit(0), rate=48kHz(2), channels=stereo(1) → 0x11
+# WFD LPCM sub-stream header (4 bytes) + fixed PCM body.
+# 6 AUs × 80 stereo frames × 4 bytes/frame = 1920 bytes PCM.
+# Header: 16-bit quantization, 48 kHz, stereo (2ch).
 WFD_LPCM_HEADER = bytes([
     0xA0,
     LPCM_AUS_PER_PES,
@@ -62,8 +59,7 @@ WFD_LPCM_HEADER = bytes([
     (0 << 6) | (2 << 3) | 1,
 ])
 
-# PMT ES descriptors (AOSP TSPacketizer::Track::finalize).
-# Constrained Baseline @ L3.1 — matches our wf-recorder encode flags.
+# PMT ES descriptors
 AVC_VIDEO_DESCRIPTOR = bytes([
     40, 4,       # tag, length
     0x42,        # profile_idc = Baseline
@@ -80,9 +76,9 @@ LPCM_ES_DESCRIPTOR = bytes([
 ])
 
 # RTP
-RTP_PT_MP2T  = 33  # RFC 2250 — MPEG-TS over RTP
-RTP_CLOCK_HZ = 90_000
-RTP_MAX_PAYLOAD = 1316  # 7 × 188 bytes
+RTP_PT_MP2T  = 33 # RFC 2250 — MPEG-TS over RTP
+RTP_CLOCK_HZ = 90_000 # 90 kHz clock
+RTP_MAX_PAYLOAD = 1316 # 7 × 188 bytes
 
 # PES stream IDs
 PES_SID_VIDEO = 0xE0
@@ -107,16 +103,15 @@ def _ts_packet(pid: int, payload: bytes, *,
                pusi: bool = False,
                continuity: int = 0,
                adaptation: Optional[bytes] = None) -> bytes:
-    """Build one 188-byte TS packet with correct adaptation stuffing.
-
-    Never pad unused bytes as payload — that corrupts PES/H.264. Short
-    packets must use an adaptation field filled with 0xFF stuffing.
     """
-    flags = 0x40 if pusi else 0x00  # payload_unit_start_indicator
+    Build one 188-byte TS packet.
+    If payload+adaptation < 184 bytes it is stuffed with 0xFF.
+    """
+    flags = 0x40 if pusi else 0x00   # payload_unit_start_indicator
     payload = bytes(payload)
 
     if adaptation is not None and not payload:
-        # PCR-only (or other adaptation-only): fill remaining with stuffing.
+        # STUFFING
         if len(adaptation) > 183:
             raise ValueError("adaptation too large for adaptation-only packet")
         adapt_field = bytes([183]) + adaptation + bytes(183 - len(adaptation))
@@ -178,7 +173,7 @@ def _build_pat(continuity: int = 0) -> bytes:
         0x00,                     # table_id = PAT
         0xB0, 0x0D,                # section_syntax=1, section_length=13
         0x00, 0x01,                # transport_stream_id = 1
-        0xC3,                      # version_number=1 (AOSP), current_next=1
+        0xC3,                      # version=1, current_next=1
         0x00,                      # section_number
         0x00,                      # last_section_number
         (PMT_PROG_NUM >> 8) & 0xFF,
@@ -196,7 +191,7 @@ def _build_pmt(continuity: int = 0) -> bytes:
     # Build PMT section body (before CRC)
     streams = bytearray()
 
-    # Video: H.264 + AVC descriptors (AOSP)
+    # Video: H.264
     vid_info = AVC_VIDEO_DESCRIPTOR + AVC_TIMING_HRD_DESCRIPTOR
     streams += bytes([
         STREAM_TYPE_H264,
@@ -207,7 +202,7 @@ def _build_pmt(continuity: int = 0) -> bytes:
     ])
     streams += vid_info
 
-    # Audio: WFD LPCM (stream_type=0x83) + LPCM descriptor
+    # Audio: WFD LPCM (stream_type=0x83)
     aud_info = LPCM_ES_DESCRIPTOR
     streams += bytes([
         STREAM_TYPE_LPCM,
@@ -227,7 +222,7 @@ def _build_pmt(continuity: int = 0) -> bytes:
         section_length & 0xFF,
         (PMT_PROG_NUM >> 8) & 0xFF,
         PMT_PROG_NUM & 0xFF,
-        0xC3,                      # version=1, current_next=1 (AOSP)
+        0xC3,                      # version=1, current_next=1
         0x00, 0x00,                # section/last_section
         0xE0 | ((PID_PCR >> 8) & 0x1F),
         PID_PCR & 0xFF,
@@ -258,7 +253,7 @@ def _pcr_adaptation(pcr_90k: int) -> bytes:
 
 
 def _pcr_packet(pcr_90k: int) -> bytes:
-    """Dedicated PCR TS packet on PID 0x1000 (AOSP EMIT_PCR). Continuity stays 0."""
+    """Dedicated PCR TS packet on PID 0x1000. Continuity stays 0."""
     return _ts_packet(
         PID_PCR,
         b"",
@@ -284,6 +279,7 @@ def _pes_header(stream_id: int, pts_90k: int,
         return bytes([b, b1, b2, b3, b4])
 
     pts_bytes = _encode_ts(pts_90k)
+    # Marker nibble: 0x20 = '0010' for PTS-only, 0x30 = '0011' for PTS+DTS.
     pts_flag  = 0x30 if has_dts else 0x20
     pts_bytes = bytes([pts_flag | pts_bytes[0]]) + pts_bytes[1:]
 
@@ -302,7 +298,7 @@ def _pes_header(stream_id: int, pts_90k: int,
         pes_packet_len = 0
 
     flags2 = 0xC0 if has_dts else 0x80
-    # flags1: marker '10' + data_alignment_indicator=1 (AOSP PES for AUs)
+    # flags1: marker '10' + data_alignment_indicator=1
     flags1 = 0x84
     hdr = struct.pack(">I", 0x00000100 | stream_id)
     hdr += struct.pack(">H", pes_packet_len)
@@ -410,7 +406,8 @@ class LPCMAudioPacker:
 # ─────────────────────────── Main muxer class ────────────────────────────────
 class WFDLPCMMuxer:
     """
-    Custom MPEG-TS muxer that produces stream_type=0x83 WFD LPCM audio.
+    Custom MPEG-TS muxer that produces stream_type=0x83 LPCM audio
+    required by the Microsoft Wireless Display Adapter.
 
     Call start() with GStreamer pipeline descriptions for video and audio.
     Both pipelines must end in appsink named 'sink'.
@@ -422,23 +419,44 @@ class WFDLPCMMuxer:
         dest_port: int,
         local_ip: str | None = None,
         local_port: int | None = None,
+        bind_iface: str | None = None,
     ):
         self._dest   = (dest_ip, dest_port)
+        self._bind_ip = local_ip
+        self._bind_port = int(local_port) if local_port else None
+        self._bind_iface = bind_iface
         self._sock   = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # Force RTP onto the P2P iface. Without this, after rebind packets can
+        # leave via STA wifi while Sender health still counts frames_sent —
+        # TV stays dark and p2p tx+ goes flat.
+        if self._bind_iface:
+            try:
+                self._sock.setsockopt(
+                    socket.SOL_SOCKET,
+                    socket.SO_BINDTODEVICE,
+                    self._bind_iface.encode("utf-8") + b"\0",
+                )
+            except OSError as exc:
+                log.warning(
+                    "SO_BINDTODEVICE(%s) failed (need CAP_NET_RAW?): %s",
+                    self._bind_iface,
+                    exc,
+                )
         # WFD RTSP advertises a fixed client_rtp_ports source port; sinks often
         # drop RTP that does not come from that port.
-        if local_port:
+        if self._bind_port:
             try:
-                self._sock.bind((local_ip or "0.0.0.0", int(local_port)))
+                self._sock.bind((self._bind_ip or "0.0.0.0", self._bind_port))
             except OSError as exc:
                 self._sock.close()
                 raise OSError(
-                    f"LPCM muxer could not bind RTP source port {local_port}: {exc}"
+                    f"LPCM muxer could not bind RTP source port {self._bind_port}: {exc}"
                 ) from exc
         self._rtp    = _RTPFramer()
         self._running = False
         self._audio_packer = LPCMAudioPacker()
+        self.udp_send_failures: int = 0
 
         # Continuity counters (mutable lists so helpers can mutate in-place)
         self._cc_pat = [0]
@@ -446,10 +464,9 @@ class WFDLPCMMuxer:
         self._cc_vid = [0]
         self._cc_aud = [0]
 
-        # Keep this tiny. A deep queue + "drop newest on Full" made the TV
-        # show keystrokes several characters behind (old frames kept forever).
+        # Video: maxsize=2; Full → drop-oldest in _on_new_video_sample.
         self._video_q: queue.Queue = queue.Queue(maxsize=2)
-        # Large audio queue: dropping PCM is what the ear hears as chop.
+        # Audio: maxsize=2000; Full → drop chunk in _on_sample (put_nowait).
         self._audio_q: queue.Queue = queue.Queue(maxsize=2000)
 
         self._video_pipeline = None
@@ -497,8 +514,7 @@ class WFDLPCMMuxer:
                 try:
                     self._video_q.put_nowait(frame)
                 except queue.Full:
-                    # Drop oldest, keep newest — otherwise the TV stays N
-                    # keystrokes behind once the queue has ever filled.
+                    # Drop oldest, then enqueue the new frame.
                     try:
                         self._video_q.get_nowait()
                     except queue.Empty:
@@ -527,7 +543,6 @@ class WFDLPCMMuxer:
         if sink is None:
             raise RuntimeError("Audio pipeline must contain appsink named 'sink'")
         sink.set_property("emit-signals", True)
-        # Prefer blocking over drop: dropped PCM = audible chop/distortion.
         sink.set_property("max-buffers", 32)
         sink.set_property("drop", False)
 
@@ -553,15 +568,61 @@ class WFDLPCMMuxer:
     def _ns_to_90k(self, ns: int) -> int:
         return int(ns * RTP_CLOCK_HZ / 1_000_000_000) & 0x1FFFFFFFF
 
-    def _send(self, ts_packets: list[bytes]) -> None:
+    def _revive_socket(self) -> None:
+        """Recreate the RTP UDP socket after EBADF / close races during rebind."""
+        import errno as _errno
+
+        old = self._sock
+        self._sock = None
+        try:
+            if old is not None:
+                old.close()
+        except OSError:
+            pass
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        iface = getattr(self, "_bind_iface", None)
+        if iface:
+            try:
+                sock.setsockopt(
+                    socket.SOL_SOCKET,
+                    socket.SO_BINDTODEVICE,
+                    iface.encode("utf-8") + b"\0",
+                )
+            except OSError as exc:
+                log.warning("SO_BINDTODEVICE revive(%s) failed: %s", iface, exc)
+        local_port = getattr(self, "_bind_port", None)
+        local_ip = getattr(self, "_bind_ip", None)
+        if local_port:
+            try:
+                sock.bind((local_ip or "0.0.0.0", int(local_port)))
+            except OSError as exc:
+                sock.close()
+                log.error("LPCM muxer socket revive bind failed: %s", exc)
+                return
+        self._sock = sock
+        log.warning("LPCM muxer RTP socket revived after send failure")
+
+    def _send(self, ts_packets: list[bytes]) -> bool:
+        """Send RTP. Returns False if the UDP socket is dead (caller should not
+        count the frame as delivered)."""
         if not ts_packets:
-            return
+            return True
+        if self._sock is None:
+            return False
         raw = b"".join(ts_packets)
+        ok = True
         for pkt in self._rtp.frame(raw):
             try:
                 self._sock.sendto(pkt, self._dest)
             except OSError as e:
                 log.warning("UDP send error: %s", e)
+                ok = False
+                # EBADF: stop() closed under us, or fd recycled mid-rebind.
+                if getattr(e, "errno", None) in (9, 1009):  # EBADF
+                    self._revive_socket()
+                break
+        return ok
 
     def _drain_audio_packets(self) -> list[bytes]:
         """Return TS packets for any complete LPCM access units."""
@@ -572,7 +633,7 @@ class WFDLPCMMuxer:
             except queue.Empty:
                 break
             for aud_payload, frame_index in self._audio_packer.feed(aud_data):
-                # Sample-clock PTS (AOSP-style steady timeline).
+                # Sample-clock PTS.
                 aud_pts_90k = (
                     (frame_index * RTP_CLOCK_HZ) // AUDIO_RATE + 9000
                 ) & 0x1FFFFFFFF
@@ -611,6 +672,11 @@ class WFDLPCMMuxer:
 
         try:
             while self._running:
+                # Manual gen-0 GC at a safe point between packets.
+                if frame_counter % 60 == 0 and frame_counter > 0:
+                    gc.collect(0)
+
+                # Wait for next video frame
                 have_video = False
                 vid_data = b""
                 vid_pts_ns = 0
@@ -620,12 +686,11 @@ class WFDLPCMMuxer:
                 except queue.Empty:
                     pass
 
+                # PCR: wall clock computed RIGHT NOW, epoch = first frame arrival
                 now = time.monotonic()
                 if wall_start is None:
-                    # Start timeline on first video so PCR/video stay aligned;
-                    # audio follows once the program has begun.
                     if not have_video:
-                        # Still consume PCM so the packer does not backlog.
+                        # Frame captured before the first video frame — discard
                         try:
                             while True:
                                 self._audio_q.get_nowait()
@@ -639,8 +704,10 @@ class WFDLPCMMuxer:
 
                 pcr_90k = int((now - wall_start) * RTP_CLOCK_HZ) & 0x1FFFFFFFF
                 if have_video:
+                    # PCR jitter: deviation from expected inter-frame interval
+                    frame_interval_ms = 1000.0 / 30.0   # assume 30 fps
                     actual_delta_ms = (now - prev_send_time) * 1000.0
-                    jitter_ms = abs(actual_delta_ms - (1000.0 / 30.0))
+                    jitter_ms = abs(actual_delta_ms - frame_interval_ms)
                     self.pcr_jitter_last_ms = jitter_ms
                     if jitter_ms > self.pcr_jitter_max_ms:
                         self.pcr_jitter_max_ms = jitter_ms
@@ -653,26 +720,33 @@ class WFDLPCMMuxer:
                     if pts_90k < pcr_90k:
                         pts_90k = (pcr_90k + 9000) & 0x1FFFFFFFF
 
-                    vid_out = self._maybe_psi(now, wall_start)
-                    vid_out += _packetize_pes(
+                    ts_out: list[bytes] = []
+
+                    # PAT + PMT
+                    ts_out += self._maybe_psi(now, wall_start)
+
+                    # Video PES
+                    ts_out += _packetize_pes(
                         PID_VID, PES_SID_VIDEO, pts_90k,
                         vid_data, self._cc_vid,
                     )
-                    self.frames_sent += 1
                     frame_counter += 1
-                    self._send(vid_out)
+                    if self._send(ts_out):
+                        self.frames_sent += 1
+                    else:
+                        self.udp_send_failures += 1
                 else:
-                    # Video gap: keep PCR alive and still emit audio (avoids chop).
+                    # PAT + PMT
                     psi = self._maybe_psi(now, wall_start)
                     if psi:
-                        self._send(psi)
+                        if not self._send(psi):
+                            self.udp_send_failures += 1
 
+                # Drain pending audio
                 aud_out = self._drain_audio_packets()
                 if aud_out:
-                    self._send(aud_out)
-
-                if frame_counter and frame_counter % 60 == 0:
-                    gc.collect(0)
+                    if not self._send(aud_out):
+                        self.udp_send_failures += 1
 
         finally:
             gc.enable()
@@ -702,42 +776,34 @@ class WFDLPCMMuxer:
 
         log.info("WFDLPCMMuxer started (video + audio pipelines running)")
 
-    def _stop_gst_pipeline(self, pipe) -> None:
-        if pipe is None:
-            return
-        try:
-            from gi.repository import Gst
-            pipe.set_state(Gst.State.NULL)
-            # Wait so streaming threads release fds/sockets before restart.
-            pipe.get_state(2 * Gst.SECOND)
-        except Exception:
-            pass
-
     def stop(self) -> None:
         self._running = False
 
-        self._stop_gst_pipeline(self._video_pipeline)
-        self._stop_gst_pipeline(self._audio_pipeline)
-        self._video_pipeline = None
-        self._audio_pipeline = None
+        try:
+            import gi
+            from gi.repository import Gst
+            if self._video_pipeline:
+                self._video_pipeline.set_state(Gst.State.NULL)
+            if self._audio_pipeline:
+                self._audio_pipeline.set_state(Gst.State.NULL)
+        except Exception:
+            pass
 
         if self._mux_thread:
             self._mux_thread.join(timeout=3.0)
-            self._mux_thread = None
+            if self._mux_thread.is_alive():
+                log.error(
+                    "WFDLPCMMuxer mux thread still alive after join; "
+                    "closing socket to unblock"
+                )
 
-        self._audio_packer.reset()
-        # Drain queues so a restart cannot replay stale PCM/video.
-        for q in (self._video_q, self._audio_q):
+        sock = self._sock
+        self._sock = None
+        if sock is not None:
             try:
-                while True:
-                    q.get_nowait()
-            except queue.Empty:
+                sock.close()
+            except OSError:
                 pass
-
-        try:
-            self._sock.close()
-        except OSError:
-            pass
         log.info("WFDLPCMMuxer stopped")
 
 
@@ -762,7 +828,9 @@ def make_video_pipeline(node_id: int, width: int, height: int,
 
 
 def make_audio_pipeline(node_id: int) -> str:
-    """S16BE 48 kHz stereo from PipeWire — WFD LPCM wants network-order PCM."""
+    """
+    Build a GStreamer pipeline string for S16BE 48kHz stereo capture via PipeWire.
+    """
     return (
         f"pipewiresrc target-object={node_id} ! "
         f"audioconvert ! "

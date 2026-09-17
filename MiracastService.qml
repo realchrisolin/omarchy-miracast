@@ -779,6 +779,17 @@ Item {
           var data = JSON.parse(String(text || "{}"))
           if (data.paused === true) return
           if (data.healthy === true) return
+          // TV already dark / air TX dead — Stop so the connected icon clears.
+          // ensure-capture would keep phase=streaming and look "still connected".
+          if (data.zombie === true) {
+            root.actionStatus = ""
+            root.lastError = "Cast ended — media stalled"
+            if (root.streaming || root.running)
+              root.stopCast()
+            else
+              root.refresh()
+            return
+          }
           if (ensureWatchdogProcess.running) return
           root.actionStatus = "Recovering capture…"
           ensureWatchdogProcess.command = [ctl, "ensure-capture", "2", "force"]
