@@ -172,7 +172,7 @@ Override in `~/.config/omarchy-miracast/settings.json` (merged with
 | `autoSwitchAudioOutput` | `true` | Panel: **Automatically switch audio output**. On: default sink → Miracast at PLAY (speakers held during connect). Off: leave the currently selected output; still create the Miracast sink for manual routing / capture. |
 | `extendRefresh` | `30` | Hyprland refresh for the Extend virtual output. Keep matched to stream fps (30) so capture does not outrun encode. |
 | `softwareCursors` | `true` | Force SW cursors so the pointer appears on the TV (HW cursor plane is not captured). |
-| `wfRecorderBin` | unset | Absolute path to a custom `wf-recorder` (e.g. ICC / PR #347). Empty = **PATH** stock. ICC preferred for perf; see [BUILD.md §7](BUILD.md) for Extend terminal typing lag. |
+| `wfRecorderBin` | unset | Absolute path to a custom `wf-recorder`. **Required for QVBR target hit** (build with `rc_min_rate` apply). Empty = PATH stock (undershoots QVBR to ~3 Mbps). ICC/PR #347 optional for capture pacing; see [BUILD.md §7](BUILD.md). |
 | `wfRecorderProto` | `auto` | `auto` / `icc` / `wlr`. `auto` upgrades to `icc` when a configured binary advertises ICC. Use `wlr` + stock binary if cast-head terminal keys feel buffered until the pointer moves. |
 | `wfRecorderDamage` | `"1"` | `"1"` = damage-aware (omit `wf-recorder -D`); `"0"` = continuous `-D`. Set by `scripts/recommend-cast-profile.py --apply` or manually. |
 | `captureEncode` | `dmabuf` | Render engine: `dmabuf` \| `vaapi` (GPU pipe) \| `cpu`. |
