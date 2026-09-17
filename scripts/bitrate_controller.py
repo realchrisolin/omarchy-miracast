@@ -160,7 +160,7 @@ def config_for_band(
 
 
 def desired_fill_mbps(kbps: int, capacity_mbps: Optional[float]) -> float:
-    """Air setpoint: min(encode target, 75% of MCS)."""
+    """Air setpoint: min(encode target, CAPACITY_FRAC × MCS)."""
     target = max(0.0, float(kbps) / 1000.0)
     if capacity_mbps is not None and capacity_mbps > 1.0:
         return min(target, float(capacity_mbps) * CAPACITY_FRAC)

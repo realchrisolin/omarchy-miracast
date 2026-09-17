@@ -162,11 +162,11 @@ Override in `~/.config/omarchy-miracast/settings.json` (merged with
 | `outputRes` | `1280x720` | Encoded size (fallback) |
 | `extendResolution` | `1280x720` | Extend virtual output size (fallback) |
 | `extendRefresh` | `30` | Preferred virtual output Hz (keep aligned with stream) |
-| `bitrate` | `8M` | Pipe-path / fallback bitrate; DMA path uses CQP (not this ceiling) |
+| `bitrate` | `8M` | Current encode target (QVBR/CBR). Under `encodeStrategy=smartview` ABR uses Samsung dig **2–14 Mbps** (init **8M**). |
 | `videoEncoder` | `auto` | `auto` → VAAPI, else NVENC, else QSV, else `libx264` |
 | *(env)* `FLUXCAST_WFD_CAPTURE_ENCODE` | `auto` (Omarchy) / `pipe` (upstream) | `auto`/`vaapi` = wf-recorder DMA-BUF encode (incl. scaled outputs); `pipe` = raw→ffmpeg hwupload |
 | *(env)* `FLUXCAST_WFD_DMABUF_ALLOW_SCALED` | allow (default) | `0`/`false` = force pipe when Hyprland scale ≠ 1 |
-| `encodeStrategy` | `smartview` | `smartview` = QVBR + BitrateController (DMA-BUF first, pipe on starve); `performance` = DMA-BUF CQP |
+| `encodeStrategy` | `smartview` | `smartview` = QVBR + BitrateController (Samsung 2/8/14M, QP 15–44; DMA-BUF via `prepare_dmabuf_settings`, coalesce SIGUSR1 applies); `performance` = DMA-BUF CQP |
 | `captureEncode` | `dmabuf` | RENDER ENGINE: `dmabuf` (GPU + DMA-BUF) / `vaapi` (GPU pipe) / `cpu` |
 | `audioEnabled` | `true` | Creates a PipeWire/Pulse **Miracast** null sink for capture. FluxCast captures **`miracast.monitor`**. LPCM-only TVs use WFD `stream_type=0x83`; keep the Miracast sink near **100%** or the TV sounds faded. See [BUILD.md §6](BUILD.md). |
 | `autoSwitchAudioOutput` | `true` | Panel: **Automatically switch audio output**. On: default sink → Miracast at PLAY (speakers held during connect). Off: leave the currently selected output; still create the Miracast sink for manual routing / capture. |

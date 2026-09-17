@@ -31,7 +31,7 @@ Uses those Samsung min/init/max/QP values. Enabled when
 |---------|------|
 | RTCP RR fraction lost | iw tx_failed / retry% |
 | NetworkStall | sender fps &lt; 28 / ABR stall |
-| MediaCodec live setBitrate | `set-bitrate-kbps` + SIGUSR1 restart (VAAPI limitation). **Coalesce** applies (`should_apply_encode`: Δqp≥2 or Δkbps≥15%, min 30s) so decide() stays hot without pausing every tick. DMA sticky kept on Smart View applies. |
+| MediaCodec live setBitrate | `set-bitrate-kbps` + SIGUSR1 restart (VAAPI limitation). **Coalesce** applies (`should_apply_encode`: Δqp≥2 or Δkbps≥15%, min ~45s). Sticky iw `loss:` is **not** urgent. QP-only demotes at min bitrate never restart. DMA sticky when pref=`dmabuf` (`prepare_dmabuf_settings`). |
 | CAC VBR | ffmpeg `h264_vaapi` **QVBR** + maxrate |
 | QP min/max | settings encodeQpMin/Max + vaapiQp mid |
 

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Encoding strategy: Smart View QVBR (default) vs Performance CQP.
+"""Encoding strategy: QVBR ABR (default) vs Performance CQP.
 
 Orthogonal to RENDER ENGINE (`captureEncode`) and PRESET QUALITY (`encodeProfile`).
 
-* ``smartview`` — QVBR + BitrateController ABR; prefer DMA-BUF, fall back to
-  VAAPI pipe if DMA BRC starves (Intel historically collapsed to ~0.5–3 Mbps).
+* ``smartview`` — QVBR + BitrateController (Samsung dig 2/8/14 Mbps, QP 15–44);
+  prefer DMA-BUF via ``prepare_dmabuf_settings``; pipe only on true starve
+  (air TX ≪ ~2.5 Mbps absolute).
 * ``performance`` — DMA-BUF + CQP; Best uses the QP ladder, not set-bitrate QVBR.
 """
 
