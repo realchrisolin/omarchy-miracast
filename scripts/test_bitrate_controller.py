@@ -90,11 +90,12 @@ class BitrateControllerTest(unittest.TestCase):
         c5 = bc.config_for_band(band_5ghz=True, width_mhz=20)
         c5w = bc.config_for_band(band_5ghz=True, width_mhz=80)
         self.assertGreater(c5.max_kbps, c24.max_kbps)
-        self.assertGreaterEqual(c5.max_kbps, 30_000)
+        self.assertGreaterEqual(c5.max_kbps, 50_000)
         self.assertGreater(c5w.max_kbps, c5.max_kbps)
-        # HT20 @ 72.2 MCS → clamp ≈ half ≈ 36 Mbps, config max 32M wins.
+        self.assertAlmostEqual(bc.CAPACITY_FRAC, 0.75)
+        # HT20 @ 72.2 MCS → clamp ≈ 75% ≈ 54 Mbps (below config max 55M).
         self.assertEqual(
-            bc._clamp_kbps(50_000, c5, 72.2),
+            bc._clamp_kbps(80_000, c5, 72.2),
             min(c5.max_kbps, int(72.2 * 1000 * bc.CAPACITY_FRAC)),
         )
 
