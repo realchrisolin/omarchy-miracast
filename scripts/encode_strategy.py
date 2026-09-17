@@ -74,7 +74,8 @@ def prepare_dmabuf_settings(settings: dict[str, Any]) -> dict[str, Any]:
         settings.setdefault("encodeQpMin", 15)
         settings.setdefault("encodeQpMax", 44)
         settings["vaapiAsyncDepth"] = 1
-        settings["vbvMultiplier"] = "1.0"
+        # QVBR needs ~2s VBV or Intel undershoots to ~3 Mbps despite b=.
+        settings["vbvMultiplier"] = "2.0"
     return {
         "encodeStrategy": strat,
         "captureEncode": settings.get("captureEncode"),
@@ -113,12 +114,13 @@ def apply_to_settings(
         if q < 3 or q > 4:
             settings["vaapiQuality"] = "3"
         if settings.get("encodeQpMin") is None:
-            settings["encodeQpMin"] = 16
+            settings["encodeQpMin"] = 15
         if settings.get("encodeQpMax") is None:
-            settings["encodeQpMax"] = 40
+            settings["encodeQpMax"] = 44
         if settings.get("vaapiQp") is None:
             settings["vaapiQp"] = 22
-        settings["vbvMultiplier"] = "1.0"
+        # QVBR needs ~2s VBV or Intel undershoots to ~3 Mbps despite b=.
+        settings["vbvMultiplier"] = "2.0"
         if retarget_engine and not settings.get("encodeStrategyPinnedEngine"):
             # Attempt DMA-BUF first; starve watchdog may flip to vaapi.
             settings["captureEncode"] = "dmabuf"
@@ -126,6 +128,7 @@ def apply_to_settings(
     else:
         # Performance: sharp CQP on DMA-BUF, no QVBR bitrate churn.
         settings["vaapiRcMode"] = "CQP"
+        settings["vbvMultiplier"] = "0.5"
         if retarget_engine and not settings.get("encodeStrategyPinnedEngine"):
             settings["captureEncode"] = "dmabuf"
         settings["encodeStrategyAbr"] = "cqp_ladder"

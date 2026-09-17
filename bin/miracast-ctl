@@ -443,8 +443,9 @@ defaults = {
     "vaapiQuality": "5",
     # CQP I-frame qfactor (1.0 = same as P; >1 = coarser I → lower IDR spikes).
     "vaapiIQfactor": "1.0",
-    # FLUXCAST_WFD_VBV_MULTIPLIER — CBR VBV as fraction of bitrate (~seconds).
-    "vbvMultiplier": "0.5",
+    # FLUXCAST_WFD_VBV_MULTIPLIER — VBV as fraction of bitrate (~seconds).
+    # smartview/QVBR forces 2.0; performance/CQP keeps 0.5.
+    "vbvMultiplier": "2.0",
     # Post-PLAY CSA to a quiet channel (MCC). Default false = SCC: radio A/B
     # showed 0 retry spikes on SCC vs 10 on MCC bw20.
     "p2pQuietCsa": False,
@@ -3699,6 +3700,7 @@ if profile == "best" and strategy == "smartview" and cap in ("vaapi", "dmabuf", 
         qual = "3"
     # QVBR needs ~2s VBV or Intel BRC undershoots to ~3 Mbps despite b=.
     vbv = "2.0"
+    settings["vbvMultiplier"] = vbv
     # QP bounds (Samsung minQP/maxQP) — exported as qmin/qmax so bitrate drives.
     qp = str(settings.get("vaapiQp") if settings.get("vaapiQp") is not None else "22").strip() or "22"
     try:
