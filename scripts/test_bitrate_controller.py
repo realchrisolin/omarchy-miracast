@@ -82,13 +82,21 @@ class BitrateControllerTest(unittest.TestCase):
             cfg,
             cooldown_ok=True,
         )
-        # max ≤ 45% of 20 Mbps = 9 Mbps
-        self.assertLessEqual(d.kbps, 9000)
+        # max ≤ CAPACITY_FRAC of 20 Mbps (0.50 → 10 Mbps)
+        self.assertLessEqual(d.kbps, int(20.0 * 1000 * bc.CAPACITY_FRAC))
 
     def test_band_5ghz_higher_ceiling(self):
         c24 = bc.config_for_band(band_5ghz=False)
-        c5 = bc.config_for_band(band_5ghz=True)
+        c5 = bc.config_for_band(band_5ghz=True, width_mhz=20)
+        c5w = bc.config_for_band(band_5ghz=True, width_mhz=80)
         self.assertGreater(c5.max_kbps, c24.max_kbps)
+        self.assertGreaterEqual(c5.max_kbps, 30_000)
+        self.assertGreater(c5w.max_kbps, c5.max_kbps)
+        # HT20 @ 72.2 MCS → clamp ≈ half ≈ 36 Mbps, config max 32M wins.
+        self.assertEqual(
+            bc._clamp_kbps(50_000, c5, 72.2),
+            min(c5.max_kbps, int(72.2 * 1000 * bc.CAPACITY_FRAC)),
+        )
 
     def test_kbps_roundtrip(self):
         self.assertEqual(bc.ffmpeg_to_kbps("10M"), 10000)

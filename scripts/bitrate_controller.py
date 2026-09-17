@@ -25,11 +25,11 @@ from dataclasses import dataclass
 from typing import Optional
 
 
-# Defaults tuned for Miracast 1080p (Smart View used 1920×1080@60 on 5 GHz).
+# Defaults tuned for Miracast 1080p60 on 5 GHz HT20 (~72 Mbps MCS).
 # Samsung strings: updateConfiguration min/max/init + minQP/maxQP.
-DEFAULT_INIT_KBPS = 10_000
+DEFAULT_INIT_KBPS = 20_000
 DEFAULT_MIN_KBPS = 1_500
-DEFAULT_MAX_KBPS = 18_000
+DEFAULT_MAX_KBPS = 32_000
 DEFAULT_QP_MIN = 18
 DEFAULT_QP_MAX = 42
 
@@ -41,6 +41,9 @@ LOSS_FRACTION_CLEAR = 0.005  # <0.5% and healthy → may increase
 DECREASE_FACTOR = 0.80
 INCREASE_FACTOR = 1.10
 STALL_DECREASE_FACTOR = 0.65  # NetworkStall path is more aggressive
+
+# Encode target vs iw MCS capacity — ~half the PHY leaves room for Wi‑Fi overhead.
+CAPACITY_FRAC = 0.50
 
 
 @dataclass
@@ -97,20 +100,21 @@ def config_for_band(
 ) -> BitrateConfig:
     """Samsung BitrateController is constructed with WLAN_BAND."""
     if band_5ghz:
-        # Smart View live session was 5 GHz / 1080p60 — allow higher ceiling.
+        # 5 GHz HT20 MCS≈72 → target up to ~half (~32–36 Mbps). Wider GO higher.
+        wide = (width_mhz or 20) >= 40
         return BitrateConfig(
-            init_kbps=10_000,
+            init_kbps=22_000 if wide else 20_000,
             min_kbps=2_000,
-            max_kbps=20_000 if (width_mhz or 20) >= 40 else 15_000,
+            max_kbps=40_000 if wide else 32_000,
             qp_min=16,
             qp_max=40,
             rc_mode="QVBR",
         )
-    # 2.4 GHz / 20 MHz MCC — conservative max (corruption line ~20 Mbps class).
+    # 2.4 GHz / 20 MHz MCC — keep a lower ceiling (interference / MCC tax).
     return BitrateConfig(
         init_kbps=12_000,
         min_kbps=1_500,
-        max_kbps=15_000,
+        max_kbps=18_000,
         qp_min=18,
         qp_max=42,
         rc_mode="QVBR",
@@ -120,8 +124,8 @@ def config_for_band(
 def _clamp_kbps(kbps: int, cfg: BitrateConfig, capacity_mbps: Optional[float]) -> int:
     lo, hi = int(cfg.min_kbps), int(cfg.max_kbps)
     if capacity_mbps is not None and capacity_mbps > 1.0:
-        # Leave headroom on the air (Samsung also respects network status).
-        hi = min(hi, int(capacity_mbps * 1000 * 0.45))
+        # Cap encode near half of iw MCS (Wi‑Fi/RTP overhead + ABR headroom).
+        hi = min(hi, int(capacity_mbps * 1000 * CAPACITY_FRAC))
         hi = max(hi, lo)
     return max(lo, min(hi, int(kbps)))
 
