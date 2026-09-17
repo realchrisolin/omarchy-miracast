@@ -219,7 +219,13 @@ def decide(
     loss = _estimate_loss_fraction(sig)
     stall = _is_stall(sig)
     fill = desired_fill_mbps(kbps, sig.link_capacity_mbps)
+    # Sysfs / cumulative counters can spike across rebinds (e.g. 126 Mbps on a
+    # 72 Mbps MCS). Cap air to MCS before fill_high / qp_fill decisions.
     air = sig.air_tx_mbps
+    if air is not None and sig.link_capacity_mbps is not None:
+        cap = float(sig.link_capacity_mbps)
+        if cap > 1.0:
+            air = min(float(air), cap)
 
     if not cooldown_ok:
         return _decision(

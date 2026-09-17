@@ -156,6 +156,35 @@ class BitrateControllerTest(unittest.TestCase):
         )
         self.assertNotIn("fill_high", d.reason)
 
+    def test_air_clamped_to_mcs_before_fill_high(self):
+        # Impossible 200 Mbps glitch must behave like air==MCS after clamp.
+        cfg = bc.config_for_band(band_5ghz=True, width_mhz=20)
+        st = bc.BitrateState(kbps=54000, qp=21, good_streak=3)
+        d_hi = bc.decide(
+            st,
+            bc.LinkSignals(
+                retry_percent=0.0,
+                video_fps=60.0,
+                link_capacity_mbps=72.2,
+                air_tx_mbps=200.0,
+            ),
+            cfg,
+            cooldown_ok=True,
+        )
+        d_cap = bc.decide(
+            st,
+            bc.LinkSignals(
+                retry_percent=0.0,
+                video_fps=60.0,
+                link_capacity_mbps=72.2,
+                air_tx_mbps=72.2,
+            ),
+            cfg,
+            cooldown_ok=True,
+        )
+        self.assertEqual(d_hi.reason, d_cap.reason)
+        self.assertEqual(d_hi.qp, d_cap.qp)
+
 
 if __name__ == "__main__":
     unittest.main()
