@@ -3654,8 +3654,13 @@ if profile == "best" and strategy == "smartview" and cap in ("vaapi", "dmabuf", 
     rc = str(settings.get("vaapiRcMode") or "QVBR").strip().upper() or "QVBR"
     if rc not in ("QVBR", "CBR", "VBR"):
         rc = "QVBR"
-    async_d = "1" if cap == "vaapi" else async_d
-    if int(qual) < 3 and cap == "vaapi":
+    async_d = "1" if cap == "vaapi" else "1"
+    # quality 1–2 can hang the pipe; quality ≥5 starves DMA-BUF QVBR bits.
+    try:
+        qi = int(qual)
+    except ValueError:
+        qi = 3
+    if qi < 3 or qi > 4:
         qual = "3"
     vbv = "1.0"
     # QP bounds (Samsung updateConfiguration minQP/maxQP) — informational for CQP/QVBR.
@@ -3707,6 +3712,11 @@ if dmg.lower() in ("0", "false", "no", "off"):
     lines.append("FLUXCAST_WFD_WF_RECORDER_DAMAGE=0")
 else:
     lines.append("FLUXCAST_WFD_WF_RECORDER_DAMAGE=1")
+# Smart View + DMA-BUF: keep retrying DMA across SIGUSR1 encode rebinds.
+if strategy == "smartview" and cap == "dmabuf":
+    lines.append("FLUXCAST_WFD_DMABUF_STICKY=1")
+else:
+    lines.append("FLUXCAST_WFD_DMABUF_STICKY=0")
 
 env_path.write_text("\n".join(lines) + "\n")
 print(f"rc={rc} bitrate={stream_br} peak={br} quality={qual} encode={cap} damage={dmg}")

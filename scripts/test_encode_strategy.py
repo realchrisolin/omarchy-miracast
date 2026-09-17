@@ -54,7 +54,7 @@ class EncodeStrategyTest(unittest.TestCase):
                 capture_path="dmabuf",
                 rc_mode="QVBR",
                 strategy="smartview",
-                air_tx_mbps=2.0,
+                air_tx_mbps=1.0,
                 target_mbps=45.0,
                 video_fps=60.0,
                 streak=streak,
@@ -65,13 +65,28 @@ class EncodeStrategyTest(unittest.TestCase):
             capture_path="dmabuf",
             rc_mode="QVBR",
             strategy="smartview",
-            air_tx_mbps=2.0,
+            air_tx_mbps=1.0,
             target_mbps=45.0,
             video_fps=60.0,
             streak=streak,
         )
         self.assertTrue(hit)
         self.assertIn("starve", reason)
+
+    def test_quiet_qvbr_not_starving(self):
+        # Healthy QVBR on quiet UI ~4–8 Mbps must not trip fallback.
+        hit, streak, reason = es.dmabuf_qvbr_starving(
+            capture_path="dmabuf",
+            rc_mode="QVBR",
+            strategy="smartview",
+            air_tx_mbps=6.0,
+            target_mbps=45.0,
+            video_fps=60.0,
+            streak=2,
+        )
+        self.assertFalse(hit)
+        self.assertEqual(streak, 0)
+        self.assertEqual(reason, "ok")
 
     def test_starve_inactive_on_performance_or_pipe(self):
         hit, streak, _ = es.dmabuf_qvbr_starving(

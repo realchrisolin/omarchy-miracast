@@ -698,6 +698,19 @@ def main(argv: list[str] | None = None) -> int:
         if zero_tx_streak >= max(1, args.zero_tx_stop_ticks):
             mbps_s = f"{mbps:.2f}" if mbps is not None else "?"
             if time.time() < capture_grace_until:
+                # Do NOT restart-capture during grace when fps is still unknown
+                # (Sender health not logged yet). That SIGUSR1 made FluxCast
+                # abandon DMA-BUF for pipe before DMA QVBR could settle.
+                if vfps is None:
+                    _log(
+                        cast_log,
+                        f"TX≈0 for {zero_tx_streak} ticks (mbps={mbps_s}) during "
+                        f"capture grace with fps=? — wait for Sender health "
+                        f"(not restarting; protects DMA-BUF QVBR)",
+                    )
+                    zero_tx_streak = 0
+                    stall_streak = 0
+                    continue
                 _log(
                     cast_log,
                     f"TX≈0 for {zero_tx_streak} ticks (mbps={mbps_s}) during "
@@ -725,10 +738,10 @@ def main(argv: list[str] | None = None) -> int:
                     f"(video healthy — AOSP would not restart)",
                 )
                 stall_streak = 0
-            # Hard TX≈0 is handled above. Soft stalls during grace: don't restart.
-            elif time.time() < capture_grace_until and not (
-                mbps is not None and mbps < 0.15
-            ):
+            # During capture grace: never restart on unknown fps (DMA-BUF QVBR
+            # settle). Soft stalls also wait. Hard TX≈0 with known-dead fps
+            # still goes through zero_tx_streak above.
+            elif time.time() < capture_grace_until:
                 _log(
                     cast_log,
                     f"stall TX={mbps:.2f}Mbps fps={fps_s} for {stall_streak} ticks "

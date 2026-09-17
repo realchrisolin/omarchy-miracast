@@ -15,9 +15,11 @@ from typing import Any, Optional
 STRATEGIES = ("smartview", "performance")
 DEFAULT_STRATEGY = "smartview"
 
-# Starve detector: air TX << target while video is healthy.
+# Starve detector: true Intel DMA BRC death is ~0.5–3 Mbps absolute.
+# Do NOT use "% of maxrate" — QVBR on quiet 1080p60 UI often sits at 4–8 Mbps
+# with qp≈22 even when maxrate is 45M (pipe and DMA match).
 STARVE_TARGET_MIN_MBPS = 8.0
-STARVE_FRAC = 0.25
+STARVE_ABS_MBPS = 2.5
 STARVE_TICKS = 3
 
 
@@ -68,11 +70,13 @@ def apply_to_settings(
     if strat == "smartview":
         settings["vaapiRcMode"] = "QVBR"
         settings["vaapiAsyncDepth"] = 1
+        # Pipe hang floor is quality≥3; DMA-BUF QVBR also needs a low quality
+        # index (faster=higher starves bits — quality=7 delivered ~4 Mbps).
         try:
             q = int(str(settings.get("vaapiQuality") or "3"))
         except ValueError:
             q = 3
-        if q < 3:
+        if q < 3 or q > 4:
             settings["vaapiQuality"] = "3"
         if settings.get("encodeQpMin") is None:
             settings["encodeQpMin"] = 16
@@ -129,14 +133,13 @@ def dmabuf_qvbr_starving(
     # Require known healthy fps so quiet UI / rebind does not false-trigger.
     if video_fps is None or not (28.0 <= float(video_fps) <= 120.0):
         return False, 0, "fps_unknown"
-    threshold = float(target_mbps) * STARVE_FRAC
-    if float(air_tx_mbps) < threshold:
+    if float(air_tx_mbps) < STARVE_ABS_MBPS:
         new_streak = int(streak) + 1
         if new_streak >= STARVE_TICKS:
             return (
                 True,
                 new_streak,
-                f"starve:{air_tx_mbps:.2f}<{STARVE_FRAC:.0%}×{target_mbps:.1f}",
+                f"starve:{air_tx_mbps:.2f}<{STARVE_ABS_MBPS}abs(target={target_mbps:.1f})",
             )
         return False, new_streak, f"streak:{new_streak}/{STARVE_TICKS}"
     return False, 0, "ok"
