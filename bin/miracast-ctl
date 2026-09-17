@@ -428,6 +428,13 @@ defaults = {
     "vaapiGop": 30,
     # desktop | movie — see apply_cast_preset / set-cast-preset.
     "castPreset": "desktop",
+    # Encoding strategy (orthogonal to RENDER ENGINE / PRESET QUALITY):
+    # smartview = QVBR + BitrateController (try DMA-BUF, fall back to pipe on starve);
+    # performance = DMA-BUF + CQP (Best uses QP ladder, no QVBR bitrate churn).
+    "encodeStrategy": "smartview",
+    "encodeStrategyFallback": "",
+    "encodeStrategyAbr": "sv",
+    "encodeStrategyPinnedEngine": False,
     # CQP | CBR | VBR — FluxCast FLUXCAST_WFD_VAAPI_RC
     "vaapiRcMode": "CQP",
     # CBR/VBR target (e.g. 12M); ignored for CQP.
@@ -573,6 +580,94 @@ except Exception as exc:
 path.write_text(json.dumps(data, separators=(",", ":")) + "\n")
 print(json.dumps({"ok": True, **applied}, separators=(",", ":")))
 PY
+}
+
+# apply_encode_strategy smartview|performance
+apply_encode_strategy() {
+  local strategy="${1:-}"
+  python3 - "$SETTINGS_FILE" "$PLUGIN_DIR/scripts/encode_strategy.py" "$strategy" <<'PY'
+import importlib.util, json, sys
+from pathlib import Path
+
+path, mod_path = Path(sys.argv[1]), Path(sys.argv[2])
+strategy = (sys.argv[3] or "").strip()
+spec = importlib.util.spec_from_file_location("encode_strategy", mod_path)
+mod = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(mod)
+try:
+    data = json.loads(path.read_text())
+except Exception:
+    data = {}
+if not isinstance(data, dict):
+    data = {}
+try:
+    applied = mod.apply_to_settings(data, strategy)
+except Exception as exc:
+    print(json.dumps({"ok": False, "error": str(exc)}, separators=(",", ":")))
+    raise SystemExit(1)
+path.write_text(json.dumps(data, indent=2) + "\n")
+print(json.dumps({"ok": True, **applied}, separators=(",", ":")))
+PY
+}
+
+cmd_set_encode_strategy() {
+  local strategy="${1:-}"
+  [[ -n "$strategy" ]] || {
+    echo '{"ok":false,"error":"usage: set-encode-strategy smartview|performance"}'
+    return 1
+  }
+  local out
+  out="$(apply_encode_strategy "$strategy")" || { echo "$out"; return 1; }
+  # Re-apply current quality tier so CQP/QVBR knobs match the strategy.
+  local band5=0
+  if python3 -c 'import json,sys
+from pathlib import Path
+st=json.loads(Path.home().joinpath(".local/state/omarchy-miracast/status.json").read_text()) if Path.home().joinpath(".local/state/omarchy-miracast/status.json").is_file() else {}
+print("1" if float(st.get("p2pFreqMHz") or st.get("staFreqMHz") or 0)>=5000 else "0")
+' 2>/dev/null | grep -q 1; then
+    band5=1
+  fi
+  apply_encode_profile "" "" "" "$band5" >/dev/null || true
+  # If Best + smartview, seed a sensible QVBR target without forcing performance off.
+  if python3 -c 'import json,sys
+from pathlib import Path
+d=json.loads(Path(sys.argv[1]).read_text())
+print("1" if str(d.get("encodeStrategy") or "")=="smartview" and str(d.get("encodeProfile") or "").lower()=="best" else "0")
+' "$SETTINGS_FILE" 2>/dev/null | grep -q 1; then
+    python3 - "$SETTINGS_FILE" <<'PY' || true
+import json, re
+from pathlib import Path
+p = Path(__import__("sys").argv[1])
+d = json.loads(p.read_text())
+d["vaapiRcMode"] = "QVBR"
+d.setdefault("vaapiQp", 22)
+d.setdefault("encodeQpMin", 16)
+d.setdefault("encodeQpMax", 40)
+br = str(d.get("vaapiBitrate") or d.get("bitrate") or "20M")
+d["bitrate"] = br
+d["vaapiBitrate"] = br
+m = re.match(r"^\s*([0-9]*\.?[0-9]+)\s*([KkMm])?", br)
+if m:
+    mbps = float(m.group(1))
+    if (m.group(2) or "M").upper() == "K":
+        mbps /= 1000.0
+    d["encodeWfdBitrateMbps"] = mbps
+    d["encodeCongestionBitrateMbps"] = mbps
+p.write_text(json.dumps(d, indent=2) + "\n")
+PY
+  fi
+  local phase restarted=false
+  phase="$(python3 -c 'import json;from pathlib import Path;print(json.loads(Path.home().joinpath(".local/state/omarchy-miracast/status.json").read_text()).get("phase",""))' 2>/dev/null || true)"
+  write_encode_env_from_settings >/dev/null || true
+  if [[ "$phase" == "streaming" || "$phase" == "rtsp" ]]; then
+    local info
+    info="$(restart_extend_capture 2>>"$LOG_DIR/cast.log" || true)"
+    [[ "$info" == *"restarted=true"* ]] && restarted=true
+  fi
+  echo "$(date -Iseconds) [miracast-ctl] set-encode-strategy $out restarted=$restarted" >>"$LOG_DIR/cast.log"
+  python3 -c 'import json,sys; d=json.loads(sys.argv[1]); d["captureRestarted"]=sys.argv[2]=="true"; print(json.dumps(d,separators=(",",":")))' \
+    "$out" "$restarted"
 }
 
 cmd_set_cast_preset() {
@@ -3552,9 +3647,10 @@ def _fmt(mbps: float) -> str:
         return f"{mbps:.0f}M"
     return f"{mbps:.1f}M"
 
-# Smart View / secmm path: QVBR (CAC-in-VBR) with hard maxrate = target.
-# BitrateController owns min/init/max; encode.env carries the current target.
-if profile == "best" and cap in ("vaapi", "dmabuf", "cpu"):
+strategy = str(settings.get("encodeStrategy") or "smartview").strip().lower() or "smartview"
+# Smart View strategy + Best: QVBR (CAC-in-VBR) with hard maxrate = target.
+# Performance strategy keeps CQP even when encodeProfile=best (QP ladder ABR).
+if profile == "best" and strategy == "smartview" and cap in ("vaapi", "dmabuf", "cpu"):
     rc = str(settings.get("vaapiRcMode") or "QVBR").strip().upper() or "QVBR"
     if rc not in ("QVBR", "CBR", "VBR"):
         rc = "QVBR"
@@ -3573,14 +3669,18 @@ if profile == "best" and cap in ("vaapi", "dmabuf", "cpu"):
         try:
             ceil = float(settings.get("encodeCongestionBitrateMbps"))
         except (TypeError, ValueError):
-            ceil = 10.0
+            ceil = 20.0
     elif explicit is not None and str(explicit).strip() != "":
         ceil = float(explicit)
     elif link > 1.0:
-        ceil = max(2.0, min(15.0, link * 0.35))
+        # Align with bitrate_controller CAPACITY_FRAC (75% of MCS).
+        ceil = max(2.0, min(55.0, link * 0.75))
     else:
-        ceil = 10.0  # Smart View–class 1080p init
+        ceil = 20.0  # Smart View–class 1080p60 init
     br = stream_br = _fmt(ceil)
+elif profile == "best" and strategy == "performance":
+    rc = "CQP"
+    # Keep qp/quality from settings / encode_quality_presets.
 
 lines = [
     f"FLUXCAST_WFD_ENCODER={enc}",
@@ -3650,6 +3750,16 @@ except OSError:
     except Exception:
         pref = "dmabuf"
 data["captureEncode"] = pref
+# Encoding strategy (+ sticky DMA→pipe starve fallback).
+try:
+    s0 = json.load(open(settings_path))
+except Exception:
+    s0 = {}
+if isinstance(s0, dict):
+    data["encodeStrategy"] = str(s0.get("encodeStrategy") or "smartview")
+    data["encodeStrategyFallback"] = str(s0.get("encodeStrategyFallback") or "")
+    data["encodeStrategyAbr"] = str(s0.get("encodeStrategyAbr") or "")
+    data["encodeStrategyPinnedEngine"] = bool(s0.get("encodeStrategyPinnedEngine"))
 # Card-reported GPU name for RENDER ENGINE pill subtitles.
 try:
     import subprocess
@@ -3922,6 +4032,18 @@ cmd_set_capture_encode() {
       return 1
       ;;
   esac
+  # Manual RENDER ENGINE pick pins the engine so strategy apply won't retarget it.
+  python3 - "$SETTINGS_FILE" "$value" <<'PY' || true
+import json, sys
+from pathlib import Path
+p, eng = Path(sys.argv[1]), sys.argv[2]
+d = json.loads(p.read_text()) if p.is_file() else {}
+if not isinstance(d, dict):
+    d = {}
+d["captureEncode"] = eng
+d["encodeStrategyPinnedEngine"] = True
+p.write_text(json.dumps(d, indent=2) + "\n")
+PY
   # Retarget encodeProfile knobs for the new engine (tier label stays).
   local profile_out=""
   profile_out="$(apply_encode_profile "" "$value")" || true
@@ -5982,6 +6104,7 @@ Commands:
   gpu-info                            # JSON: card-reported GPU name + encode capabilities
   set-quality best|veryhigh|high|medium|low  # QUALITY tier per engine; alias: set-encode-profile
   set-quality-effective step:N|N|veryhigh|high|medium|low  # Best (Dynamic) fine step
+  set-encode-strategy smartview|performance  # Smart View QVBR (default) vs DMA-BUF CQP
   set-cast-preset desktop|movie       # content hint: damage-aware vs continuous -D
   list-p2p-radios                 # Wi-Fi ifaces for Miracast P2P
   set-p2p-wifi-interface auto|IFACE
@@ -6012,6 +6135,16 @@ cmd_set_bitrate_kbps() {
   local qp="${2:-}"
   local qp_min="${3:-}"
   local qp_max="${4:-}"
+  # Performance strategy owns CQP — refuse QVBR bitrate churn (switch strategy first).
+  local strat
+  strat="$(python3 -c 'import json,sys;from pathlib import Path
+try: print(str(json.loads(Path(sys.argv[1]).read_text()).get("encodeStrategy") or "smartview").lower())
+except Exception: print("smartview")
+' "$SETTINGS_FILE" 2>/dev/null || echo smartview)"
+  if [[ "$strat" == "performance" ]]; then
+    emit '{"ok":false,"error":"set-bitrate-kbps requires encodeStrategy=smartview"}'
+    return 1
+  fi
   local out restarted=false
   out="$(
     python3 - "$SETTINGS_FILE" "$kbps" "$qp" "$qp_min" "$qp_max" <<'PY'
@@ -6028,6 +6161,8 @@ def fmt(kbps: int) -> str:
     return f"{mbps:.0f}M" if mbps >= 10 else f"{mbps:.1f}M"
 
 br = fmt(kbps)
+data["encodeStrategy"] = "smartview"
+data["encodeStrategyAbr"] = "sv"
 data["encodeProfile"] = data.get("encodeProfile") or "best"
 data["vaapiRcMode"] = "QVBR"
 data["bitrate"] = br
@@ -6289,6 +6424,7 @@ main() {
     gpu-info|gpu_info) cmd_gpu_info "$@" ;;
     set-quality|set_quality|set-encode-profile|set_encode_profile) cmd_set_encode_profile "$@" ;;
     set-quality-effective|set_quality_effective) cmd_set_encode_effective "$@" ;;
+    set-encode-strategy|set_encode_strategy) cmd_set_encode_strategy "$@" ;;
     congestion-cut|congestion_cut) cmd_congestion_cut "$@" ;;
     set-bitrate-kbps|set_bitrate_kbps) cmd_set_bitrate_kbps "$@" ;;
     set-cast-preset|set_cast_preset) cmd_set_cast_preset "$@" ;;

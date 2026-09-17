@@ -489,6 +489,8 @@ def main(argv: list[str] | None = None) -> int:
     dyn_state = None  # dynamic_encode.LadderState (fine step index)
     sv_bc_state = None  # bitrate_controller.BitrateState (Smart View–style)
     bc_mod = None  # bitrate_controller module (load once)
+    es_mod = None  # encode_strategy (DMA-BUF QVBR starve → pipe)
+    starve_streak = 0
     try:
         bc_path = plugin / "scripts" / "bitrate_controller.py"
         bspec = importlib.util.spec_from_file_location(
@@ -506,6 +508,20 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         _log(cast_log, f"bitrate_controller load error: {exc}")
         bc_mod = None
+    try:
+        es_path = plugin / "scripts" / "encode_strategy.py"
+        espec = importlib.util.spec_from_file_location("encode_strategy", es_path)
+        if espec is not None and espec.loader is not None:
+            es_mod = importlib.util.module_from_spec(espec)
+            import sys as _sys
+
+            _sys.modules["encode_strategy"] = es_mod
+            espec.loader.exec_module(es_mod)
+        else:
+            es_mod = None
+    except Exception as exc:
+        _log(cast_log, f"encode_strategy load error: {exc}")
+        es_mod = None
     last_dyn_change = 0.0
     abr_ready_at = 0.0  # wall time when ABR may first apply changes
     # Also suppress stall/audio restart-capture during the same settle window —
@@ -895,6 +911,7 @@ def main(argv: list[str] | None = None) -> int:
                 band_5ghz = False
                 width_mhz = _go_width_mhz(go) if go else None
                 signal_dbm = _station_signal_dbm(go) if go else None
+                st_live: dict = {}
                 try:
                     st_live = (
                         json.loads(status_path.read_text())
@@ -922,7 +939,12 @@ def main(argv: list[str] | None = None) -> int:
                 # instead of walking the old CQP QP ladder / inventing headroom %.
                 # Samsung Smart View BitrateController (libremotedisplay_wfd.so):
                 # loss/stall → decreaseUDPBitrate; no-loss streak → increase.
-                use_sv_bc = str(settings.get("encodeProfile") or "").lower() == "best"
+                # Smart View ABR only when strategy=smartview (Performance uses CQP ladder).
+                _strat = str(settings.get("encodeStrategy") or "smartview").strip().lower()
+                use_sv_bc = (
+                    str(settings.get("encodeProfile") or "").lower() == "best"
+                    and _strat == "smartview"
+                )
                 if abr_ready_at <= 0.0:
                     abr_ready_at = now + float(args.abr_grace)
                     _log(
@@ -934,6 +956,79 @@ def main(argv: list[str] | None = None) -> int:
                 cooldown_ok = (not in_abr_grace) and (
                     (now - last_dyn_change) >= args.dynamic_cooldown
                 )
+                # DMA-BUF QVBR starve → sticky pipe fallback (after ABR grace).
+                if (
+                    es_mod is not None
+                    and use_sv_bc
+                    and not in_abr_grace
+                    and not str(settings.get("encodeStrategyFallback") or "")
+                ):
+                    live_cap = str(
+                        (st_live or {}).get("capturePath")
+                        or settings.get("captureEncode")
+                        or ""
+                    ).strip().lower()
+                    path_for_starve = "dmabuf" if live_cap == "dmabuf" else live_cap
+                    tgt = None
+                    try:
+                        if settings.get("encodeWfdBitrateMbps") is not None:
+                            tgt = float(settings.get("encodeWfdBitrateMbps"))
+                        elif settings.get("encodeCongestionBitrateMbps") is not None:
+                            tgt = float(settings.get("encodeCongestionBitrateMbps"))
+                    except (TypeError, ValueError):
+                        tgt = None
+                    if tgt is None:
+                        try:
+                            mbr = re.match(
+                                r"^\s*([0-9]*\.?[0-9]+)\s*([KkMm])?",
+                                str(
+                                    settings.get("vaapiBitrate")
+                                    or settings.get("bitrate")
+                                    or ""
+                                ),
+                            )
+                            if mbr:
+                                tgt = float(mbr.group(1))
+                                if (mbr.group(2) or "M").upper() == "K":
+                                    tgt /= 1000.0
+                        except (TypeError, ValueError):
+                            tgt = None
+                    hit, starve_streak, sreason = es_mod.dmabuf_qvbr_starving(
+                        capture_path=path_for_starve,
+                        rc_mode=rc_mode,
+                        strategy=_strat,
+                        air_tx_mbps=mbps,
+                        target_mbps=tgt,
+                        video_fps=vfps,
+                        streak=starve_streak,
+                    )
+                    if hit:
+                        _log(
+                            cast_log,
+                            f"encode-strategy: dmabuf-qvbr starve → fallback pipe ({sreason})",
+                        )
+                        try:
+                            sf = Path.home() / ".config" / "omarchy-miracast" / "settings.json"
+                            data = json.loads(sf.read_text()) if sf.is_file() else {}
+                            if not isinstance(data, dict):
+                                data = {}
+                            data["captureEncode"] = "vaapi"
+                            data["encodeStrategyFallback"] = "pipe"
+                            data["vaapiRcMode"] = "QVBR"
+                            sf.write_text(json.dumps(data, indent=2) + "\n")
+                            subprocess.run(
+                                [ctl, "restart-capture", "quick"],
+                                capture_output=True,
+                                text=True,
+                                timeout=90.0,
+                            )
+                            starve_streak = 0
+                            last_restart = now
+                            last_tx = None
+                            time.sleep(max(args.interval, 12.0))
+                            continue
+                        except Exception as exc:
+                            _log(cast_log, f"encode-strategy fallback error: {exc}")
                 if use_sv_bc:
                     if bc_mod is not None:
                         band_5 = False

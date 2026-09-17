@@ -46,6 +46,7 @@ Panel {
   readonly property var miracastPosValues: ["left", "above", "below", "right"]
   readonly property var miracastEncodeValues: Model.miracastCaptureEncodeValues()
   readonly property var miracastEncodeProfileValues: Model.miracastEncodeProfileValues()
+  readonly property var miracastEncodeStrategyValues: Model.miracastEncodeStrategyValues()
   // Visible RADIO targets for keyboard: primary always; MORE when expanded.
   readonly property var miracastRadioPrimaryValues: (miracast && miracast.p2pWifiPrimaryValues)
     ? miracast.p2pWifiPrimaryValues : ["auto"]
@@ -161,9 +162,10 @@ Panel {
       list.push("miracastMode")
       if (miracast && miracast.mode === "extend") list.push("miracastPos")
     }
-    // STREAM / RENDER / PRESET QUALITY / RADIO under MIRACAST → ADVANCED SETTINGS.
+    // STREAM / STRATEGY / RENDER / PRESET QUALITY / RADIO under MIRACAST → ADVANCED.
     if (root.advancedSettingsExpanded) {
       if (miracastStreamModeIds.length > 0) list.push("miracastStream")
+      list.push("miracastEncodeStrategy")
       list.push("miracastEncode")
       list.push("miracastEncodeProfile")
       if (miracastRadioValues.length > 0) list.push("miracastRadio")
@@ -185,6 +187,7 @@ Panel {
     if (section === "miracastMode") return miracastModeValues.length
     if (section === "miracastPos") return miracastPosValues.length
     if (section === "miracastStream") return miracastStreamModeIds.length
+    if (section === "miracastEncodeStrategy") return miracastEncodeStrategyValues.length
     if (section === "miracastEncode") return miracastEncodeValues.length
     if (section === "miracastEncodeProfile") return miracastEncodeProfileValues.length
     if (section === "miracastRadio") return miracastRadioValues.length
@@ -199,8 +202,9 @@ Panel {
     // miracast actions are one control row.
     return section === "textsize" || section === "monitorBrightness" || section === "monitorScale"
       || section === "miracast" || section === "miracastMode" || section === "miracastPos"
-      || section === "miracastStream" || section === "miracastEncode"
-      || section === "miracastEncodeProfile" || section === "miracastRadio"
+      || section === "miracastStream" || section === "miracastEncodeStrategy"
+      || section === "miracastEncode" || section === "miracastEncodeProfile"
+      || section === "miracastRadio"
   }
 
   function sectionFirstIndex(section) {
@@ -208,6 +212,8 @@ Panel {
     if (section === "miracastMode") return Math.max(0, miracastModeValues.indexOf(miracast.mode))
     if (section === "miracastPos") return Math.max(0, miracastPosValues.indexOf(miracast.extendPosition))
     if (section === "miracastStream") return Math.max(0, miracastStreamModeIds.indexOf(miracast.streamMode))
+    if (section === "miracastEncodeStrategy")
+      return Math.max(0, miracastEncodeStrategyValues.indexOf(miracast.encodeStrategy || "smartview"))
     if (section === "miracastEncode")
       return Math.max(0, miracastEncodeValues.indexOf(miracast.captureEncodeActive))
     if (section === "miracastEncodeProfile")
@@ -437,6 +443,14 @@ Panel {
       selectedIndex = streamNext
       return
     }
+    if (focusSection === "miracastEncodeStrategy") {
+      var stratNext = selectedIndex + delta
+      if (stratNext < 0) stratNext = 0
+      if (stratNext > miracastEncodeStrategyValues.length - 1)
+        stratNext = miracastEncodeStrategyValues.length - 1
+      selectedIndex = stratNext
+      return
+    }
     if (focusSection === "miracastEncode") {
       var encodeNext = selectedIndex + delta
       if (encodeNext < 0) encodeNext = 0
@@ -491,6 +505,11 @@ Panel {
     }
     if (focusSection === "miracastStream" && selectedIndex >= 0 && selectedIndex < miracastStreamModeIds.length) {
       miracast.setStreamMode(miracastStreamModeIds[selectedIndex])
+      return
+    }
+    if (focusSection === "miracastEncodeStrategy"
+        && selectedIndex >= 0 && selectedIndex < miracastEncodeStrategyValues.length) {
+      miracast.setEncodeStrategy(miracastEncodeStrategyValues[selectedIndex])
       return
     }
     if (focusSection === "miracastEncode" && selectedIndex >= 0 && selectedIndex < miracastEncodeValues.length) {
@@ -1102,7 +1121,9 @@ Panel {
           else if (root.focusSection === "textsize") root.adjustTextSize(dx)
           else if (root.focusSection === "monitors" || root.focusSection === "monitorScale"
                    || root.focusSection === "miracastMode" || root.focusSection === "miracastPos"
-                   || root.focusSection === "miracastStream" || root.focusSection === "miracastEncode"
+                   || root.focusSection === "miracastStream"
+                   || root.focusSection === "miracastEncodeStrategy"
+                   || root.focusSection === "miracastEncode"
                    || root.focusSection === "miracastEncodeProfile"
                    || root.focusSection === "miracastRadio")
             root.moveCursorH(dx)
@@ -1805,6 +1826,40 @@ Panel {
                   spacing: Style.space(4)
 
                   Text {
+                    text: "ENCODING STRATEGY"
+                    color: Qt.darker(root.bar.foreground, 1.25)
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                  }
+
+                  Grid {
+                    id: miracastEncodeStrategyRow
+                    width: parent.width
+                    columns: root.miracastEncodeStrategyValues.length
+                    spacing: Style.spacing.xs
+                    readonly property real cellWidth: columns > 0
+                      ? (width - spacing * (columns - 1)) / columns
+                      : 0
+
+                    Repeater {
+                      model: root.miracastEncodeStrategyValues
+                      MiracastEncodeStrategyPill {
+                        required property string modelData
+                        required property int index
+                        strategyValue: modelData
+                        strategyIndex: index
+                        width: miracastEncodeStrategyRow.cellWidth
+                      }
+                    }
+                  }
+                }
+
+                Column {
+                  width: parent.width
+                  spacing: Style.space(4)
+
+                  Text {
                     text: "RENDER ENGINE"
                     color: Qt.darker(root.bar.foreground, 1.25)
                     font.family: root.bar.fontFamily
@@ -2408,6 +2463,98 @@ Panel {
         root.cursorActive = true
         root.focusSection = "miracastEncode"
         root.selectedIndex = encodePill.encodeIndex
+      }
+    }
+  }
+
+  component MiracastEncodeStrategyPill: BorderSurface {
+    id: strategyPill
+    required property string strategyValue
+    required property int strategyIndex
+
+    readonly property bool active: miracast.encodeStrategy === strategyValue
+    readonly property bool hasCursor: root.cursorActive
+        && root.focusSection === "miracastEncodeStrategy"
+        && root.selectedIndex === strategyIndex
+    readonly property bool hot: mouseArea.containsMouse || hasCursor
+    readonly property color foreground: root.bar.foreground
+    readonly property real horizontalPadding: Style.spacing.sm
+    readonly property real verticalPadding: Style.spacing.controlPaddingY
+    readonly property string _title: miracast.encodeStrategyLabel(strategyValue)
+    readonly property string _subtitle: {
+      if (strategyValue === "smartview" && String(miracast.encodeStrategyFallback || "") === "pipe")
+        return "(pipe fallback)"
+      if (strategyValue === "smartview") return "(QVBR)"
+      return "(CQP)"
+    }
+
+    radius: Style.cornerRadius
+    clip: true
+    leftPadding: horizontalPadding
+    rightPadding: horizontalPadding
+    topPadding: verticalPadding
+    bottomPadding: verticalPadding
+
+    readonly property var _hoverBorderSpec: Border.controlSpec("hover-cursor", foreground, Color.accent)
+    readonly property var _selectedBorderSpec: Border.controlSpec("selected", foreground, Color.accent)
+    readonly property var _normalBorderSpec: Border.controlSpec("normal", foreground, Color.accent)
+    borderSpec: hot ? _hoverBorderSpec
+      : active ? (Border.controlHasWidth("selected") ? _selectedBorderSpec : _normalBorderSpec)
+      : _normalBorderSpec
+
+    color: mouseArea.pressed ? Style.pressedFillFor(foreground, Color.accent)
+      : hot ? Style.hoverFillFor(foreground, Color.accent)
+      : active ? Style.selectedFillFor(foreground, Color.accent)
+      : "transparent"
+
+    implicitHeight: labelCol.implicitHeight + verticalPadding * 2
+                    + Border.top(borderSpec) + Border.bottom(borderSpec)
+
+    Column {
+      id: labelCol
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.leftMargin: strategyPill.contentLeftInset
+      anchors.rightMargin: strategyPill.contentRightInset
+      spacing: Style.space(1)
+
+      Text {
+        width: parent.width
+        text: strategyPill._title
+        color: strategyPill.foreground
+        font.family: root.bar.fontFamily
+        font.pixelSize: Style.font.caption
+        font.bold: strategyPill.active
+        horizontalAlignment: Text.AlignHCenter
+        wrapMode: Text.WordWrap
+      }
+      Text {
+        width: parent.width
+        text: strategyPill._subtitle
+        color: Qt.darker(strategyPill.foreground, 1.35)
+        font.family: root.bar.fontFamily
+        font.pixelSize: Math.max(Style.font.caption - 2, 8)
+        horizontalAlignment: Text.AlignHCenter
+      }
+    }
+
+    MouseArea {
+      id: mouseArea
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: miracast.busy ? Qt.ArrowCursor : Qt.PointingHandCursor
+      enabled: !miracast.busy
+      onClicked: miracast.setEncodeStrategy(strategyValue)
+    }
+
+    HoverHandler {
+      enabled: !miracast.busy
+      onHoveredChanged: {
+        if (!hovered || root.reflowingText) return
+        root.cursorActive = true
+        root.focusSection = "miracastEncodeStrategy"
+        root.selectedIndex = strategyPill.strategyIndex
       }
     }
   }

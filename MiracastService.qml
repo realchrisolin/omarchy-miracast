@@ -30,6 +30,9 @@ Item {
   property string gpuDeviceName: ""
   property string gpuVendor: ""
   property bool gpuDmabufLikely: true
+  // Encoding strategy: smartview (QVBR+ABR) | performance (DMA-BUF CQP)
+  property string encodeStrategy: "smartview"
+  property string encodeStrategyFallback: ""
   // Encode quality: best | veryhigh | high | medium | low (knobs depend on captureEncode)
   property string encodeProfile: "medium"
   // Concrete ladder step while Best (Dynamic) is selected (legacy named map).
@@ -142,7 +145,7 @@ Item {
   readonly property string ctl: pluginDir !== "" ? (pluginDir + "/bin/miracast-ctl") : "miracast-ctl"
   // Background status polls must NOT count as busy — they run every 2s while
   // streaming and would grey out Miracast action buttons via enabled:!busy.
-  readonly property bool busy: doctorProcess.running || scanProcess.running || startProcess.running || stopProcess.running || firewallProcess.running || modeProcess.running || positionProcess.running || streamModeProcess.running || captureEncodeProcess.running || encodeProfileProcess.running || preserveDisplayProcess.running || autoSwitchAudioProcess.running || bestLockProcess.running || p2pWifiProcess.running
+  readonly property bool busy: doctorProcess.running || scanProcess.running || startProcess.running || stopProcess.running || firewallProcess.running || modeProcess.running || positionProcess.running || streamModeProcess.running || captureEncodeProcess.running || encodeProfileProcess.running || encodeStrategyProcess.running || preserveDisplayProcess.running || autoSwitchAudioProcess.running || bestLockProcess.running || p2pWifiProcess.running
   // All managed ifaces (for helpers / MORE list).
   readonly property var p2pWifiAllIfaces: {
     var out = []
@@ -527,6 +530,31 @@ Item {
 
   function encodeProfileLabel(id) {
     return Model.miracastEncodeProfileLabel(id)
+  }
+
+  function encodeStrategyLabel(id) {
+    var base = Model.miracastEncodeStrategyLabel(id)
+    if (String(id || "") === "smartview" && String(encodeStrategyFallback || "") === "pipe")
+      return base + " (pipe fallback)"
+    return base
+  }
+
+  function setEncodeStrategy(value) {
+    var next = String(value || "").toLowerCase().replace(/[-_]/g, "")
+    if (next === "sv" || next === "qvbr" || next === "default") next = "smartview"
+    if (next === "perf" || next === "cqp") next = "performance"
+    if (next !== "smartview" && next !== "performance") return
+    if (encodeStrategyProcess.running || stopProcess.running) return
+    if (next === encodeStrategy && !active) return
+    encodeStrategy = next
+    if (next !== "smartview") encodeStrategyFallback = ""
+    lastError = ""
+    if (active)
+      actionStatus = "ENCODING STRATEGY → " + encodeStrategyLabel(next) + "…"
+    else
+      actionStatus = "ENCODING STRATEGY: " + encodeStrategyLabel(next)
+    encodeStrategyProcess.command = [ctl, "set-encode-strategy", next]
+    encodeStrategyProcess.running = true
   }
 
   function setCaptureEncode(value) {
@@ -944,6 +972,13 @@ Item {
           if (data.streamModes && data.streamModes.length)
             root.streamModes = data.streamModes
           if (data.captureEncode) root.captureEncode = String(data.captureEncode)
+          if (data.encodeStrategy) {
+            var es = String(data.encodeStrategy).toLowerCase().replace(/[-_]/g, "")
+            if (es === "smartview" || es === "performance")
+              root.encodeStrategy = es
+          }
+          if (data.encodeStrategyFallback !== undefined && data.encodeStrategyFallback !== null)
+            root.encodeStrategyFallback = String(data.encodeStrategyFallback || "")
           if (data.gpuDeviceName !== undefined && data.gpuDeviceName !== null)
             root.gpuDeviceName = String(data.gpuDeviceName || "")
           if (data.gpuVendor !== undefined && data.gpuVendor !== null)
@@ -1253,6 +1288,32 @@ Item {
           }
         } catch (e) {
           root.actionStatus = "PRESET QUALITY updated"
+        }
+        root.refresh()
+      }
+    }
+  }
+
+  Process {
+    id: encodeStrategyProcess
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        try {
+          var data = JSON.parse(String(text || "{}"))
+          if (data.ok === false) {
+            root.lastError = String(data.error || "Failed to set encoding strategy")
+            root.actionStatus = ""
+            return
+          }
+          if (data.encodeStrategy) root.encodeStrategy = String(data.encodeStrategy)
+          if (data.encodeStrategyFallback !== undefined)
+            root.encodeStrategyFallback = String(data.encodeStrategyFallback || "")
+          if (data.captureEncode) root.captureEncode = String(data.captureEncode)
+          if (data.vaapiRcMode) root.vaapiRcMode = String(data.vaapiRcMode)
+          root.actionStatus = "ENCODING STRATEGY: " + root.encodeStrategyLabel(root.encodeStrategy)
+            + (data.captureRestarted ? " (applied)" : "")
+        } catch (e) {
         }
         root.refresh()
       }

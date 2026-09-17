@@ -363,6 +363,18 @@ function miracastEncodeProfileValues() {
   return ["best", "veryhigh", "high", "medium", "low"]
 }
 
+/** Encoding strategy: Smart View QVBR (default) vs DMA-BUF CQP performance. */
+function miracastEncodeStrategyValues() {
+  return ["smartview", "performance"]
+}
+
+function miracastEncodeStrategyLabel(id) {
+  var v = String(id || "").toLowerCase().replace(/[-_]/g, "")
+  if (v === "smartview" || v === "sv" || v === "qvbr" || v === "default") return "Smart View"
+  if (v === "performance" || v === "perf" || v === "cqp") return "Performance"
+  return id || "Smart View"
+}
+
 function miracastEncodeProfileLabel(id) {
   var v = String(id || "").toLowerCase().replace(/[-_]/g, "")
   if (v === "best") return "Best (Dynamic)"
@@ -561,6 +573,8 @@ if (typeof module !== "undefined") {
     miracastCaptureEncodeActive: miracastCaptureEncodeActive,
     miracastEncodeProfileValues: miracastEncodeProfileValues,
     miracastEncodeProfileLabel: miracastEncodeProfileLabel,
+    miracastEncodeStrategyValues: miracastEncodeStrategyValues,
+    miracastEncodeStrategyLabel: miracastEncodeStrategyLabel,
     miracastFreqAllowsVeryHigh: miracastFreqAllowsVeryHigh,
     miracastRcModeLabel: miracastRcModeLabel,
     miracastEngineDetailLabel: miracastEngineDetailLabel,

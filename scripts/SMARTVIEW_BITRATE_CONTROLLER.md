@@ -14,6 +14,12 @@ Source: `libremotedisplay_wfd.so` on SM-S918U
 6. Optional VBR: `"Turn on CAC mode in VBR"` + QTI content-adaptive
 
 ## Linux port (`bitrate_controller.py` + QVBR)
+
+Enabled when **`encodeStrategy=smartview`** and **`encodeProfile=best`**
+(see `scripts/encode_strategy.py`). Smart View tries **DMA-BUF + QVBR** first;
+if air TX stays ≪ target, link-watch falls back to **VAAPI pipe + QVBR**.
+**`encodeStrategy=performance`** keeps DMA-BUF **CQP** (no `set-bitrate-kbps`).
+
 | Samsung | Ours |
 |---------|------|
 | RTCP RR fraction lost | iw tx_failed / retry% |
