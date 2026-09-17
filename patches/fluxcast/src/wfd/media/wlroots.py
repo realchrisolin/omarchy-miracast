@@ -263,16 +263,29 @@ class WlrootsMixin:
         floor_kbits = _quality_floor_kbits(parsed_out[0], parsed_out[1], self.config.fps)
         plan = active_power_plan()
         throttled = encode_throttled(plan)
-        if throttled:
+        # AOSP/Miracast adaptive bitrate (encode.env / congestion-cut) must not
+        # be silently raised back to the 8 Mbps "desktop clarity" floor — that
+        # fought every ×0.6 cut and left artifacts while settings said 3M.
+        honor = (
+            (os.environ.get("FLUXCAST_WFD_HONOR_BITRATE") or "").strip().lower()
+            in ("1", "true", "yes", "on")
+            or (os.environ.get("FLUXCAST_WFD_ENCODE_ENV_FILE") or "").strip() != ""
+        )
+        if throttled or honor:
             effective_kbits = requested_kbits
         else:
             effective_kbits = max(requested_kbits, floor_kbits)
         effective_bitrate = _kbits_to_bitrate_text(effective_kbits)
         effective_bitrate = apply_bitrate_plan(effective_bitrate, throttled=throttled)
-        if effective_kbits > requested_kbits and not throttled:
+        if effective_kbits > requested_kbits and not throttled and not honor:
             print(
                 "[FluxCast WFD Media] Raising bitrate for desktop clarity: "
                 f"{self.config.bitrate} -> {effective_bitrate}"
+            )
+        elif honor and requested_kbits < floor_kbits:
+            print(
+                "[FluxCast WFD Media] Honoring adaptive bitrate "
+                f"{effective_bitrate} (below clarity floor {_kbits_to_bitrate_text(floor_kbits)})"
             )
         return {
             "src_res": src_res,
@@ -297,15 +310,23 @@ class WlrootsMixin:
         )
         return [] if damage_aware else ["-D"]
 
-    def _wf_capture_rate_args(self, wf_recorder: str) -> list[str]:
+    def _wf_capture_rate_args(
+        self, wf_recorder: str, *, vaapi_dmabuf: bool = False
+    ) -> list[str]:
         """Capture cadence flags for this wf-recorder build.
 
         Stock wlr-screencopy DMA: omit ``-r`` (it appends ``fps=N`` after
         ``scale_vaapi`` and forces VAAPI→software conversion).
 
-        ICC (ext-image-copy-capture): pass ``-r`` as the client request rate
-        (defaults to 60 without it). Only when the binary advertises ICC.
+        VAAPI DMA encode (``vaapi_dmabuf=True``): also omit ``-r``. Encoder
+        BRC still gets ``-p framerate=`` from ``_vaapi_rc_wf_params``. ICC
+        without ``-r`` defaults to 60 Hz client pacing — same target fps
+        without the post-``scale_vaapi`` fps filter tax.
+
+        ICC raw/pipe paths: pass ``-r`` as the client request rate.
         """
+        if vaapi_dmabuf:
+            return []
         if wf_recorder_supports_icc(wf_recorder):
             # -r matches config.fps (encode framerate). Override:
             # FLUXCAST_WFD_ICC_CAPTURE_FPS.
@@ -626,11 +647,12 @@ class WlrootsMixin:
             raise
 
         # Same -D / DAMAGE policy as the DMA paths (_wf_damage_flag).
+        # Omit -r on VAAPI DMA (see _wf_capture_rate_args vaapi_dmabuf=True).
         wf_cmd = [
             wf_recorder,
             "-y",
             *self._wf_damage_flag(),
-            *self._wf_capture_rate_args(wf_recorder),
+            *self._wf_capture_rate_args(wf_recorder, vaapi_dmabuf=True),
             "-o", monitor.name,
             "-c", "h264_vaapi",
             "-d", device,
@@ -715,7 +737,7 @@ class WlrootsMixin:
             wf_recorder,
             "-y",
             *self._wf_damage_flag(),
-            *self._wf_capture_rate_args(wf_recorder),
+            *self._wf_capture_rate_args(wf_recorder, vaapi_dmabuf=True),
             # -b 0 = max b-frames (not bitrate).
             "-o", monitor.name,
             "-c", "h264_vaapi",
