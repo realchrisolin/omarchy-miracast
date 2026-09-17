@@ -6348,8 +6348,26 @@ cmd_capture_health() {
   alive="$(capture_senders_alive 2>/dev/null || echo false)"
   drifted="$(capture_geometry_drifted 2>/dev/null || echo false)"
   paused="$(capture_is_paused 2>/dev/null || echo false)"
+  # Mid-rebind gap: FluxCast sticky DMA kills then respawns wf-recorder.
+  # Treat a very recent pause stamp as healthy so the UI watchdog does not
+  # force another restart-capture on top (15–30s pause storm).
+  if [[ "$paused" != "true" && -f "$CAPTURE_PAUSED_FILE" ]]; then
+    if python3 - "$CAPTURE_PAUSED_FILE" <<'PY' 2>/dev/null
+import sys, time
+from pathlib import Path
+p = Path(sys.argv[1])
+try:
+    age = time.time() - p.stat().st_mtime
+except OSError:
+    raise SystemExit(1)
+raise SystemExit(0 if age <= 12.0 else 1)
+PY
+    then
+      paused=true
+    fi
+  fi
   if [[ "$paused" == "true" ]]; then
-    # Intentional pause (lock / mid-move) is not a fault.
+    # Intentional pause (lock / mid-move / rebind) is not a fault.
     healthy=true
   elif [[ "$alive" == "true" && "$drifted" != "true" ]]; then
     healthy=true

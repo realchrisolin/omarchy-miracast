@@ -65,12 +65,13 @@ QP_SHARPEN_STREAK = 2
 # pending encode knobs moved enough (VAAPI cannot live-setParameters yet).
 APPLY_MIN_QP_DELTA = 2
 APPLY_MIN_KBPS_FRAC = 0.15
-APPLY_MIN_INTERVAL_S = 30.0
+APPLY_MIN_INTERVAL_S = 45.0
 # Smaller *bitrate* drifts may flush after this idle interval.
-# QP±1 alone never flushes — that was still causing a pause ~every 45s.
-APPLY_FLUSH_INTERVAL_S = 60.0
+# QP±1 alone never flushes. 10% climbs (8.0→8.8) must not restart either —
+# wait for a full 15% step or a long idle flush.
+APPLY_FLUSH_INTERVAL_S = 120.0
 APPLY_FLUSH_QP_DELTA = 2  # same as min; no single-step QP flush
-APPLY_FLUSH_KBPS_FRAC = 0.08
+APPLY_FLUSH_KBPS_FRAC = 0.15
 
 
 @dataclass

@@ -786,6 +786,11 @@ Item {
 
   // Watchdog: while streaming (and not session-locked), heal dead/zombie
   // capture that leave RTSP up but the TV frozen (e.g. after position moves).
+  // Do NOT force-restart on a single unhealthy poll — DMA sticky rebinds
+  // briefly drop wf-recorder and that used to pause every ~15–30s.
+  property int _captureUnhealthyStreak: 0
+  property double _lastCaptureRecoverMs: 0
+
   Timer {
     interval: 4000
     running: root.streaming && !root._sessionLocked && !root._pausedForLock
@@ -805,11 +810,18 @@ Item {
       onStreamFinished: {
         try {
           var data = JSON.parse(String(text || "{}"))
-          if (data.paused === true) return
-          if (data.healthy === true) return
+          if (data.paused === true) {
+            root._captureUnhealthyStreak = 0
+            return
+          }
+          if (data.healthy === true) {
+            root._captureUnhealthyStreak = 0
+            return
+          }
           // TV already dark / air TX dead — Stop so the connected icon clears.
           // ensure-capture would keep phase=streaming and look "still connected".
           if (data.zombie === true) {
+            root._captureUnhealthyStreak = 0
             root.actionStatus = ""
             root.lastError = "Cast ended — media stalled"
             if (root.streaming || root.running)
@@ -818,10 +830,19 @@ Item {
               root.refresh()
             return
           }
+          root._captureUnhealthyStreak += 1
+          // ~12s of consecutive unhealthy (3×4s) before healing.
+          if (root._captureUnhealthyStreak < 3) return
+          var now = Date.now()
+          // Cooldown after a recovery restart — avoid rebind storms.
+          if (now - root._lastCaptureRecoverMs < 45000) return
           if (ensureWatchdogProcess.running) return
           root.actionStatus = "Recovering capture…"
-          ensureWatchdogProcess.command = [ctl, "ensure-capture", "2", "force"]
+          // No "force" — if senders are already back, ensure is a no-op.
+          ensureWatchdogProcess.command = [ctl, "ensure-capture", "2"]
           ensureWatchdogProcess.running = true
+          root._captureUnhealthyStreak = 0
+          root._lastCaptureRecoverMs = now
         } catch (e) {
         }
       }
