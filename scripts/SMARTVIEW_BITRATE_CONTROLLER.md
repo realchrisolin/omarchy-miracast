@@ -29,9 +29,9 @@ Uses those Samsung min/init/max/QP values. Enabled when
 
 | Samsung | Ours |
 |---------|------|
-| RTCP RR fraction lost | iw tx_failed / retry% |
-| NetworkStall | sender fps &lt; 28 / ABR stall |
-| MediaCodec live setBitrate | `set-bitrate-kbps` + SIGUSR1 restart (VAAPI limitation). **Coalesce** applies (`should_apply_encode`: Δqp≥2 or Δkbps≥15%, min ~45s). Sticky iw `loss:` is **not** urgent. QP-only demotes at min bitrate never restart. DMA sticky when pref=`dmabuf` (`prepare_dmabuf_settings`). |
+| RTCP RR fraction lost | Only if real RR is available — **iw retry% is not used** (not Smart View) |
+| NetworkStall | sender fps sag / hard `tx_failed` |
+| MediaCodec live setBitrate | `set-bitrate-kbps` + coalesced SIGUSR1 (VAAPI). DMA sticky via `prepare_dmabuf_settings`. Performance/CQP ladder is separate (`dynamic_encode.py`). |
 | CAC VBR | ffmpeg `h264_vaapi` **QVBR** + maxrate |
 | QP min/max | settings encodeQpMin/Max + vaapiQp mid |
 

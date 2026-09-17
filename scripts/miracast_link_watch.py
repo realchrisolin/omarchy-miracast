@@ -1143,6 +1143,8 @@ def main(argv: list[str] | None = None) -> int:
                             and vfps is not None
                             and not video_ok
                         )
+                        # QVBR strategy: do not feed iw retry% as RTCP LOSS
+                        # (Smart View uses RR; retry% demotes were invented).
                         sig = bc_mod.LinkSignals(
                             stalled=bc_stall,
                             video_fps=vfps,
@@ -1151,7 +1153,7 @@ def main(argv: list[str] | None = None) -> int:
                             tx_failed_delta=int(last_tx_failed_delta or 0)
                             if delivery_fail_tick
                             else 0,
-                            retry_percent=last_retry_pct,
+                            retry_percent=None,
                         )
                         d = bc_mod.decide(
                             sv_bc_state, sig, cfg, cooldown_ok=cooldown_ok
