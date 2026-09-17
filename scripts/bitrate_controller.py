@@ -275,18 +275,28 @@ def decide(
             underfill=0,
         )
 
-    # LOSS case — cut bitrate; soften QP slightly.
+    # LOSS case — cut bitrate; soften QP only when bitrate actually drops,
+    # or after sustained loss while already at the Samsung floor (avoid
+    # qp+1 every tick → urgent SIGUSR1 pause storms).
     if loss is not None and loss >= LOSS_FRACTION_HIGH:
         nxt = _clamp_kbps(int(kbps * DECREASE_FACTOR), cfg, sig.link_capacity_mbps)
-        nqp = _clamp_qp(qp + QP_STEP, cfg)
+        bad_n = bad + 1
+        nqp = qp
+        if nxt < kbps:
+            nqp = _clamp_qp(qp + QP_STEP, cfg)
+            bad_n = 0
+        elif bad_n >= 3 and qp < cfg.qp_max:
+            nqp = _clamp_qp(qp + QP_STEP, cfg)
+            bad_n = 0
+        changed = (nxt != kbps) or (nqp != qp)
         return _decision(
             kbps=nxt,
             qp=nqp,
-            changed=(nxt != kbps) or (nqp != qp),
+            changed=changed,
             reason=f"loss:{loss:.3f}",
             cfg=cfg,
             good=0,
-            bad=bad + 1,
+            bad=bad_n,
             underfill=0,
         )
 
@@ -410,9 +420,13 @@ def decide(
 
 
 def is_urgent_apply(reason: str) -> bool:
-    """Hard network pain — apply immediately (do not coalesce)."""
-    r = str(reason or "")
-    return r.startswith("net_stall:") or r.startswith("loss:")
+    """Whether decide() reason may skip the long coalesce window.
+
+    Sticky iw retry%% ``loss:`` is **not** urgent — that path caused ~17s
+    SIGUSR1 pause storms (even qp-only at the 2M floor). Only hard encoder
+    stalls may use the shorter urgent interval, and only with a real knob Δ.
+    """
+    return str(reason or "").startswith("net_stall:")
 
 
 def should_apply_encode(
@@ -429,15 +443,37 @@ def should_apply_encode(
 
     Returns (apply_now, gate_reason).
     """
-    if is_urgent_apply(reason):
-        return True, f"urgent:{reason}"
-
     dq = abs(int(desired_qp) - int(applied_qp))
     base = max(1, int(applied_kbps))
     dfrac = abs(int(desired_kbps) - int(applied_kbps)) / float(base)
     elapsed = float(now) - float(last_apply_ts or 0.0)
     first = not last_apply_ts or last_apply_ts <= 0.0
 
+    # No restart if encode knobs are unchanged (loss at floor used to qp+1
+    # every tick and still force urgent applies).
+    if dq == 0 and dfrac < 0.01:
+        return False, "hold:noop"
+
+    # QP-only demotes never bypass coalesce — bitrate already at floor.
+    if dfrac < 0.01 and dq < APPLY_MIN_QP_DELTA:
+        return (
+            False,
+            f"hold:qp_only Δqp={dq} (need ≥{APPLY_MIN_QP_DELTA})",
+        )
+
+    # net_stall: shorter interval, but still require meaningful Δ + cooldown.
+    if is_urgent_apply(reason):
+        urgent_interval = min(30.0, APPLY_MIN_INTERVAL_S)
+        if dq >= APPLY_MIN_QP_DELTA or dfrac >= APPLY_MIN_KBPS_FRAC:
+            if first or elapsed >= urgent_interval:
+                return True, f"urgent:{reason}"
+            return (
+                False,
+                f"hold:urgent_cooldown {elapsed:.0f}/{urgent_interval:.0f}s",
+            )
+        return False, f"hold:urgent_small_delta Δqp={dq} Δkbps={dfrac:.0%}"
+
+    # loss: / qp_fill / climbs — normal coalesce (no immediate restart).
     if dq >= APPLY_MIN_QP_DELTA or dfrac >= APPLY_MIN_KBPS_FRAC:
         if first or elapsed >= APPLY_MIN_INTERVAL_S:
             return (
@@ -459,8 +495,6 @@ def should_apply_encode(
             f"flush:Δqp={dq} Δkbps={dfrac:.0%} wait={elapsed:.0f}s",
         )
 
-    if dq == 0 and dfrac < 0.01:
-        return False, "hold:noop"
     return (
         False,
         f"hold:coalesce Δqp={dq} Δkbps={dfrac:.0%} wait={elapsed:.0f}s",

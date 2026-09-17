@@ -195,18 +195,78 @@ class BitrateControllerTest(unittest.TestCase):
         self.assertTrue(ok)
         self.assertIn("ready", reason)
 
-    def test_coalesce_urgent_loss_bypasses(self):
+    def test_loss_does_not_bypass_coalesce(self):
+        # Sticky retry% must not force a restart every ~17s.
         ok, reason = bc.should_apply_encode(
-            applied_kbps=54000,
+            applied_kbps=8000,
             applied_qp=22,
-            desired_kbps=40000,
+            desired_kbps=6400,
             desired_qp=23,
-            reason="loss:0.050",
+            reason="loss:0.036",
             now=91.0,
             last_apply_ts=90.0,
         )
+        self.assertFalse(ok)
+        self.assertIn("min_interval", reason)
+
+    def test_loss_qp_only_at_floor_never_restarts(self):
+        ok, reason = bc.should_apply_encode(
+            applied_kbps=2048,
+            applied_qp=28,
+            desired_kbps=2048,
+            desired_qp=29,
+            reason="loss:0.030",
+            now=200.0,
+            last_apply_ts=100.0,
+        )
+        self.assertFalse(ok)
+        self.assertTrue("qp_only" in reason or "noop" in reason or "coalesce" in reason)
+
+    def test_loss_bitrate_cut_applies_after_interval(self):
+        ok, reason = bc.should_apply_encode(
+            applied_kbps=8000,
+            applied_qp=22,
+            desired_kbps=6400,
+            desired_qp=23,
+            reason="loss:0.050",
+            now=150.0,
+            last_apply_ts=90.0,
+        )
         self.assertTrue(ok)
-        self.assertIn("urgent", reason)
+        self.assertIn("ready", reason)
+
+    def test_loss_at_floor_needs_sustained_bad_streak_for_qp(self):
+        cfg = bc.config_for_band(band_5ghz=True)
+        st = bc.BitrateState(kbps=cfg.min_kbps, qp=28, bad_streak=0)
+        d1 = bc.decide(
+            st,
+            bc.LinkSignals(retry_percent=5.0, video_fps=60.0),
+            cfg,
+            cooldown_ok=True,
+        )
+        self.assertFalse(d1.changed)
+        st = bc.BitrateState(
+            kbps=d1.kbps, qp=d1.qp, bad_streak=d1.bad_streak
+        )
+        d2 = bc.decide(
+            st,
+            bc.LinkSignals(retry_percent=5.0, video_fps=60.0),
+            cfg,
+            cooldown_ok=True,
+        )
+        self.assertFalse(d2.changed)
+        st = bc.BitrateState(
+            kbps=d2.kbps, qp=d2.qp, bad_streak=d2.bad_streak
+        )
+        d3 = bc.decide(
+            st,
+            bc.LinkSignals(retry_percent=5.0, video_fps=60.0),
+            cfg,
+            cooldown_ok=True,
+        )
+        self.assertTrue(d3.changed)
+        self.assertEqual(d3.kbps, cfg.min_kbps)
+        self.assertEqual(d3.qp, 29)
 
     def test_air_clamped_to_mcs_before_fill_high(self):
         # Impossible 200 Mbps glitch must behave like air==MCS after clamp.
