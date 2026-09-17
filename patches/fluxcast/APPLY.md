@@ -10,7 +10,7 @@ variables set by `miracast-ctl`; damage-aware capture remains opt-in.
 | `src/wfd/power_plan.py` | Discover OS power profiles as ``power_plan_N`` (PPD/TLP-pd, platform_profile, system76-power, tuned) |
 | `src/wfd/hw_encode.py` | Optional VAAPI/QSV encode; capture-encode mode (DMA-BUF vs pipe); power-plan throttling |
 | `src/wfd/mode_state.py` | Persist sink-advertised stream modes for the UI (`FLUXCAST_WFD_MODE_STATE`) |
-| `src/wfd/modes.py` | Full classic CEA table; CHP for M4; interlaced listed but not negotiated |
+| `src/wfd/modes.py` | Full classic CEA table; CHP for M4; interlaced listed but not negotiated; default RTSP pick is best advertised progressive mode (`FLUXCAST_WFD_MODE_POLICY`) |
 | `src/wfd/constants.py` | CEA bit constants (0–16) + VESA 1200p |
 | `src/wfd/config.py` | `peer_address` for mode-state JSON; `WFDCEAMode.interlaced` |
 | `src/wfd/session.py` | SIGUSR1 capture rebind loop; peer MAC on media config; NM-path `--wfd-p2p-channel` |

@@ -3439,9 +3439,9 @@ if not supported:
         {"id": "1920x1080p60", "label": "1920x1080@60", "width": 1920, "height": 1080, "fps": 60, "resolution": "1920x1080"},
     ]
 preferred = str(settings.get("streamMode") or "")
-current = str(modes.get("current") or preferred or "")
-if not current and preferred:
-    current = preferred
+# After RTSP, FluxCast writes negotiated mode to sink-modes.json ("current").
+# Prefer that over settings so the UI reflects best-advertised negotiation.
+current = str(modes.get("current") or "") or preferred or ""
 ids = {str(m.get("id") or "") for m in supported}
 if preferred and preferred not in ids:
     # Keep a custom preference visible even if the sink list is stale.
@@ -3451,6 +3451,7 @@ if preferred and preferred not in ids:
         supported.append({"id": preferred, "label": f"{w}x{h}@{f}", "width": w, "height": h, "fps": f, "resolution": f"{w}x{h}"})
 data["streamMode"] = current or preferred or "1280x720p30"
 data["streamModePreferred"] = preferred or data["streamMode"]
+data["streamModePolicy"] = "best_advertised"
 data["streamModes"] = supported
 print(json.dumps(data, separators=(",", ":")))
 ' "$MODE_STATE_FILE" "$SETTINGS_FILE"
@@ -5658,6 +5659,9 @@ print(str(s.get("vbvMultiplier") or "0.5").strip() or "0.5")
       unload_icc_present_kick
     fi
     export FLUXCAST_WFD_MODE_STATE="$MODE_STATE_FILE"
+    # Default: RTSP picks the sink's best progressive CEA/VESA mode (pixel-rate).
+    # Set FLUXCAST_WFD_MODE_POLICY=match_settings to honor streamMode/fps instead.
+    export FLUXCAST_WFD_MODE_POLICY="${FLUXCAST_WFD_MODE_POLICY:-best_advertised}"
     # When set (file exists), FluxCast must not auto-rebind over an intentional
     # pause (screen lock / Extend position move).
     export FLUXCAST_CAPTURE_PAUSE_FILE="$CAPTURE_PAUSED_FILE"

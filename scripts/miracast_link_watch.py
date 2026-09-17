@@ -937,7 +937,10 @@ def main(argv: list[str] | None = None) -> int:
                         if not band_5 and link_cap is not None and float(link_cap) >= 150:
                             # High MCS often implies 5 GHz / wide channel.
                             band_5 = True
-                        cfg = bc_mod.config_for_band(band_5ghz=band_5, width_mhz=20.0)
+                        cfg = bc_mod.config_for_band(
+                            band_5ghz=band_5,
+                            width_mhz=float(width_mhz) if width_mhz else 20.0,
+                        )
                         cur_br = str(
                             settings.get("bitrate")
                             or settings.get("vaapiBitrate")
