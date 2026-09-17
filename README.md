@@ -136,15 +136,19 @@ Put the TV/dongle in Miracast / screen-mirroring receive mode, then **Scan** and
 connect from the Display panel. Day-to-day tips (audio, channels, 2.4-only
 dongles): panel **Info**, or [`docs/MIRACAST-HELP.md`](docs/MIRACAST-HELP.md).
 
-**Hardware note:** many cheap Miracast sticks are **2.4 GHz-only** (e.g. Realtek
-8192CU). With laptop Wi‑Fi on 5 GHz that means MCC — occasional brief glitches
-are expected; a dual-band sink is the lasting RF fix. Doctor warns as `radio_mcc`
-when this is active.
+**Hardware note:** some Miracast sticks **listen** on 2.4 GHz but still accept a
+**5 GHz operating channel** (hotyeah / Realtek 8192CU often: `listen_freq=2437`,
+`oper_freq=5220`). Status uses `p2pFreqSource=peer_oper` in that case — do not
+treat listen as air. True **2.4-only** sinks (oper stays on 2.4 while STA is
+5 GHz) force MCC; Doctor warns as `radio_mcc`. On true 5 GHz SCC with HT20 P2P
+next to a wider STA, Doctor may warn `radio_scc_tax` (one-radio airtime); set
+`p2pWifiInterface` to a second idle NIC when available.
 
 ## Settings
 
 `status` JSON includes live radio fields (no SSIDs): `staChannel`, `p2pChannel`,
-`staWidthMHz`, `p2pRole`, `radioMcc` (true when STA and P2P channels differ).
+`staWidthMHz`, `p2pRole`, `radioMcc`, `p2pFreqSource` (`peer_oper` /
+`peer_listen`), `p2pListenFreqMHz` / `p2pOperFreqMHz`.
 
 Override in `~/.config/omarchy-miracast/settings.json` (merged with
 `miracast-ctl` defaults on read):
@@ -175,7 +179,7 @@ Override in `~/.config/omarchy-miracast/settings.json` (merged with
 | `castPreset` | `desktop` | Content hint: `desktop` = damage-aware; `movie` = continuous `-D`. |
 | `vaapiQuality` | *(from profile)* | ffmpeg `h264_vaapi` `-quality` (1–8; higher = faster/worse). |
 | `vbvMultiplier` | `0.5` | CBR VBV as a fraction of bitrate (~0.5 s). → `FLUXCAST_WFD_VBV_MULTIPLIER`. |
-| `p2pWifiInterface` | `auto` | Managed Wi‑Fi iface for Miracast P2P, or `auto` (prefer idle P2P-GO). |
+| `p2pWifiInterface` | `auto` | Managed Wi‑Fi iface for Miracast P2P, or `auto` (prefer **idle** P2P-GO NIC so Miracast is not time-sliced with home STA). |
 | `p2pQuietCsa` | `false` | `true` = post-PLAY CSA to a quiet channel (MCC). Default **SCC**. |
 | `vaapiRcMode` | *(from profile)* | `CQP` / `QVBR` / `CBR` / `VBR` → `FLUXCAST_WFD_VAAPI_RC`. |
 | `vaapiBitrate` | *(from profile)* | QVBR/CBR peak (`FLUXCAST_WFD_VAAPI_BITRATE`). |
@@ -308,15 +312,13 @@ By default Miracast uses **SCC**: force the P2P GO onto the **STA primary
 channel** (`p2p_ignore_shared_freq=0`, `--wfd-p2p-channel=<STA>`), and after
 PLAY align with CSA if negotiation landed elsewhere. Set `p2pQuietCsa: true`
 (or `MIRACAST_P2P_QUIET_CSA=1`) to CSA onto a quieter channel instead (MCC).
-If STA is 5 GHz but the sink/GO stays on 2.4 (common with 2.4-only dongles
-like Realtek **8192CU** — WPS often reports `manufacturer=Realtek`,
-`model_name=8192CU`), cross-band CSA is skipped and a quieter **2.4** channel
-is used instead — true 5 GHz SCC is impossible with those sinks. That **MCC**
-setup (STA on 5 GHz + P2P on 2.4) is a known Miracast quality tax in vendor
-docs (Microsoft eCSA / multi-channel notes; ScreenBeam “DCM”); expect
-**occasional brief glitches** from 2.4 interference even when TX looks healthy.
-Mitigate with quiet-channel pick + bitrate headroom; fix properly with a
-**dual-band** sink.
+If STA is 5 GHz but the sink’s **operating** channel stays on 2.4, cross-band
+CSA is skipped and a quieter **2.4** channel is used instead. Some 8192CU-class
+dongles still accept **5 GHz `oper_freq`** even when `listen_freq` is 2.4 —
+verify with `./scripts/verify_p2p_air_band.py` (`p2pFreqSource=peer_oper`).
+True 2.4-only oper → **MCC** (STA 5 GHz + P2P 2.4): known Miracast quality tax
+(Microsoft eCSA / ScreenBeam “DCM”); expect occasional glitches. Mitigate with
+quiet-channel pick + bitrate headroom, or a dual-band sink / second Wi‑Fi NIC.
 
 **How “quiet” channel picking works** (`scripts/pick-p2p-channel.py`): the
 label *quiet* is only a score threshold (default ≤ 5). What actually ranks

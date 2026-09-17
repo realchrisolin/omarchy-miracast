@@ -118,25 +118,47 @@ def _channel_from_freq(freq_mhz: Optional[float]) -> Optional[int]:
 
 
 def _concurrency_fields(fields: dict[str, Any]) -> dict[str, Any]:
-    """Decide MCC and correct P2P freq when iw mirrors STA on cross-band sinks.
+    """Decide MCC and which P2P frequency to trust for UI / ABR.
 
-    Intel MCC often reports the P2P-GO iface on the STA's 5 GHz channel even
-    when the sink only listens on 2.4 GHz (``listen_freq``). Prefer the peer
-    listen frequency for display / MCC when that mismatch appears.
+    Priority for the *air* frequency:
+      1. ``oper_freq`` when it is a valid 5 GHz operating channel (sink accepted
+         5 GHz GO — Smart View / hotyeah often listen on 2.4 but oper on 5220).
+      2. Else ``listen_freq`` when iw GO merely mirrors STA 5 GHz while the peer
+         only operates/listens on 2.4 (classic Intel MCC “iw lie”).
+      3. Else iw-reported GO frequency.
+
+    Discovery ``listen_freq`` stays in ``p2pListenFreqMHz`` either way.
     """
     out: dict[str, Any] = {}
     sta_f = fields.get("staFreqMHz")
     p2p_f = fields.get("p2pFreqMHz")
     listen_f = fields.get("p2pListenFreqMHz")
+    oper_f = fields.get("p2pOperFreqMHz")
     sta_band = _band_ghz(sta_f)
     p2p_band = _band_ghz(p2p_f)
     listen_band = _band_ghz(listen_f)
+    oper_band = _band_ghz(oper_f)
 
-    # Cross-band sink: iw/oper copied STA's 5 GHz channel, peer listens on 2.4.
+    # 1) Sink accepted a 5 GHz operating channel — trust that for air/UI.
+    if oper_band == "5" and oper_f is not None:
+        out["p2pFreqMHz"] = int(oper_f)
+        ch = _channel_from_freq(oper_f)
+        if ch is not None:
+            out["p2pChannel"] = ch
+        out["p2pFreqSource"] = "peer_oper"
+        if sta_f is not None:
+            out["radioMcc"] = int(sta_f) != int(oper_f)
+        else:
+            out["radioMcc"] = False
+        return out
+
+    # 2) Intel MCC lie: iw GO == STA 5 GHz, but peer has no 5 GHz oper and
+    #    only listens on 2.4 → treat air as 2.4 listen.
     if (
         listen_band == "2.4"
         and sta_band == "5"
         and p2p_band == "5"
+        and (oper_f is None or int(oper_f or 0) <= 0 or oper_band == "2.4")
         and sta_f is not None
         and p2p_f is not None
         and int(sta_f) == int(p2p_f)
@@ -149,7 +171,7 @@ def _concurrency_fields(fields: dict[str, Any]) -> dict[str, Any]:
         out["p2pFreqSource"] = "peer_listen"
         return out
 
-    # Normal path: different channel or frequency ⇒ MCC.
+    # 3) Normal path: different channel or frequency ⇒ MCC.
     sta_ch = fields.get("staChannel")
     p2p_ch = fields.get("p2pChannel")
     if sta_f is not None and p2p_f is not None:

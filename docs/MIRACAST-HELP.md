@@ -91,15 +91,23 @@ matched real Miracast TX retries on 2.4 GHz (e.g. ch 11 better than ch 1 when
 the home AP and strong neighbors sit on/near ch 1). See README § P2P channel.
 Inspect: `miracast-ctl pick-channel` or `./scripts/pick-p2p-channel.py --json --band 2.4`.
 
-### 2.4‑only sinks (common cheap dongles)
+### 2.4 listen vs 5 GHz oper (common dongles)
 
-Many Miracast sticks (e.g. Realtek **8192CU**, advertised via WPS as
-`manufacturer=Realtek` / `model_name=8192CU`) are **2.4 GHz only**. If your
-laptop STA is on **5 GHz**, P2P cannot follow → **MCC** (two channels at once).
-Industry Miracast docs (Microsoft, ScreenBeam, etc.) treat that as a known
-cause of **occasional pixelation / glitches** even when the link looks fine.
-Software can pick a quieter 2.4 channel and cap bitrate; it cannot invent 5 GHz
-on the dongle. A dual‑band sink unlocks real 5 GHz SCC.
+Many Miracast sticks (e.g. Realtek **8192CU**) **advertise listen on 2.4 GHz**
+but often accept a **5 GHz operating channel** (`oper_freq=5220` while
+`listen_freq=2437`). Status / Doctor trust **oper** for air band
+(`p2pFreqSource=peer_oper`). Check with:
+
+```bash
+./scripts/verify_p2p_air_band.py
+miracast-ctl status   # p2pFreqMHz / p2pFreqSource / radioMcc
+```
+
+If **oper stays on 2.4** while laptop STA is **5 GHz** → true **MCC**. Industry
+docs treat that as a known glitch tax. Software can pick a quieter 2.4 channel
+and cap bitrate; it cannot invent 5 GHz oper on a 2.4-only sink. A dual‑band
+sink or a **second idle Wi‑Fi NIC** (`p2pWifiInterface`) unlocks clean 5 GHz
+SCC / avoids one-radio HT20 tax.
 
 While streaming, a **link watcher** keeps cost low: it polls P2P TX bytes every
 few seconds and only runs a **cached** `nmcli` score (no forced rescan) after

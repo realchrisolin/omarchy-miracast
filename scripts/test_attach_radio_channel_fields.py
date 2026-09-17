@@ -108,8 +108,8 @@ Station aa:bb:cc:dd:ee:ff (on p2p-wlp0s20-6)
         self.assertEqual(out["p2pTxBitrateMbps"], 144.4)
         self.assertEqual(out["p2pTxRetryPercent"], 2.0)
 
-    def test_cross_band_listen_freq_overrides_iw_lie(self):
-        # Intel MCC: iw shows GO on STA's 5 GHz ch; sink listen_freq is 2.4.
+    def test_oper_freq_5ghz_preferred_over_listen(self):
+        # hotyeah / Smart View: listen 2.4, but oper accepted on 5 GHz.
         iw = """\
 	Interface p2p-wlp0s20-1
 		type P2P-GO
@@ -120,11 +120,29 @@ Station aa:bb:cc:dd:ee:ff (on p2p-wlp0s20-6)
 """
         peer = "listen_freq=2437\noper_freq=5220\n"
         out = self.mod.merge_radio_fields({}, iw, peer_text=peer)
+        self.assertEqual(out["p2pFreqMHz"], 5220)
+        self.assertEqual(out["p2pChannel"], 44)
+        self.assertEqual(out["p2pFreqSource"], "peer_oper")
+        self.assertFalse(out["radioMcc"])  # STA and oper both 5220 → SCC
+        self.assertEqual(out["p2pListenFreqMHz"], 2437)
+        self.assertEqual(out["staFreqMHz"], 5220)
+
+    def test_listen_freq_overrides_when_no_5ghz_oper(self):
+        # Intel MCC lie: iw GO mirrors STA 5 GHz; peer only on 2.4.
+        iw = """\
+	Interface p2p-wlp0s20-1
+		type P2P-GO
+		channel 44 (5220 MHz), width: 20 MHz, center1: 5220 MHz
+	Interface wlp0s20f3
+		type managed
+		channel 44 (5220 MHz), width: 80 MHz, center1: 5210 MHz
+"""
+        peer = "listen_freq=2437\noper_freq=2437\n"
+        out = self.mod.merge_radio_fields({}, iw, peer_text=peer)
         self.assertTrue(out["radioMcc"])
         self.assertEqual(out["p2pFreqMHz"], 2437)
         self.assertEqual(out["p2pChannel"], 6)
         self.assertEqual(out["p2pFreqSource"], "peer_listen")
-        self.assertEqual(out["staFreqMHz"], 5220)
 
 
 if __name__ == "__main__":

@@ -158,9 +158,11 @@ Home Wi‑Fi (STA) and Miracast (P2P-GO) share one radio on typical laptops
 is overridden to the STA channel (**SCC**).
 
 **Default (`p2pQuietCsa: false`):** **SCC** — force/align P2P onto the STA
-primary channel. If the sink stays on 2.4 while STA is 5 GHz (2.4-only
-dongles), skip cross-band CSA and use a quieter 2.4 channel instead. Prefer
-SCC over quiet-CSA MCC unless you have measured MCC as better in your RF.
+primary channel. If the sink’s **oper** stays on 2.4 while STA is 5 GHz,
+skip cross-band CSA and use a quieter 2.4 channel instead. Prefer SCC over
+quiet-CSA MCC unless you have measured MCC as better in your RF. Status air
+freq prefers peer **`oper_freq` when 5 GHz** (`p2pFreqSource=peer_oper`);
+`listen_freq` is discovery-only unless there is no 5 GHz oper (Intel MCC lie).
 
 **Opt-in quiet CSA (`p2pQuietCsa: true` or `MIRACAST_P2P_QUIET_CSA=1`):**
 
@@ -186,14 +188,16 @@ miracast-ctl benchmark --engines dmabuf,vaapi --tiers high,medium
 SKIP_CAST=1 ./scripts/test_p2p_channel_integration.sh
 ./scripts/test_attach_radio_channel_fields.py
 ./scripts/test_list_p2p_radios.py
+./scripts/test_verify_p2p_air_band.py
 ./scripts/test_auto_tune_miracast.py
 ./scripts/test_encode_quality_presets.py
 ./scripts/test_miracast_ctl_encode_cli.sh   # set-render-engine / set-quality (+ aliases)
 ./scripts/bench_p2p_channel.sh              # SCC vs MCC TX A/B → docs/benchmarks/
+./scripts/verify_p2p_air_band.py --json     # oper vs listen vs iw GO while casting
 miracast-ctl list-p2p-radios
 miracast-ctl pick-channel --band 2.4 --json
 miracast-ctl pick-channel                   # default --band 5
-miracast-ctl status   # staChannel / p2pChannel / radioMcc / p2pWifiResolved
+miracast-ctl status   # sta/p2p freq, p2pFreqSource, radioMcc, p2pWifiResolved
 # Live check while streaming:
 iw dev   # STA channel vs P2P-GO channel
 ```

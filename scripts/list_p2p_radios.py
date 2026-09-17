@@ -3,8 +3,11 @@
 
 Preference order (auto):
   1. Supports P2P-GO
-  2. No active NetworkManager connection on the managed iface
+  2. No active NetworkManager STA connection (dedicated Miracast radio)
   3. Stable / predictable iface name as tie-break
+
+When a second Wi‑Fi NIC is present and idle, auto-pick prefers it so
+Miracast P2P is not time-sliced with home STA (avoids SCC tax on AX201).
 
 Usage:
   ./scripts/list_p2p_radios.py
@@ -248,13 +251,18 @@ def list_radios() -> list[dict[str, Any]]:
 
 
 def score_radio(r: dict[str, Any]) -> tuple:
-    """Higher is better for auto-pick."""
+    """Higher is better for auto-pick.
+
+    Idle P2P-GO radios beat in-use STA radios so a second NIC can carry
+    Miracast without sharing the home-Wi‑Fi radio (SCC / HT20 tax).
+    """
     return (
         1 if r.get("p2pGo") else 0,
-        0 if r.get("inUse") else 1,
+        # Strongly prefer not sharing with an active STA association.
+        0 if r.get("inUse") else 2,
         # Prefer predictable names slightly (wlp* / wlan*)
         1 if re.match(r"^(wlan|wlp)\d", r.get("iface") or "") else 0,
-        # Stable sort by iface name
+        # Stable sort by iface name (lexicographic last in reverse sort)
         r.get("iface") or "",
     )
 

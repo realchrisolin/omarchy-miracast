@@ -18,6 +18,14 @@ class ResolveIfaceTest(unittest.TestCase):
         ]
         self.assertEqual(resolve_iface("auto", radios), "wlan1")
 
+    def test_idle_beats_busy_even_when_name_worse(self):
+        # Strong idle preference (score weight 2) over wlp* name bonus.
+        radios = [
+            {"iface": "wlp0s20f3", "p2pGo": True, "inUse": True},
+            {"iface": "wlx00aabbccddee", "p2pGo": True, "inUse": False},
+        ]
+        self.assertEqual(resolve_iface("auto", radios), "wlx00aabbccddee")
+
     def test_explicit_prefer(self):
         radios = [
             {"iface": "wlp0s20f3", "p2pGo": True, "inUse": True},

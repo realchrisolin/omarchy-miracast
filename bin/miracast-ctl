@@ -2593,21 +2593,70 @@ try:
 except Exception as e:
     add("radio", "warn", "radio probe skipped", str(e)[:160])
 
-# status channels if casting
+# status channels if casting — merge live radio fields (status.json omits them;
+# cmd_status pipes through attach_radio_channel_fields.py).
 try:
     st = json.loads(Path(state_dir, "status.json").read_text()) if Path(state_dir, "status.json").is_file() else {}
 except Exception:
     st = {}
 if isinstance(st, dict) and st.get("phase") == "streaming":
+    attach = Path(plugin_dir) / "scripts" / "attach_radio_channel_fields.py"
+    if attach.is_file():
+        try:
+            r_att = subprocess.run(
+                [sys.executable, str(attach)],
+                input=json.dumps(st),
+                capture_output=True,
+                text=True,
+                timeout=8.0,
+            )
+            if r_att.returncode == 0 and (r_att.stdout or "").strip():
+                merged = json.loads(r_att.stdout)
+                if isinstance(merged, dict):
+                    st = merged
+        except Exception:
+            pass
+if isinstance(st, dict) and st.get("phase") == "streaming":
     sw = st.get("staWidthMHz")
     pw = st.get("p2pWidthMHz")
     mcc = st.get("radioMcc")
-    detail = f"staWidth={sw} p2pWidth={pw} mcc={mcc}"
-    if pw and int(pw) <= 20:
+    p2p_f = st.get("p2pFreqMHz")
+    freq_src = st.get("p2pFreqSource")
+    detail = f"staWidth={sw} p2pWidth={pw} mcc={mcc} p2pFreq={p2p_f} src={freq_src}"
+    try:
+        p2p_mhz = int(p2p_f) if p2p_f is not None else 0
+    except (TypeError, ValueError):
+        p2p_mhz = 0
+    try:
+        pw_i = int(pw) if pw is not None else 0
+    except (TypeError, ValueError):
+        pw_i = 0
+    try:
+        sw_i = int(sw) if sw is not None else 0
+    except (TypeError, ValueError):
+        sw_i = 0
+    # 5 GHz SCC with HT20 GO next to wider STA: air is fine; remaining tax is
+    # time-sharing one radio (Miracast HT20 vs HE STA). Dual radio avoids it.
+    if mcc is False and p2p_mhz >= 5000 and pw_i and pw_i <= 20 and sw_i and sw_i > 20:
+        add(
+            "radio_scc_tax",
+            "warn",
+            f"5 GHz SCC but P2P is HT{pw_i} while STA is {sw_i} MHz — one-radio airtime tax; a second idle Wi‑Fi NIC (p2pWifiInterface) avoids sharing",
+            detail,
+        )
+        add("link", "ok", "Casting on 5 GHz SCC (oper/listen may differ; air uses oper)", detail)
+    elif pw_i and pw_i <= 20 and (mcc is True or p2p_mhz < 3000):
         add(
             "link",
             "warn",
-            "P2P is 20 MHz — keep video ≤ ~12–14 Mbps (pipe CBR High / capped bitrate)",
+            "P2P is 20 MHz on a constrained path — keep video ≤ ~12–14 Mbps (pipe CBR High / capped bitrate)",
+            detail,
+        )
+    elif pw_i and pw_i <= 20:
+        add(
+            "link",
+            "ok",
+            f"P2P HT{pw_i} while casting — bitrate headroom still helps under load",
             detail,
         )
     else:
