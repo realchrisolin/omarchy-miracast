@@ -965,9 +965,13 @@ def main(argv: list[str] | None = None) -> int:
                                 good_streak=sv_bc_state.good_streak,
                                 bad_streak=sv_bc_state.bad_streak,
                             )
-                        # Do not treat soft/zero TX with healthy fps as NetStall
-                        # (sysfs air counter often reads 0 while Sender health is fine).
-                        bc_stall = bool(abr_stalled) and not video_ok
+                        # Soft/zero TX is NetStall only with *known unhealthy* fps.
+                        # fps=None after rebind must not demote (was 45M→12M).
+                        bc_stall = (
+                            bool(abr_stalled)
+                            and vfps is not None
+                            and not video_ok
+                        )
                         sig = bc_mod.LinkSignals(
                             stalled=bc_stall,
                             video_fps=vfps,
@@ -986,6 +990,18 @@ def main(argv: list[str] | None = None) -> int:
                             bad_streak=d.bad_streak,
                         )
                         if d.changed:
+                            # Honor ABR grace for climbs *and* soft demotes; only
+                            # hard delivery failure (tx_failed) may cut during grace.
+                            hard_fail = bool(delivery_fail_tick) or bool(
+                                last_tx_failed_delta and last_tx_failed_delta > 0
+                            )
+                            if in_abr_grace and not hard_fail:
+                                _log(
+                                    cast_log,
+                                    f"dynamic: hold:abr_grace "
+                                    f"({d.reason} {cur_kbps}→{d.kbps}kbps)",
+                                )
+                                continue
                             _log(
                                 cast_log,
                                 f"dynamic: sv-bitrate {cur_kbps}→{d.kbps}kbps "
