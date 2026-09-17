@@ -189,8 +189,8 @@ class BitrateControllerTest(unittest.TestCase):
             desired_kbps=54000,
             desired_qp=20,
             reason="qp_fill:air=20<55%×54",
-            now=130.0,
-            last_apply_ts=90.0,
+            now=150.0,
+            last_apply_ts=90.0,  # 60s > APPLY_MIN_INTERVAL_S (45)
         )
         self.assertTrue(ok)
         self.assertIn("ready", reason)
