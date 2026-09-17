@@ -41,9 +41,13 @@ DEFAULT_QP_MIN = 15
 DEFAULT_QP_MAX = 44
 DEFAULT_QP = 22
 
-# Fraction-lost style thresholds (RTCP RR proxy).
-LOSS_FRACTION_HIGH = 0.02  # ≥2% → decrease (Samsung "LOSS case")
-LOSS_FRACTION_CLEAR = 0.005  # <0.5% and healthy → may increase
+# Fraction-lost style thresholds (RTCP RR proxy / iw retry%).
+# Dig session ran fine with modest retries; 2% was too hair-trigger and
+# demoted 14M→11M after a single rebind pause (loss:0.025).
+LOSS_FRACTION_HIGH = 0.08  # ≥8% → decrease (Samsung "LOSS case")
+LOSS_FRACTION_CLEAR = 0.02  # <2% and healthy → may increase
+# Require this many consecutive loss ticks before cutting bitrate.
+LOSS_STREAK_BEFORE_CUT = 2
 
 # Step factors (Samsung logs absolute bps changes; ratios match AOSP-ish feel).
 DECREASE_FACTOR = 0.80
@@ -275,17 +279,27 @@ def decide(
             underfill=0,
         )
 
-    # LOSS case — cut bitrate; soften QP only when bitrate actually drops,
-    # or after sustained loss while already at the Samsung floor (avoid
-    # qp+1 every tick → urgent SIGUSR1 pause storms).
+    # LOSS case — cut bitrate only after sustained elevated loss. A single
+    # 2–3% retry tick after SIGUSR1 must not yank Samsung max (14M) down.
     if loss is not None and loss >= LOSS_FRACTION_HIGH:
-        nxt = _clamp_kbps(int(kbps * DECREASE_FACTOR), cfg, sig.link_capacity_mbps)
         bad_n = bad + 1
+        if bad_n < LOSS_STREAK_BEFORE_CUT:
+            return _decision(
+                kbps=kbps,
+                qp=qp,
+                changed=False,
+                reason=f"hold:loss_streak={bad_n}/{LOSS_STREAK_BEFORE_CUT}:{loss:.3f}",
+                cfg=cfg,
+                good=0,
+                bad=bad_n,
+                underfill=0,
+            )
+        nxt = _clamp_kbps(int(kbps * DECREASE_FACTOR), cfg, sig.link_capacity_mbps)
         nqp = qp
         if nxt < kbps:
             nqp = _clamp_qp(qp + QP_STEP, cfg)
             bad_n = 0
-        elif bad_n >= 3 and qp < cfg.qp_max:
+        elif bad_n >= LOSS_STREAK_BEFORE_CUT + 2 and qp < cfg.qp_max:
             nqp = _clamp_qp(qp + QP_STEP, cfg)
             bad_n = 0
         changed = (nxt != kbps) or (nqp != qp)

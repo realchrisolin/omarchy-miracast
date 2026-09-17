@@ -34,9 +34,27 @@ class BitrateControllerTest(unittest.TestCase):
     def test_loss_decreases(self):
         cfg = bc.BitrateConfig()
         st = bc.BitrateState(kbps=10000, qp=22)
+        # Modest retry% must not cut on first tick.
+        d0 = bc.decide(
+            st,
+            bc.LinkSignals(retry_percent=3.0, video_fps=30.0),
+            cfg,
+            cooldown_ok=True,
+        )
+        self.assertFalse(d0.changed)
+        # Sustained high loss (≥8%, 2 ticks) cuts bitrate.
+        d1 = bc.decide(
+            st,
+            bc.LinkSignals(retry_percent=10.0, video_fps=30.0),
+            cfg,
+            cooldown_ok=True,
+        )
+        self.assertFalse(d1.changed)
+        self.assertIn("loss_streak", d1.reason)
+        st = bc.BitrateState(kbps=d1.kbps, qp=d1.qp, bad_streak=d1.bad_streak)
         d = bc.decide(
             st,
-            bc.LinkSignals(tx_failed_delta=5, video_fps=30.0),
+            bc.LinkSignals(retry_percent=10.0, video_fps=30.0),
             cfg,
             cooldown_ok=True,
         )
@@ -238,35 +256,36 @@ class BitrateControllerTest(unittest.TestCase):
     def test_loss_at_floor_needs_sustained_bad_streak_for_qp(self):
         cfg = bc.config_for_band(band_5ghz=True)
         st = bc.BitrateState(kbps=cfg.min_kbps, qp=28, bad_streak=0)
-        d1 = bc.decide(
-            st,
-            bc.LinkSignals(retry_percent=5.0, video_fps=60.0),
-            cfg,
-            cooldown_ok=True,
-        )
-        self.assertFalse(d1.changed)
-        st = bc.BitrateState(
-            kbps=d1.kbps, qp=d1.qp, bad_streak=d1.bad_streak
-        )
-        d2 = bc.decide(
-            st,
-            bc.LinkSignals(retry_percent=5.0, video_fps=60.0),
-            cfg,
-            cooldown_ok=True,
-        )
-        self.assertFalse(d2.changed)
-        st = bc.BitrateState(
-            kbps=d2.kbps, qp=d2.qp, bad_streak=d2.bad_streak
-        )
-        d3 = bc.decide(
-            st,
-            bc.LinkSignals(retry_percent=5.0, video_fps=60.0),
-            cfg,
-            cooldown_ok=True,
-        )
-        self.assertTrue(d3.changed)
-        self.assertEqual(d3.kbps, cfg.min_kbps)
-        self.assertEqual(d3.qp, 29)
+        # Need LOSS_STREAK_BEFORE_CUT loss ticks, then +2 more to soften QP at floor.
+        for i in range(bc.LOSS_STREAK_BEFORE_CUT + 1):
+            d = bc.decide(
+                st,
+                bc.LinkSignals(retry_percent=10.0, video_fps=60.0),
+                cfg,
+                cooldown_ok=True,
+            )
+            st = bc.BitrateState(
+                kbps=d.kbps, qp=d.qp, bad_streak=d.bad_streak
+            )
+            if i < bc.LOSS_STREAK_BEFORE_CUT:
+                self.assertFalse(d.changed)
+        # At floor, bitrate unchanged; keep going until QP softens.
+        softened = False
+        for _ in range(5):
+            d = bc.decide(
+                st,
+                bc.LinkSignals(retry_percent=10.0, video_fps=60.0),
+                cfg,
+                cooldown_ok=True,
+            )
+            st = bc.BitrateState(
+                kbps=d.kbps, qp=d.qp, bad_streak=d.bad_streak
+            )
+            if d.changed and d.qp > 28:
+                softened = True
+                self.assertEqual(d.kbps, cfg.min_kbps)
+                break
+        self.assertTrue(softened)
 
     def test_air_clamped_to_mcs_before_fill_high(self):
         # Impossible 200 Mbps glitch must behave like air==MCS after clamp.
