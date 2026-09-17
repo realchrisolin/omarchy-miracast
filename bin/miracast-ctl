@@ -3390,7 +3390,7 @@ PY
   [[ -n "$wifi_iface_fb" ]] && scan_iface_args=(--wfd-interface "$wifi_iface_fb")
   out="$(cd "$root" && FLUXCAST_LIST_P2P_RADIOS="$PLUGIN_DIR/scripts/list_p2p_radios.py" \
     FLUXCAST_WFD_INTERFACE="${wifi_iface_fb:-}" \
-    PYTHONUNBUFFERED=1 python3 -u src/main.py --protocol wfd --wfd-scan --wfd-p2p-backend nm \
+    PYTHONUNBUFFERED=1 python3 -u src/main.py --protocol wfd --wfd-scan --wfd-p2p-backend wpas \
     --wfd-timeout "$timeout_s" "${scan_iface_args[@]}" 2>/dev/null || true)"
   python3 - "$out" "$PEERS_FILE" <<'PY'
 import json, re, sys
@@ -5492,7 +5492,7 @@ PY
 }
 
 cmd_start() {
-  local peer="" peer_name="" monitor="eDP-1" root="" go_intent="15" fps="" bitrate="" output_res="" with_audio="" auto_fw="1" mode=""
+  local peer="" peer_name="" monitor="eDP-1" root="" go_intent="0" fps="" bitrate="" output_res="" with_audio="" auto_fw="1" mode=""
   local settings
   settings="$(read_settings)"
   fps="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("fps","30"))' "$settings")"
@@ -5881,7 +5881,7 @@ print(str(s.get("vbvMultiplier") or "0.5").strip() or "0.5")
       --monitor "$monitor" \
       --wfd-capture-backend wf-recorder \
       --wfd-aosp-pmt-pid \
-      --wfd-p2p-backend nm \
+      --wfd-p2p-backend wpas \
       --wfd-go-intent "$go_intent" \
       "${p2p_channel_args[@]}" \
       "${wfd_iface_args[@]}" \
