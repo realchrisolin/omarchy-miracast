@@ -27,13 +27,24 @@ Uses those Samsung min/init/max/QP values. Enabled when
 **DMA-BUF + QVBR** (`prepare_dmabuf_settings`); session may fall back to pipe.
 **`encodeStrategy=performance`** keeps DMA-BUF **CQP** (no `set-bitrate-kbps`).
 
+### VAAPI QVBR must hit the bitrate target
+Intel QVBR with fixed `qp=` undershoots to ~2–3 Mbps and looks pixelated.
+Required encode flags (FluxCast + custom wf-recorder):
+
+- `rc_mode=QVBR`, `b=` / `maxrate=` = target (e.g. 14M)
+- **`qmin`/`qmax`** from Samsung bounds (15–44) — **do not** pass fixed `qp=` for QVBR
+- **`minrate` ≈ 70% of target** (applied on `AVCodecContext.rc_min_rate` in the
+  custom wf-recorder build)
+- VBV `bufsize` ~2× peak (`vbvMultiplier=2.0`)
+- Set **`wfRecorderBin`** to that build; stock PATH `wf-recorder` ignores the floor
+
 | Samsung | Ours |
 |---------|------|
-| RTCP RR fraction lost | Only if real RR is available — **iw retry% is not used** (not Smart View) |
+| RTCP RR fraction lost | Only if real RR is available — **iw retry% is not used** |
 | NetworkStall | sender fps sag / hard `tx_failed` |
-| MediaCodec live setBitrate | `set-bitrate-kbps` + coalesced SIGUSR1 (VAAPI). DMA sticky via `prepare_dmabuf_settings`. Performance/CQP ladder is separate (`dynamic_encode.py`). |
-| CAC VBR | ffmpeg `h264_vaapi` **QVBR** + maxrate |
-| QP min/max | settings encodeQpMin/Max + vaapiQp mid |
+| MediaCodec live setBitrate | coalesced SIGUSR1 + DMA sticky (`prepare_dmabuf_settings`) |
+| CAC / quality VBR | `h264_vaapi` **QVBR** + qmin/qmax + minrate floor |
+| QP min/max | `FLUXCAST_WFD_VAAPI_QMIN` / `QMAX` (not fixed `qp=` on QVBR) |
 
 ## Also present in Samsung (not all ported)
 - `dropAFrame` / `setFrameSkip` (wf-recorder already drops on backlog)
