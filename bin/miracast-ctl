@@ -224,7 +224,10 @@ ensure_p2p_ignore_shared_freq() {
   local out iface
   [[ "$want" == "0" || "$want" == "1" ]] || want=1
   iface="$(resolve_p2p_wifi_iface)"
-  [[ -n "$iface" ]] || iface="wlp0s20f3"
+  if [[ -z "$iface" ]]; then
+    echo "[miracast-ctl] p2p_ignore_shared_freq: no P2P wifi iface resolved" >>"$LOG_DIR/cast.log"
+    return 1
+  fi
   # Prefer sudo -n (session NOPASSWD / keep-alive). Never pkexec here.
   if sudo -n true 2>/dev/null; then
     out="$(sudo -n wpa_cli -i "$iface" set p2p_ignore_shared_freq "$want" 2>/dev/null || true)"
@@ -238,7 +241,7 @@ ensure_p2p_ignore_shared_freq() {
 sta_wifi_channel() {
   local iface ch
   iface="$(resolve_p2p_wifi_iface)"
-  [[ -n "$iface" ]] || iface="wlp0s20f3"
+  [[ -n "$iface" ]] || return 1
   ch="$(iw dev "$iface" info 2>/dev/null | awk '/channel/{print $2; exit}')"
   [[ "$ch" =~ ^[0-9]+$ ]] || return 1
   printf '%s\n' "$ch"
