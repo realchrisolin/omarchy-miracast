@@ -269,9 +269,10 @@ class BitrateControllerTest(unittest.TestCase):
             )
             if i < bc.LOSS_STREAK_BEFORE_CUT:
                 self.assertFalse(d.changed)
-        # At floor, bitrate unchanged; keep going until QP softens.
+        # At floor, bitrate unchanged; QP softens once bad_streak hits
+        # LOSS_STREAK_BEFORE_CUT + 2.
         softened = False
-        for _ in range(5):
+        for _ in range(8):
             d = bc.decide(
                 st,
                 bc.LinkSignals(retry_percent=10.0, video_fps=60.0),
