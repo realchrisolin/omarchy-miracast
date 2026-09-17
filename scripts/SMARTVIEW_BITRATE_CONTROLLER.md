@@ -13,11 +13,18 @@ Source: `libremotedisplay_wfd.so` on SM-S918U
 5. Apply via MediaCodec `setParameters(bitrate)` + `bitrate-mode` + QP range
 6. Optional VBR: `"Turn on CAC mode in VBR"` + QTI content-adaptive
 
+## Live Samsung ceilings (dig, 1080p / resolution=2)
+
+```
+min=2097152 (2 Mbps), init=8388608 (8 Mbps), max=14680064 (14 Mbps)
+mMinQP=15, mMaxQP=44
+```
+
 ## Linux port (`bitrate_controller.py` + QVBR)
 
-Enabled when **`encodeStrategy=smartview`** and **`encodeProfile=best`**
-(see `scripts/encode_strategy.py`). Smart View tries **DMA-BUF + QVBR** first;
-if air TX stays ≪ target, link-watch falls back to **VAAPI pipe + QVBR**.
+Uses those Samsung min/init/max/QP values. Enabled when
+**`encodeStrategy=smartview`** and **`encodeProfile=best`**. Prefers
+**DMA-BUF + QVBR** (`prepare_dmabuf_settings`); session may fall back to pipe.
 **`encodeStrategy=performance`** keeps DMA-BUF **CQP** (no `set-bitrate-kbps`).
 
 | Samsung | Ours |

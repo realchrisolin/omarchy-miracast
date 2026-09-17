@@ -70,8 +70,8 @@ def prepare_dmabuf_settings(settings: dict[str, Any]) -> dict[str, Any]:
         if q < 3 or q > 4:
             settings["vaapiQuality"] = "3"
         settings.setdefault("vaapiQp", 22)
-        settings.setdefault("encodeQpMin", 12)
-        settings.setdefault("encodeQpMax", 40)
+        settings.setdefault("encodeQpMin", 15)
+        settings.setdefault("encodeQpMax", 44)
         settings["vaapiAsyncDepth"] = 1
         settings["vbvMultiplier"] = "1.0"
     return {

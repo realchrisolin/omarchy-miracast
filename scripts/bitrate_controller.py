@@ -11,13 +11,17 @@ Derived from ``libremotedisplay_wfd.so`` symbols/strings
 * Codec: MediaCodec ``bitrate`` + ``bitrate-mode`` + QP range
 * ``Turn on CAC mode in VBR`` → quality-defined VBR with a hard ceiling
 
-Extension for Linux VAAPI QVBR: when the encode *target* is already near the
-75% MCS ceiling but measured air TX under-fills that setpoint, lower QP so
-QVBR spends more bits (maxrate alone does not force fill).
+Live Smart View dig (S23→hotyeah, 1080p, resolution=2)::
 
-Without sink RTCP (hotyeah advertised RTCP port 0), loss is proxied by
-iw ``tx_failed`` / retry%% and stall by sender fps sag — same *roles* as
-Samsung's RR + NetworkStall inputs.
+    BitrateController: init, min=2097152, init=8388608, max=14680064
+    BitrateController: mMinQP=15, mMaxQP=44
+
+(= 2 / 8 / 14 Mbps). Linux VAAPI cannot live-setParameters; we coalesce
+SIGUSR1 applies. When target is at the Samsung max but air under-fills,
+sharpen QP so QVBR spends more bits.
+
+Without sink RTCP (hotyeah RTCP port 0), loss is proxied by iw tx_failed /
+retry%% and stall by sender fps sag — same *roles* as Samsung RR + NetStall.
 
 Pure functions / small state object — no I/O.
 """
@@ -28,12 +32,13 @@ from dataclasses import dataclass
 from typing import Optional
 
 
-# Defaults tuned for Miracast 1080p60 on 5 GHz HT20 (~72 Mbps MCS).
-DEFAULT_INIT_KBPS = 36_000
-DEFAULT_MIN_KBPS = 1_500
-DEFAULT_MAX_KBPS = 55_000
-DEFAULT_QP_MIN = 12
-DEFAULT_QP_MAX = 42
+# Samsung BitrateController (live dig, resolution=2 / 1080p), values in kbps.
+# bps: min=2097152, init=8388608, max=14680064; QP 15–44.
+DEFAULT_INIT_KBPS = 8_192  # 8 * 1024
+DEFAULT_MIN_KBPS = 2_048  # 2 * 1024
+DEFAULT_MAX_KBPS = 14_336  # 14 * 1024
+DEFAULT_QP_MIN = 15
+DEFAULT_QP_MAX = 44
 DEFAULT_QP = 22
 
 # Fraction-lost style thresholds (RTCP RR proxy).
@@ -45,7 +50,7 @@ DECREASE_FACTOR = 0.80
 INCREASE_FACTOR = 1.10
 STALL_DECREASE_FACTOR = 0.65  # NetworkStall path is more aggressive
 
-# Encode target vs iw MCS capacity (RTP/Wi‑Fi overhead still needs the remaining).
+# Extra safety vs iw MCS (Samsung max ≪ MCS on HT20; rarely binds).
 CAPACITY_FRAC = 0.75
 
 # QVBR fill: when air TX is below this fraction of the desired setpoint
@@ -126,25 +131,29 @@ def config_for_band(
     band_5ghz: bool,
     width_mhz: Optional[float] = None,
 ) -> BitrateConfig:
-    """Samsung BitrateController is constructed with WLAN_BAND."""
+    """Samsung BitrateController is constructed with WLAN_BAND.
+
+    Dig only captured resolution=2 (1080p) on 5 GHz; use those exact
+    min/init/max/QP. 2.4 GHz keeps a slightly lower max (no live table).
+    ``width_mhz`` reserved for future WLAN_BAND tables.
+    """
+    del width_mhz  # only one Samsung resolution table captured so far
     if band_5ghz:
-        # 5 GHz HT20 MCS≈72 → allow up to ~75% (~54 Mbps). Wider GO higher.
-        wide = (width_mhz or 20) >= 40
         return BitrateConfig(
-            init_kbps=40_000 if wide else 36_000,
-            min_kbps=2_000,
-            max_kbps=80_000 if wide else 55_000,
-            qp_min=12,
-            qp_max=40,
+            init_kbps=DEFAULT_INIT_KBPS,
+            min_kbps=DEFAULT_MIN_KBPS,
+            max_kbps=DEFAULT_MAX_KBPS,
+            qp_min=DEFAULT_QP_MIN,
+            qp_max=DEFAULT_QP_MAX,
             rc_mode="QVBR",
         )
-    # 2.4 GHz / 20 MHz MCC — keep a lower ceiling (interference / MCC tax).
+    # 2.4 GHz — no dig table; keep under the 1080p 5 GHz max.
     return BitrateConfig(
-        init_kbps=12_000,
-        min_kbps=1_500,
-        max_kbps=22_000,
-        qp_min=14,
-        qp_max=42,
+        init_kbps=6_144,  # 6 Mbps
+        min_kbps=DEFAULT_MIN_KBPS,
+        max_kbps=10_240,  # 10 Mbps
+        qp_min=DEFAULT_QP_MIN,
+        qp_max=DEFAULT_QP_MAX,
         rc_mode="QVBR",
     )
 

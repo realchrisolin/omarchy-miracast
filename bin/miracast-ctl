@@ -665,8 +665,8 @@ p = Path(__import__("sys").argv[1])
 d = json.loads(p.read_text())
 d["vaapiRcMode"] = "QVBR"
 d.setdefault("vaapiQp", 22)
-d.setdefault("encodeQpMin", 16)
-d.setdefault("encodeQpMax", 40)
+d.setdefault("encodeQpMin", 15)
+d.setdefault("encodeQpMax", 44)
 br = str(d.get("vaapiBitrate") or d.get("bitrate") or "20M")
 d["bitrate"] = br
 d["vaapiBitrate"] = br
@@ -3709,14 +3709,14 @@ if profile == "best" and strategy == "smartview" and cap in ("vaapi", "dmabuf", 
         try:
             ceil = float(settings.get("encodeCongestionBitrateMbps"))
         except (TypeError, ValueError):
-            ceil = 20.0
+            ceil = 8.0
     elif explicit is not None and str(explicit).strip() != "":
         ceil = float(explicit)
     elif link > 1.0:
-        # Align with bitrate_controller CAPACITY_FRAC (75% of MCS).
-        ceil = max(2.0, min(55.0, link * 0.75))
+        # Samsung dig max ≈14 Mbps; also respect 75% MCS as an outer cap.
+        ceil = max(2.0, min(14.0, link * 0.75))
     else:
-        ceil = 20.0  # Smart View–class 1080p60 init
+        ceil = 8.0  # Samsung BitrateController init (8388608 bps)
     br = stream_br = _fmt(ceil)
 elif profile == "best" and strategy == "performance":
     rc = "CQP"

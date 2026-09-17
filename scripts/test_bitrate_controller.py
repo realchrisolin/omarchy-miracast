@@ -66,9 +66,10 @@ class BitrateControllerTest(unittest.TestCase):
         self.assertEqual(d.reason, "no_loss_increase")
 
     def test_qp_fill_when_under_55pct_of_setpoint(self):
-        # Target at ceiling (~54M on 72 MCS) but air only ~7 Mbps → sharpen QP.
+        # Samsung max ~14 Mbps; air 5 Mbps (<55%) → sharpen QP.
         cfg = bc.config_for_band(band_5ghz=True, width_mhz=20)
         ceiling = bc._clamp_kbps(10**9, cfg, 72.2)
+        self.assertEqual(ceiling, bc.DEFAULT_MAX_KBPS)
         st = bc.BitrateState(kbps=ceiling, qp=22, good_streak=2, underfill_streak=1)
         d = bc.decide(
             st,
@@ -76,7 +77,7 @@ class BitrateControllerTest(unittest.TestCase):
                 retry_percent=0.0,
                 video_fps=60.0,
                 link_capacity_mbps=72.2,
-                air_tx_mbps=7.0,
+                air_tx_mbps=5.0,
             ),
             cfg,
             cooldown_ok=True,
@@ -96,7 +97,7 @@ class BitrateControllerTest(unittest.TestCase):
                 retry_percent=0.0,
                 video_fps=60.0,
                 link_capacity_mbps=72.2,
-                air_tx_mbps=7.0,
+                air_tx_mbps=5.0,
             ),
             cfg,
             cooldown_ok=True,
@@ -117,18 +118,17 @@ class BitrateControllerTest(unittest.TestCase):
         )
         self.assertLessEqual(d.kbps, int(20.0 * 1000 * bc.CAPACITY_FRAC))
 
-    def test_band_5ghz_higher_ceiling(self):
+    def test_samsung_1080p_ceiling(self):
         c24 = bc.config_for_band(band_5ghz=False)
         c5 = bc.config_for_band(band_5ghz=True, width_mhz=20)
-        c5w = bc.config_for_band(band_5ghz=True, width_mhz=80)
+        self.assertEqual(c5.min_kbps, 2_048)
+        self.assertEqual(c5.init_kbps, 8_192)
+        self.assertEqual(c5.max_kbps, 14_336)  # 14 * 1024 from dig
+        self.assertEqual(c5.qp_min, 15)
+        self.assertEqual(c5.qp_max, 44)
         self.assertGreater(c5.max_kbps, c24.max_kbps)
-        self.assertGreaterEqual(c5.max_kbps, 50_000)
-        self.assertGreater(c5w.max_kbps, c5.max_kbps)
-        self.assertAlmostEqual(bc.CAPACITY_FRAC, 0.75)
-        self.assertEqual(
-            bc._clamp_kbps(80_000, c5, 72.2),
-            min(c5.max_kbps, int(72.2 * 1000 * bc.CAPACITY_FRAC)),
-        )
+        # MCS clamp does not raise Samsung max.
+        self.assertEqual(bc._clamp_kbps(80_000, c5, 72.2), c5.max_kbps)
 
     def test_kbps_roundtrip(self):
         self.assertEqual(bc.ffmpeg_to_kbps("10M"), 10000)
@@ -136,20 +136,20 @@ class BitrateControllerTest(unittest.TestCase):
         self.assertEqual(bc.kbps_to_ffmpeg(8500), "8.5M")
 
     def test_desired_fill(self):
-        self.assertAlmostEqual(bc.desired_fill_mbps(45000, 72.2), 45.0)
-        self.assertAlmostEqual(bc.desired_fill_mbps(60000, 72.2), 72.2 * 0.75)
+        self.assertAlmostEqual(bc.desired_fill_mbps(8_192, 72.2), 8.192)
+        self.assertAlmostEqual(bc.desired_fill_mbps(14_336, 72.2), 14.336)
 
     def test_fill_high_uses_mcs_not_demoted_target(self):
-        # air 46 Mbps is fine vs 72 MCS; must NOT soften just because target is 22M.
+        # air 12 Mbps is under 75%×92% of 72 MCS; must NOT soften.
         cfg = bc.config_for_band(band_5ghz=True, width_mhz=20)
-        st = bc.BitrateState(kbps=22000, qp=22, good_streak=3)
+        st = bc.BitrateState(kbps=cfg.max_kbps, qp=22, good_streak=3)
         d = bc.decide(
             st,
             bc.LinkSignals(
                 retry_percent=0.0,
                 video_fps=60.0,
                 link_capacity_mbps=72.2,
-                air_tx_mbps=46.7,
+                air_tx_mbps=12.0,
             ),
             cfg,
             cooldown_ok=True,
