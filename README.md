@@ -181,6 +181,8 @@ Override in `~/.config/omarchy-miracast/settings.json` (merged with
 | `vaapiQuality` | *(from profile)* | ffmpeg `h264_vaapi` `-quality` (1–8; higher = faster/worse). |
 | `vbvMultiplier` | `0.5` | CBR VBV as a fraction of bitrate (~0.5 s). → `FLUXCAST_WFD_VBV_MULTIPLIER`. |
 | `p2pWifiInterface` | `auto` | Managed Wi‑Fi iface for Miracast P2P, or `auto` (prefer **idle** P2P-GO NIC so Miracast is not time-sliced with home STA). |
+| `p2pGo5GHz` | `false` | USB GO only: keep 5 GHz in the GO channel set. Default drops 5 GHz (`p2p_no_go_freq`). Ignored on NetworkManager ifaces. |
+| `usbWpaSupplicant` | *(empty)* | Absolute path to `wpa_supplicant` for dedicated USB P2P. Empty = `PATH`. Also `FLUXCAST_USB_WPA`. |
 | `p2pQuietCsa` | `false` | `true` = post-PLAY CSA to a quiet channel (MCC). Default **SCC**. |
 | `vaapiRcMode` | *(from profile)* | `CQP` / `QVBR` / `CBR` / `VBR` → `FLUXCAST_WFD_VAAPI_RC`. |
 | `vaapiBitrate` | *(from profile)* | QVBR/CBR peak (`FLUXCAST_WFD_VAAPI_BITRATE`). |

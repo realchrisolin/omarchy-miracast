@@ -48,9 +48,19 @@ out = []
 for m in ms:
     name = str(m.get("name") or "")
     virtual = is_virtual(name)
+    # Hyprland 0.56 serializes JSON "disabled" as !m_enabled. Live outputs
+    # (eDP and headless Extend) currently report disabled=true while still
+    # scanning out (dpms on, non-zero mode). Nested Display-panel settings
+    # and expand-all only consider enabled rows, so trust geometry+DPMS.
+    width = int(m.get("width") or 0)
+    dpms = m.get("dpmsStatus")
+    if width > 0 and dpms is not False:
+        enabled = True
+    else:
+        enabled = m.get("disabled") is not True
     entry = {
         "name": name,
-        "enabled": m.get("disabled") is not True,
+        "enabled": enabled,
         "focused": m.get("focused") is True,
         "width": int(m.get("width") or 0),
         "height": int(m.get("height") or 0),

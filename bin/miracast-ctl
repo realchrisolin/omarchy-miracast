@@ -499,9 +499,12 @@ defaults = {
     # Auto prefers P2P-GO-capable radios that are not already connected.
     "p2pWifiInterface": "auto",
     # USB GO only: keep 5 GHz in the GO channel set. Default false = drop
-    # 5 GHz via p2p_no_go_freq (USB 5 GHz antenna is weak). Ignored on
-    # AX201 / NetworkManager ifaces.
+    # 5 GHz via p2p_no_go_freq. Ignored on NetworkManager / non-USB ifaces.
     "p2pGo5GHz": False,
+    # Optional absolute path to wpa_supplicant for dedicated USB P2P
+    # (Confirm-wait / Action-queue builds). Empty = PATH. Also
+    # FLUXCAST_USB_WPA. Machine-specific; do not hardcode in FluxCast.
+    "usbWpaSupplicant": "",
 }
 try:
     data = json.load(open(path))
@@ -2576,6 +2579,29 @@ print(f"WF_RECORDER_PROTO={sh_quote(proto)}")
 PY
 }
 
+# Dedicated USB P2P wpa: env wins, else settings.usbWpaSupplicant if executable.
+# FluxCast itself only reads FLUXCAST_USB_WPA or PATH (portable).
+export_usb_wpa_env() {
+  if [[ -n "${FLUXCAST_USB_WPA:-}" ]]; then
+    if [[ -x "$FLUXCAST_USB_WPA" ]]; then
+      export FLUXCAST_USB_WPA
+      return
+    fi
+    echo "[miracast-ctl] FLUXCAST_USB_WPA is set but not executable: $FLUXCAST_USB_WPA" >&2
+  fi
+  local from_settings=""
+  if [[ -f "$SETTINGS_FILE" ]]; then
+    from_settings="$(python3 -c 'import json,sys
+try:
+  print(str(json.load(open(sys.argv[1])).get("usbWpaSupplicant") or "").strip())
+except Exception:
+  print("")' "$SETTINGS_FILE" 2>/dev/null || true)"
+  fi
+  if [[ -n "$from_settings" && -x "$from_settings" ]]; then
+    export FLUXCAST_USB_WPA="$from_settings"
+  fi
+}
+
 resolve_fluxcast_root() {
   if [[ -n "${FLUXCAST_ROOT:-}" && -d "$FLUXCAST_ROOT" ]]; then
     echo "$FLUXCAST_ROOT"
@@ -3520,6 +3546,7 @@ PY
   local wifi_iface_fb scan_iface_args=()
   wifi_iface_fb="$(resolve_p2p_wifi_iface)"
   [[ -n "$wifi_iface_fb" ]] && scan_iface_args=(--wfd-interface "$wifi_iface_fb")
+  export_usb_wpa_env
   out="$(cd "$root" && FLUXCAST_LIST_P2P_RADIOS="$PLUGIN_DIR/scripts/list_p2p_radios.py" \
     FLUXCAST_WFD_INTERFACE="${wifi_iface_fb:-}" \
     PYTHONUNBUFFERED=1 python3 -u src/main.py --protocol wfd --wfd-scan --wfd-p2p-backend wpas \
@@ -6050,6 +6077,10 @@ print("1" if v in (True,1,"1","true","yes","on") else "0")
       fi
     fi
     export FLUXCAST_LIST_P2P_RADIOS="$PLUGIN_DIR/scripts/list_p2p_radios.py"
+    export_usb_wpa_env
+    if [[ -n "${FLUXCAST_USB_WPA:-}" ]]; then
+      echo "[miracast-ctl] USB wpa_supplicant=$FLUXCAST_USB_WPA" >>"$LOG_DIR/cast.log"
+    fi
     python3 -u src/main.py \
       --protocol wfd \
       --wfd-peer "$peer" \
