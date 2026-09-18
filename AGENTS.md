@@ -16,6 +16,7 @@ Keep this file short. Depth lives in the docs below — link, don’t paste.
 ## Hard constraints (do not regress)
 
 - **Never freeze eDP.** Do not call `hyprctl output remove` / `monitor,disable` on the Miracast hot path (connect, disconnect, orphan cleanup). Leave virtual heads in place; reuse on next Extend. Details: README § Virtual output lifecycle.
+- **Do not bounce hardware cursors** across Extend stop/start. Keep `cursor:no_hardware_cursors=true` while a virtual head exists (live or parked). Restoring the HW cursor plane in the same window as park/unpark modesets eDP and has hard-locked i915 (no VT, caps-lock LED stuck).
 - **LPCM-only sinks** are common. Prefer WFD LPCM (`stream_type=0x83`); don’t “fix” silence by switching away from LPCM without evidence.
 - **Quiet P2P by default = SCC.** Opt-in quiet CSA only (`p2pQuietCsa`). For air/UI freq: prefer peer **`oper_freq` when 5 GHz**; only fall back to `listen_freq` when iw GO merely mirrors STA 5 GHz and the peer has no 5 GHz oper (Intel MCC “iw lie”). Dual idle NIC preferred over sharing STA (`p2pWifiInterface=auto`).
 - **20 MHz / 2.4 GHz budget (updated from hotyeah soaks):** PHY still ~72 Mbps HT20; usable Miracast is lower, but **>20 Mbps can stay clear**. Older “corruption above ~22 Mbps” was **too conservative** for current DMA-BUF CQP. Practical cliff on this MCC path was closer to **~40–50 Mbps** (sharp QP / q=1) with retries→UDP death — not 20. Named High/Medium/Low remain conservative; **Very High** stays **5 GHz+** gated as a pinned sharp preset.

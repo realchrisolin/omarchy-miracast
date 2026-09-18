@@ -58,18 +58,54 @@ CAST_ANIMATIONS_PREV_FILE="$STATE_DIR/cast-animations.prev"
 # Per-device Extend scales live in settings.json → sinkScales: { "MAC": 1.6 }.
 # When unset, defaultExtendScale (1) is used — scale 1 is much cheaper for Hyprland.
 
-# Headless capture cannot include the hardware cursor plane — force software
-# cursors while Extend is live so the pointer is visible on the Miracast sink.
+# Hardware cursor plane commits overlapping an eDP modeset have hard-locked
+# i915 (no VT, caps-lock LED stuck). Keep software cursors for the whole
+# Extend lifetime, including a parked virtual head. Do not bounce
+# no_hardware_cursors across stop/start.
+hypr_cursor_no_hw_value() {
+  timeout 2 hyprctl getoption cursor:no_hardware_cursors -j 2>/dev/null | python3 -c 'import json,sys
+try:
+  d=json.load(sys.stdin)
+  print(int(d.get("int", d.get("setInt", 2))))
+except Exception:
+  print(2)' 2>/dev/null || echo 2
+}
+
+extend_virtual_head_present() {
+  hypr_has_monitor "$SHARED_EXTEND_NAME" && return 0
+  hypr_has_monitor "$LEGACY_SHARED_EXTEND_NAME" && return 0
+  local n=""
+  if [[ -f "$HEADLESS_FILE" ]]; then
+    n="$(tr -d '\n' <"$HEADLESS_FILE" 2>/dev/null || true)"
+    [[ -n "$n" ]] && hypr_has_monitor "$n" && return 0
+  fi
+  if [[ -f "$PARKED_FILE" ]]; then
+    n="$(tr -d '\n' <"$PARKED_FILE" 2>/dev/null || true)"
+    [[ -n "$n" ]] && hypr_has_monitor "$n" && return 0
+  fi
+  return 1
+}
+
 enable_software_cursors() {
-  local prev
-  prev="$(hyprctl getoption cursor:no_hardware_cursors -j 2>/dev/null | python3 -c 'import json,sys
-try: print(json.load(sys.stdin).get("int", 2))
-except Exception: print(2)' 2>/dev/null || echo 2)"
-  printf '%s\n' "$prev" > "$CURSOR_PREV_FILE"
+  local cur
+  cur="$(hypr_cursor_no_hw_value)"
+  if [[ "$cur" == "1" ]]; then
+    disconnect_log "software cursors already on; skip KMS cursor-plane toggle"
+    return 0
+  fi
+  # Keep the pre-Extend value across reconnects; do not overwrite with 1.
+  if [[ ! -f "$CURSOR_PREV_FILE" ]]; then
+    printf '%s\n' "$cur" >"$CURSOR_PREV_FILE"
+  fi
   timeout 2 hyprctl eval 'hl.config({ cursor = { no_hardware_cursors = true } })' >/dev/null 2>&1 || true
+  disconnect_log "software cursors on (was $cur)"
 }
 
 restore_software_cursors() {
+  if extend_virtual_head_present; then
+    disconnect_log "keep software cursors (virtual head still present)"
+    return 0
+  fi
   local prev=""
   if [[ -f "$CURSOR_PREV_FILE" ]]; then
     prev="$(cat "$CURSOR_PREV_FILE" 2>/dev/null || true)"
@@ -77,8 +113,9 @@ restore_software_cursors() {
   fi
   # Restore the exact prior value (0/1/2). Forcing `false` when the session
   # default was auto (2) can leave the laptop cursor/compositor in a bad state.
-  if [[ "$prev" =~ ^[0-9]+$ ]]; then
+  if [[ "$prev" =~ ^[0-9]+$ && "$prev" != "1" ]]; then
     timeout 2 hyprctl eval "hl.config({ cursor = { no_hardware_cursors = ${prev} } })" >/dev/null 2>&1 || true
+    disconnect_log "software cursors restored to $prev"
   fi
 }
 
@@ -193,6 +230,12 @@ LAT_FILE="$LOG_DIR/latency.jsonl"
 
 # Resolve symlinks (e.g. ~/.local/bin/miracast-ctl → checkout) so scripts/ works.
 PLUGIN_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+
+# udev USB wifi (…uN), not the onboard STA (e.g. wlp0s20f3).
+is_usb_wifi_iface() {
+  local n="${1:-}"
+  [[ "$n" =~ u[0-9]+$ ]] || [[ "$n" == *usb* ]]
+}
 
 # Resolve managed Wi-Fi iface for Miracast P2P (settings p2pWifiInterface / auto).
 resolve_p2p_wifi_iface() {
@@ -455,6 +498,10 @@ defaults = {
     # Managed Wi-Fi iface for Miracast P2P: "auto" or e.g. "wlan1".
     # Auto prefers P2P-GO-capable radios that are not already connected.
     "p2pWifiInterface": "auto",
+    # USB GO only: keep 5 GHz in the GO channel set. Default false = drop
+    # 5 GHz via p2p_no_go_freq (USB 5 GHz antenna is weak). Ignored on
+    # AX201 / NetworkManager ifaces.
+    "p2pGo5GHz": False,
 }
 try:
     data = json.load(open(path))
@@ -1655,6 +1702,19 @@ else:
   fi
   rm -f "$PARKED_FILE" "$HEADLESS_FILE" "$CAPTURE_GEOM_FILE"
 
+  # Switch off the HW cursor plane *before* any output create/geometry.
+  # Doing it after create overlapped eDP modeset and hard-locked i915
+  # (22:16: create + geometry + cursors-on in ~2s; isolated 4s soaks survived).
+  local want_sw
+  want_sw="$(python3 -c 'import json,sys
+s=json.loads(sys.argv[1])
+v=s.get("softwareCursors", True)
+print("1" if v in (True,1,"1","true","yes","on") else "0")' "$(read_settings)" 2>/dev/null || echo 1)"
+  if [[ "$want_sw" == "1" ]]; then
+    enable_software_cursors
+    kms_settle "after software cursors (pre-create)"
+  fi
+
   if [[ -z "$headless" ]]; then
     headless="$(unique_extend_output_name "$desired" "")"
     if [[ -z "$headless" ]]; then
@@ -1670,6 +1730,7 @@ else:
       return 1
     fi
     disconnect_log "connect-time created virtual output name=$headless"
+    kms_settle "after output create $headless"
   fi
 
   # Remember which workspace was active on the display we're keeping, before
@@ -1706,7 +1767,20 @@ else:
   pos="${rest%%|*}"
   scale="${rest#*|}"
   [[ "$scale" == "$rest" || -z "$scale" ]] && scale="${saved_scale:-1}"
+  local p2p_iface=""
+  p2p_iface="$(resolve_p2p_wifi_iface 2>/dev/null || true)"
+  if is_usb_wifi_iface "$p2p_iface"; then
+    # USB GO Neg takes seconds and never completed in our tests. Placing the
+    # head beside eDP modesets the laptop panel (CCS corruption / i915 lock).
+    # Park until a real group exists; AX201 (fast Neg) still uses on-layout.
+    hypr_set_monitor_geometry "$headless" "1920x1080@30" "$PARKED_EXTEND_POS" "1" >/dev/null 2>&1 || true
+    printf '%s\n' "$headless" >"$PARKED_FILE"
+    kms_settle "USB P2P: parked $headless at $PARKED_EXTEND_POS (no eDP modeset)"
+    echo "$headless"
+    return 0
+  fi
   hypr_set_monitor_geometry "$headless" "$mode" "$pos" "$scale" >/dev/null 2>&1 || true
+  kms_settle "after geometry $headless $mode $pos scale=$scale"
   # Park empty legacy head far away so it does not stack on the same origin
   # as persistent-miracast (same x/y hides the cast desktop under an empty head).
   if [[ "$preserve" == "1" && -n "$legacy" && "$legacy" != "$headless" ]]; then
@@ -2195,6 +2269,62 @@ raise SystemExit(0 if any(str(m.get("name") or "")==name for m in ms) else 1)
 ' "$name" 2>/dev/null
 }
 
+# Let i915 finish an atomic page-flip before the next modeset/cursor commit.
+# Isolated Hyprland steps with 4s soaks survived; packed create+geometry in ~2s hung.
+kms_settle() {
+  local why="${1:-}"
+  disconnect_log "kms settle 1.5s ${why}"
+  sleep 1.5
+}
+
+# USB: head stays parked at -12000 during GO Neg. After a live group exists,
+# place it on-layout (this modesets eDP — the hang risk). Log ABOUT_TO first.
+unpark_usb_extend_if_grouped() {
+  [[ -f "$PARKED_FILE" ]] || return 0
+  local name=""
+  name="$(tr -d '\n' <"$HEADLESS_FILE" 2>/dev/null || true)"
+  [[ -n "$name" ]] || name="$(tr -d '\n' <"$PARKED_FILE" 2>/dev/null || true)"
+  [[ -n "$name" ]] || return 0
+  hypr_has_monitor "$name" || return 0
+  p2p_group_up || return 0
+  # Do not modeset eDP during WPS. wpa.log is append-only — require a
+  # GROUP-STARTED after the last FORMATION_FAILED, not a stale hit.
+  if ! python3 - <<'PY'
+from pathlib import Path
+p = Path("/tmp/fluxcast-usb-wpa/wpa.log")
+try:
+    t = p.read_text(errors="replace")
+except OSError:
+    raise SystemExit(1)
+start = t.rfind("P2P-GROUP-STARTED")
+fail = t.rfind("P2P-GROUP-FORMATION-FAILURE")
+raise SystemExit(0 if start > fail else 1)
+PY
+  then
+    return 0
+  fi
+  local parts mode pos scale rest saved_scale position peer_mac
+  peer_mac="$(python3 -c 'import json; print(json.load(open("'"$STATUS_FILE"'")).get("peer",""))' 2>/dev/null || true)"
+  position="$(extend_position)"
+  saved_scale="$(extend_scale_get "$peer_mac")"
+  parts="$(extend_geometry_parts "$position" "$saved_scale")"
+  mode="${parts%%|*}"
+  rest="${parts#*|}"
+  pos="${rest%%|*}"
+  scale="${rest#*|}"
+  [[ "$scale" == "$rest" || -z "$scale" ]] && scale="${saved_scale:-1}"
+  disconnect_log "ABOUT_TO unpark USB extend $name mode=$mode pos=$pos scale=$scale (eDP modeset risk)"
+  hypr_set_monitor_geometry "$name" "$mode" "$pos" "$scale" >/dev/null 2>&1 || true
+  kms_settle "after USB unpark $name"
+  seed_extend_workspaces "$name" || true
+  pin_extend_workspaces "$name" || true
+  focus_occupied_workspace_on_monitor "$name" || true
+  rm -f "$PARKED_FILE"
+  disconnect_log "unparked USB extend $name on-layout"
+  load_icc_present_kick || true
+  ensure_extend_capture_healthy 2 force >/dev/null 2>&1 || true
+}
+
 # Park an Extend head far off-layout (no destroy). Preserves mode/scale when possible.
 park_extend_head_offlayout() {
   local name="${1:-}"
@@ -2306,6 +2436,8 @@ cleanup_extend_monitor() {
       # Park off-layout whether empty or Persist-occupied (reconnect will
       # re-place via ensure_extend_monitor geometry).
       park_extend_head_offlayout "$name" || true
+      # Parked head still exists — restoring HW cursors here is the stop/start
+      # bounce that overlapped eDP modeset and locked i915.
       restore_software_cursors
       unload_icc_present_kick
       printf '%s\n' "$name" >"$PARKED_FILE"
@@ -4230,13 +4362,20 @@ is_running() {
 }
 
 p2p_group_up() {
-  # True when a real P2P group interface exists (not just p2p-dev), or when
-  # NetworkManager still reports the FluxCast WFD connection as active.
+  # True when a real P2P group exists (NM p2p-wlp* or dedicated-wpa p2p-N),
+  # not p2p-dev-* and not a pending GO shell (type P2P-GO with no SSID).
   if iw dev 2>/dev/null | awk '
-    $1 == "Interface" && $2 ~ /^p2p-wlp/ { iface=$2; next }
-    iface != "" && $1 == "type" && ($2 == "P2P-GO" || $2 == "P2P-client") { found=1 }
-    $1 == "Interface" { iface="" }
-    END { exit found ? 0 : 1 }
+    $1 == "Interface" {
+      if (iface != "" && ok) { found=1 }
+      iface=$2; ssid=0; p2p=0; skip=0
+      if ($2 ~ /^p2p-dev-/) skip=1
+      next
+    }
+    skip { next }
+    $1 == "ssid" { ssid=1 }
+    $1 == "type" && ($2 == "P2P-GO" || $2 == "P2P-client") { p2p=1 }
+    iface != "" && p2p && ssid { ok=1 }
+    END { if (iface != "" && ok) found=1; exit found ? 0 : 1 }
   '; then
     return 0
   fi
@@ -5405,6 +5544,24 @@ cmd_stop() {
     fi
     rm -f "$PID_FILE"
   fi
+  if [[ "$keep_workspaces" != "1" ]]; then
+    # User stop: tear down USB dedicated group. Start's internal stop
+    # (keep_workspaces=1) leaves a live BSS so Extend can attach without
+    # re-running SoftMAC GO Neg (Confirm TX is racy).
+    disconnect_log "user stop: removing USB P2P group ifaces"
+    python3 - <<'PY'
+import os, subprocess
+from pathlib import Path
+for p in Path("/sys/class/net").glob("p2p-*"):
+    subprocess.run(["iw", "dev", p.name, "del"], timeout=3, check=False)
+pidf = Path("/tmp/fluxcast-usb-wpa/wpa.pid")
+if pidf.exists():
+    try:
+        os.kill(int(pidf.read_text().strip()), 15)
+    except Exception:
+        pass
+PY
+  fi
   rm -f "$HEALTH_WATCH_PID_FILE"
   # Best-effort cleanup of FluxCast / capture leftovers without self-matching kill
   python3 - "$HEADLESS_FILE" <<'PY'
@@ -5592,17 +5749,8 @@ PY
       return 1
     fi
     monitor="$headless"
-    local want_sw
-    want_sw="$(python3 -c 'import json,sys
-s=json.loads(sys.argv[1])
-v=s.get("softwareCursors", True)
-print("1" if v in (True,1,"1","true","yes","on") else "0")' "$settings")"
-    if [[ "$want_sw" == "1" ]]; then
-      enable_software_cursors
-    else
-      restore_software_cursors || true
-      timeout 2 hyprctl eval 'hl.config({ cursor = { no_hardware_cursors = false } })' >/dev/null 2>&1 || true
-    fi
+    # Software cursors are enabled inside ensure_extend_monitor *before*
+    # create/geometry. Do not toggle the cursor plane again here.
   fi
 
   if [[ "$auto_fw" == "1" ]]; then
@@ -5628,36 +5776,45 @@ print("1" if v in (True,1,"1","true","yes","on") else "0")' "$settings")"
   # Bug we fixed: SCC mode used to pass the quiet pick as --wfd-p2p-channel,
   # which pushed the GO off the STA band (often onto 2.4 ch 6) while CSA was
   # skipped — worst of both worlds.
+  # USB dedicated GO is a second radio: do not pin STA SCC / quiet CSA onto
+  # it (that would put USB on AX201 5 GHz ChrisNet). USB drops 5 GHz from
+  # the GO set by default (p2p_no_go_freq); p2pGo5GHz keeps 5 GHz.
   local p2p_channel="" p2p_channel_args=()
-  local _want_quiet_csa=0
-  if [[ "${MIRACAST_SKIP_P2P_CSA:-}" =~ ^(1|true|yes)$ ]]; then
-    _want_quiet_csa=0
-  elif [[ "${MIRACAST_P2P_QUIET_CSA:-}" =~ ^(1|true|yes)$ ]]; then
-    _want_quiet_csa=1
+  local _p2p_iface_early=""
+  _p2p_iface_early="$(resolve_p2p_wifi_iface 2>/dev/null || true)"
+  if is_usb_wifi_iface "$_p2p_iface_early"; then
+    echo "[miracast-ctl] USB P2P: skip STA SCC / quiet CSA channel force (dedicated GO channel set)" >>"$LOG_DIR/cast.log"
   else
-    _want_quiet_csa="$(python3 -c 'import json,sys
+    local _want_quiet_csa=0
+    if [[ "${MIRACAST_SKIP_P2P_CSA:-}" =~ ^(1|true|yes)$ ]]; then
+      _want_quiet_csa=0
+    elif [[ "${MIRACAST_P2P_QUIET_CSA:-}" =~ ^(1|true|yes)$ ]]; then
+      _want_quiet_csa=1
+    else
+      _want_quiet_csa="$(python3 -c 'import json,sys
 s=json.loads(sys.argv[1])
 v=s.get("p2pQuietCsa", False)
 print("1" if v in (True,1,"1","true","yes","on") else "0")
 ' "$settings" 2>/dev/null || echo 0)"
-  fi
-  if [[ "$_want_quiet_csa" == "1" ]]; then
-    ensure_p2p_ignore_shared_freq 1
-    p2p_channel="$(pick_p2p_channel 2>>"$LOG_DIR/cast.log" || true)"
-    if [[ "$p2p_channel" =~ ^[0-9]+$ ]]; then
-      p2p_channel_args=(--wfd-p2p-channel "$p2p_channel")
-      echo "[miracast-ctl] P2P quiet target channel=$p2p_channel (CSA after PLAY / MCC)" >>"$LOG_DIR/cast.log"
-    else
-      echo "[miracast-ctl] P2P quiet pick failed; NM will choose channel" >>"$LOG_DIR/cast.log"
     fi
-  else
-    ensure_p2p_ignore_shared_freq 0
-    p2p_channel="$(sta_wifi_channel 2>>"$LOG_DIR/cast.log" || true)"
-    if [[ "$p2p_channel" =~ ^[0-9]+$ ]]; then
-      p2p_channel_args=(--wfd-p2p-channel "$p2p_channel")
-      echo "[miracast-ctl] P2P SCC: force STA channel=$p2p_channel (no quiet CSA)" >>"$LOG_DIR/cast.log"
+    if [[ "$_want_quiet_csa" == "1" ]]; then
+      ensure_p2p_ignore_shared_freq 1
+      p2p_channel="$(pick_p2p_channel 2>>"$LOG_DIR/cast.log" || true)"
+      if [[ "$p2p_channel" =~ ^[0-9]+$ ]]; then
+        p2p_channel_args=(--wfd-p2p-channel "$p2p_channel")
+        echo "[miracast-ctl] P2P quiet target channel=$p2p_channel (CSA after PLAY / MCC)" >>"$LOG_DIR/cast.log"
+      else
+        echo "[miracast-ctl] P2P quiet pick failed; NM will choose channel" >>"$LOG_DIR/cast.log"
+      fi
     else
-      echo "[miracast-ctl] P2P SCC: could not read STA channel; leave channel to NM" >>"$LOG_DIR/cast.log"
+      ensure_p2p_ignore_shared_freq 0
+      p2p_channel="$(sta_wifi_channel 2>>"$LOG_DIR/cast.log" || true)"
+      if [[ "$p2p_channel" =~ ^[0-9]+$ ]]; then
+        p2p_channel_args=(--wfd-p2p-channel "$p2p_channel")
+        echo "[miracast-ctl] P2P SCC: force STA channel=$p2p_channel (no quiet CSA)" >>"$LOG_DIR/cast.log"
+      else
+        echo "[miracast-ctl] P2P SCC: could not read STA channel; leave channel to NM" >>"$LOG_DIR/cast.log"
+      fi
     fi
   fi
 
@@ -5850,10 +6007,7 @@ print(str(s.get("vbvMultiplier") or "0.5").strip() or "0.5")
       # the pointer leaves the Miracast head). SW cursors still appear if enabled.
       export WF_RECORDER_NO_PAINT_CURSORS="${WF_RECORDER_NO_PAINT_CURSORS:-1}"
       echo "[miracast-ctl] wf-recorder BIN=$_wf_bin PROTO=$_wf_proto NO_PAINT_CURSORS=$WF_RECORDER_NO_PAINT_CURSORS" >>"$LOG_DIR/cast.log"
-      # ICC needs per-capture presents; load bundled kick plugin (no private hooks).
-      if [[ "$_wf_proto" == "icc" || "$_wf_proto" == "auto" ]]; then
-        load_icc_present_kick
-      fi
+      # Do not load ICC during USB GO Neg (KMS). Health watcher loads it at unpark.
     else
       unset FLUXCAST_WFD_WF_RECORDER_BIN FLUXCAST_WFD_WF_RECORDER_PROTO 2>/dev/null || true
       echo "[miracast-ctl] wf-recorder using PATH (stock default)" >>"$LOG_DIR/cast.log"
@@ -5867,12 +6021,33 @@ print(str(s.get("vbvMultiplier") or "0.5").strip() or "0.5")
     # pause (screen lock / Extend position move).
     export FLUXCAST_CAPTURE_PAUSE_FILE="$CAPTURE_PAUSED_FILE"
     clear_capture_paused
-    local wifi_iface="" wfd_iface_args=()
+    local wifi_iface="" wfd_iface_args=() go_5ghz_args=()
     wifi_iface="$(resolve_p2p_wifi_iface)"
     if [[ -n "$wifi_iface" ]]; then
       wfd_iface_args=(--wfd-interface "$wifi_iface")
       export FLUXCAST_WFD_INTERFACE="$wifi_iface"
       echo "[miracast-ctl] P2P Wi-Fi iface=$wifi_iface" >>"$LOG_DIR/cast.log"
+      if is_usb_wifi_iface "$wifi_iface"; then
+        if [[ "$go_intent" == "0" ]]; then
+          go_intent=15
+          echo "[miracast-ctl] USB P2P: go_intent=15 first (GO; client Confirm TX drops on SoftMAC)" >>"$LOG_DIR/cast.log"
+        fi
+        local _go_5ghz=0
+        _go_5ghz="$(python3 -c 'import json,sys
+s=json.loads(sys.argv[1])
+v=s.get("p2pGo5GHz", False)
+print("1" if v in (True,1,"1","true","yes","on") else "0")
+' "$settings" 2>/dev/null || echo 0)"
+        if [[ "${FLUXCAST_WFD_GO_5GHZ:-}" =~ ^(1|true|yes|on)$ ]]; then
+          _go_5ghz=1
+        fi
+        if [[ "$_go_5ghz" == "1" ]]; then
+          go_5ghz_args=(--wfd-go-5ghz)
+          echo "[miracast-ctl] USB P2P: keep 5 GHz in GO channel set (--wfd-go-5ghz)" >>"$LOG_DIR/cast.log"
+        else
+          echo "[miracast-ctl] USB P2P: GO 2.4 GHz only (p2p_no_go_freq; p2pGo5GHz=true to keep 5 GHz)" >>"$LOG_DIR/cast.log"
+        fi
+      fi
     fi
     export FLUXCAST_LIST_P2P_RADIOS="$PLUGIN_DIR/scripts/list_p2p_radios.py"
     python3 -u src/main.py \
@@ -5884,6 +6059,7 @@ print(str(s.get("vbvMultiplier") or "0.5").strip() or "0.5")
       --wfd-p2p-backend wpas \
       --wfd-go-intent "$go_intent" \
       "${p2p_channel_args[@]}" \
+      "${go_5ghz_args[@]}" \
       "${wfd_iface_args[@]}" \
       --fps "$fps" \
       --output-res "$output_res" \
@@ -5917,7 +6093,13 @@ except Exception: print("")' "$STATUS_FILE" 2>/dev/null || true)"
   echo "$pid" > "$PID_FILE"
   # Distinguish from hung `start` leftovers in ps (comm only; argv still bash).
   printf 'miracast-cast\n' >"/proc/$pid/comm" 2>/dev/null || true
-  cast_animations_disable || true
+  # hl.config(animations/direct_scanout) recommits eDP. Do not do it in the
+  # same window as output create/geometry (22:16 hang was ~2s after ctl returned).
+  (
+    sleep 8
+    kill -0 "$pid" 2>/dev/null || exit 0
+    cast_animations_disable || true
+  ) &
 
   (
     printf 'miracast-health\n' >/proc/self/comm 2>/dev/null || true
@@ -6111,6 +6293,7 @@ PY
       if p2p_group_up; then
         missing_link=0
         saw_p2p=1
+        unpark_usb_extend_if_grouped || true
       elif [[ "${saw_p2p:-0}" -eq 1 ]]; then
         missing_link=$((missing_link + 1))
         local miss_limit=5
